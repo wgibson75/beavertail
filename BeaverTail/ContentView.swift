@@ -11,23 +11,23 @@ struct ContentView: View {
     @StateObject private var viewModel = LogViewModel()
     @State private var showHighlightManager = false
     @State private var localRegexInput = ""
-    
+
     var body: some View {
         VStack(spacing: 0) {
-            
+
             // TOP GLOBAL CONTROLS BAR
             HStack {
                 Text("BeaverTail Log Analyzer")
                     .font(.title3)
                     .bold()
                 Spacer()
-                
+
                 Toggle(isOn: $viewModel.showMinimap) {
                     Text("Show Minimap")
                 }
                 .toggleStyle(.checkbox)
                 .padding(.horizontal, 10)
-                
+
                 Button("Highlight Rules...") {
                     showHighlightManager = true
                 }
@@ -37,9 +37,9 @@ struct ContentView: View {
             }
             .padding()
             .background(Color(NSColor.windowBackgroundColor))
-            
+
             Divider()
-            
+
             // FILE STREAMING PROGRESS BAR INDICATION OVERLAY NODE
             if viewModel.isLoadingFile {
                 VStack(spacing: 2) {
@@ -47,7 +47,7 @@ struct ContentView: View {
                         .progressViewStyle(.linear)
                         .tint(.blue) // Visual Anchor: High visibility accent coloring
                         .controlSize(.small) // Keeps the progress bar thin and elegant
-                    
+
                     Text("Streaming file content... \(String(format: "%.0f%%", viewModel.fileLoadProgress * 100))")
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                         .foregroundColor(.secondary)
@@ -55,7 +55,7 @@ struct ContentView: View {
                 .padding(.horizontal)
                 .padding(.vertical, 4)
                 .background(Color(NSColor.underPageBackgroundColor).opacity(0.4))
-                
+
                 Divider()
             }
 
@@ -70,7 +70,7 @@ struct ContentView: View {
                                     Text(tab.name)
                                         .font(.system(size: 11, weight: isSelected ? .bold : .regular))
                                         .foregroundColor(isSelected ? .primary : .secondary)
-                                    
+
                                     Button {
                                         viewModel.closeTab(id: tab.id)
                                     } label: {
@@ -90,7 +90,7 @@ struct ContentView: View {
                                     viewModel.applyFilter(with: "")
                                     viewModel.triggerLazyLoadForTab(id: tab.id)
                                 }
-                                
+
                                 Divider().frame(height: 24)
                             }
                         }
@@ -99,15 +99,15 @@ struct ContentView: View {
                     .background(Color(NSColor.underPageBackgroundColor).opacity(0.3))
                 }
                 .frame(height: 25)
-                
+
                 Divider()
             }
-            
+
             // MAIN WORKSPACE INTERFACE LAYER
             if viewModel.currentTab != nil {
                 HStack(spacing: 0) {
                     VSplitView {
-                        
+
                         // Top Pane: Full Unfiltered Text Area
                         VStack(alignment: .leading, spacing: 0) {
                             HStack {
@@ -119,7 +119,7 @@ struct ContentView: View {
                             .padding(.horizontal)
                             .padding(.vertical, 6)
                             .background(Color(NSColor.controlBackgroundColor))
-                            
+
                             Divider()
 
                             ZStack {
@@ -129,13 +129,13 @@ struct ContentView: View {
                                     rules: viewModel.highlightRules,
                                     selectedFraction: viewModel.selectedFraction,
                                     directScrollNotificationName: topPaneDirectScrollNotification,
-                                    isMinimapActiveDrive: viewModel.isScrubbingMinimap,
+                                    tailScrollNotificationName: topPaneScrollToBottomNotification,
                                     onLineIndexSelected: { index in
                                         viewModel.updateMinimapFromLineIndex(index)
                                     }
                                 )
                                 .id(viewModel.selectedTabID?.uuidString ?? "top")
-                                
+
                                 // TAB STREAMING INTERFACE OVERLAY BLOCK
                                 // Adds a translucent overlay with a native loading spinner if the user switches to this tab while it is still streaming data
                                 if viewModel.currentTab?.isCurrentlyStreaming == true {
@@ -152,21 +152,21 @@ struct ContentView: View {
                             }
                         }
                         .frame(minHeight: 120)
-                        
+
                         // Bottom Pane: Regex Filter Node
                         VStack(alignment: .leading, spacing: 0) {
                             Divider()
-                            
+
                             HStack(spacing: 12) {
                                 Text("Regex Filter:")
                                     .font(.headline)
-                                
+
                                 TextField("Enter regex criteria and press Enter", text: $localRegexInput)
                                     .textFieldStyle(.roundedBorder)
                                     .onSubmit {
                                         viewModel.applyFilter(with: localRegexInput)
                                     }
-                                
+
                                 Toggle(isOn: $viewModel.isCaseInsensitive) {
                                     Text("Ignore Case")
                                 }
@@ -177,9 +177,9 @@ struct ContentView: View {
                             }
                             .padding()
                             .background(Color(NSColor.windowBackgroundColor))
-                            
+
                             Divider()
-                            
+
                             if viewModel.filteredLines.isEmpty && !viewModel.isFiltering {
                                 VStack {
                                     Spacer()
@@ -195,16 +195,17 @@ struct ContentView: View {
                                     textColor: .secondaryLabelColor,
                                     rules: viewModel.highlightRules,
                                     selectedFraction: viewModel.selectedFraction,
+                                    tailScrollNotificationName: bottomPaneScrollToBottomNotification,
                                     onLineIndexSelected: { originalIndex in
                                         viewModel.syncSelectionFromFilteredIndex(originalIndex)
                                     }
                                 )
-                                .id((viewModel.selectedTabID?.uuidString ?? "bot") + "-\(viewModel.filteredLines.count)")
+                                .id(viewModel.selectedTabID?.uuidString ?? "bot")
                             }
                         }
                         .frame(minHeight: 120)
                     }
-                    
+
                     if viewModel.showMinimap {
                         Divider()
                         LogMinimapView(viewModel: viewModel)
@@ -236,11 +237,15 @@ struct ContentView: View {
         .sheet(isPresented: $showHighlightManager) {
             HighlightSettingsView(viewModel: viewModel)
         }
-        .onChange(of: viewModel.selectedTabID) { oldValue, newTabID in
+        .onChange(of: viewModel.selectedTabID) { _, newTabID in
             // This resolves the deprecation warning perfectly by passing old and new parameters
             if let targetID = newTabID {
                 viewModel.triggerLazyLoadForTab(id: targetID)
             }
+        }
+        // CLEANUP INTERFACE: Avoid kernel resource file locks when the application shuts down
+        .onDisappear {
+            viewModel.stopLiveTailing()
         }
     }
 }

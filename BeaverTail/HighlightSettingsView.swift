@@ -10,26 +10,26 @@ import SwiftUI
 struct HighlightSettingsView: View {
     @ObservedObject var viewModel: LogViewModel
     @Environment(\.dismiss) var dismiss
-    
+
     @State private var patternInput = ""
     @State private var fgColor = Color.black
     @State private var bgColor = Color.yellow
-    @State private var editingRuleID: UUID? = nil
-    
+    @State private var editingRuleID: UUID?
+
     var body: some View {
         VStack(spacing: 0) {
             Text("Highlight Filters Manager")
                 .font(.headline)
                 .padding()
-            
+
             Divider()
-            
+
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text(editingRuleID == nil ? "Create Filter Rule" : "Edit Selected Filter Rule")
                         .font(.subheadline)
                         .bold()
-                    
+
                     if editingRuleID != nil {
                         Spacer()
                         Button("Cancel Edit") {
@@ -39,24 +39,24 @@ struct HighlightSettingsView: View {
                         .foregroundColor(.blue)
                     }
                 }
-                
+
                 HStack {
                     TextField("Regex Pattern (e.g. \\[ERROR\\])", text: $patternInput)
                         .textFieldStyle(.roundedBorder)
-                    
+
                     VStack(spacing: 2) {
                         ColorPicker("", selection: $fgColor).labelsHidden()
                         Text("Text").font(.system(size: 9)).foregroundColor(.secondary)
                     }
-                    
+
                     VStack(spacing: 2) {
                         ColorPicker("", selection: $bgColor).labelsHidden()
                         Text("Fill").font(.system(size: 9)).foregroundColor(.secondary)
                     }
-                    
+
                     Button(editingRuleID == nil ? "Add Rule" : "Update") {
                         guard !patternInput.isEmpty else { return }
-                        
+
                         if let editingID = editingRuleID {
                             if let index = viewModel.highlightRules.firstIndex(where: { $0.id == editingID }) {
                                 var updatedRule = viewModel.highlightRules[index]
@@ -80,9 +80,9 @@ struct HighlightSettingsView: View {
             }
             .padding()
             .background(Color(NSColor.controlBackgroundColor))
-            
+
             Divider()
-            
+
             List {
                 if viewModel.highlightRules.isEmpty {
                     Text("No active highlights. Add matching regex criteria above.")
@@ -91,7 +91,7 @@ struct HighlightSettingsView: View {
                 } else {
                     ForEach(viewModel.highlightRules) { rule in
                         HStack(spacing: 12) {
-                            
+
                             // 1. PRIORITY SEQUENCE CONTROLS: Arrow triggers handle index shifts instantly
                             if let index = viewModel.highlightRules.firstIndex(where: { $0.id == rule.id }) {
                                 HStack(spacing: 2) {
@@ -106,7 +106,7 @@ struct HighlightSettingsView: View {
                                     }
                                     .buttonStyle(.borderless)
                                     .disabled(index == 0) // Disabled if item is already at the top
-                                    
+
                                     // Move Down Option Button
                                     Button {
                                         withAnimation {
@@ -118,7 +118,7 @@ struct HighlightSettingsView: View {
                                     }
                                     .buttonStyle(.borderless)
                                     .disabled(index == viewModel.highlightRules.count - 1) // Disabled if item is already at the bottom
-                                    
+
                                     // Explicit Priority Badge Marker
                                     Text("\(index + 1)")
                                         .font(.system(.caption, design: .monospaced))
@@ -127,7 +127,7 @@ struct HighlightSettingsView: View {
                                         .padding(.leading, 4)
                                 }
                             }
-                            
+
                             // 2. EDIT TAP LAYOUT NODE: Updates variables on selection
                             HStack {
                                 Text(rule.pattern)
@@ -137,9 +137,9 @@ struct HighlightSettingsView: View {
                                     .background(rule.backgroundColor)
                                     .foregroundColor(rule.foregroundColor)
                                     .cornerRadius(4)
-                                
+
                                 Spacer()
-                                
+
                                 Image(systemName: "pencil")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
@@ -152,9 +152,9 @@ struct HighlightSettingsView: View {
                                 fgColor = rule.foregroundColor
                                 bgColor = rule.backgroundColor
                             }
-                            
+
                             Divider().frame(height: 16)
-                            
+
                             // 3. REMOVE FILTER TOOL
                             Button(role: .destructive) {
                                 if editingRuleID == rule.id { clearForm() }
@@ -171,7 +171,7 @@ struct HighlightSettingsView: View {
             .frame(minHeight: 200)
 
             Divider()
-            
+
             HStack {
                 Spacer()
                 Button("Done") {
@@ -184,7 +184,7 @@ struct HighlightSettingsView: View {
         }
         .frame(width: 520, height: 420)
     }
-    
+
     private func clearForm() {
         editingRuleID = nil
         patternInput = ""
