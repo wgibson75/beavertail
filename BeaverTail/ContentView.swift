@@ -22,6 +22,13 @@ struct ContentView: View {
                     .bold()
                 Spacer()
 
+                Toggle(isOn: $viewModel.showLineNumbers) {
+                    Text("Show Line Numbers")
+                        .font(.subheadline)
+                }
+                .toggleStyle(.checkbox)
+                .padding(.horizontal, 4)
+
                 Toggle(isOn: $viewModel.showMinimap) {
                     Text("Show Minimap")
                 }
@@ -130,11 +137,12 @@ struct ContentView: View {
                                     selectedFraction: viewModel.selectedFraction,
                                     directScrollNotificationName: topPaneDirectScrollNotification,
                                     tailScrollNotificationName: topPaneScrollToBottomNotification,
+                                    showLineNumbers: viewModel.showLineNumbers,
+                                    isMinimapActiveDrive: viewModel.isScrubbingMinimap,
                                     onLineIndexSelected: { index in
                                         viewModel.updateMinimapFromLineIndex(index)
                                     }
-                                )
-                                .id(viewModel.selectedTabID?.uuidString ?? "top")
+                                )                                .id(viewModel.selectedTabID?.uuidString ?? "top")
 
                                 // TAB STREAMING INTERFACE OVERLAY BLOCK
                                 // Adds a translucent overlay with a native loading spinner if the user switches to this tab while it is still streaming data
@@ -222,6 +230,7 @@ struct ContentView: View {
                                     rules: viewModel.highlightRules,
                                     selectedFraction: viewModel.selectedFraction,
                                     tailScrollNotificationName: bottomPaneScrollToBottomNotification,
+                                    showLineNumbers: viewModel.showLineNumbers,
                                     onLineIndexSelected: { originalIndex in
                                         viewModel.syncSelectionFromFilteredIndex(originalIndex)
                                     }

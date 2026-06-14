@@ -14,13 +14,15 @@ struct NativeLogViewer: NSViewRepresentable {
     let rules: [HighlightRule]
     let selectedFraction: CGFloat?
     let directScrollNotificationName: Notification.Name?
-
-    // NEW STREAM CHANNELS: Maps specific tailing scroll actions independently
     let tailScrollNotificationName: Notification.Name
-    var onLineIndexSelected: ((Int) -> Void)?
+    let showLineNumbers: Bool
+    
+    // THE CURE: Flag that ensures the minimap fraction ONLY overrides scroll positioning during active click-scrubbing
+    let isMinimapActiveDrive: Bool
+    var onLineIndexSelected: ((Int) -> Void)? = nil
 
     // Initializer for the Top Pane (Full Unfiltered Log View)
-    init(lines: [String], textColor: NSColor, rules: [HighlightRule], selectedFraction: CGFloat?, directScrollNotificationName: Notification.Name?, tailScrollNotificationName: Notification.Name, onLineIndexSelected: @escaping (Int) -> Void) {
+    init(lines: [String], textColor: NSColor, rules: [HighlightRule], selectedFraction: CGFloat?, directScrollNotificationName: Notification.Name?, tailScrollNotificationName: Notification.Name, showLineNumbers: Bool, isMinimapActiveDrive: Bool, onLineIndexSelected: @escaping (Int) -> Void) {
         self.lines = lines
         self.filteredLines = nil
         self.textColor = textColor
@@ -28,11 +30,13 @@ struct NativeLogViewer: NSViewRepresentable {
         self.selectedFraction = selectedFraction
         self.directScrollNotificationName = directScrollNotificationName
         self.tailScrollNotificationName = tailScrollNotificationName
+        self.showLineNumbers = showLineNumbers
+        self.isMinimapActiveDrive = isMinimapActiveDrive
         self.onLineIndexSelected = onLineIndexSelected
     }
 
     // Initializer for the Bottom Pane (Filtered Log View)
-    init(filteredLines: [LogLine], textColor: NSColor, rules: [HighlightRule], selectedFraction: CGFloat?, tailScrollNotificationName: Notification.Name, onLineIndexSelected: @escaping (Int) -> Void) {
+    init(filteredLines: [LogLine], textColor: NSColor, rules: [HighlightRule], selectedFraction: CGFloat?, tailScrollNotificationName: Notification.Name, showLineNumbers: Bool, onLineIndexSelected: @escaping (Int) -> Void) {
         self.lines = []
         self.filteredLines = filteredLines
         self.textColor = textColor
@@ -40,6 +44,8 @@ struct NativeLogViewer: NSViewRepresentable {
         self.selectedFraction = selectedFraction
         self.directScrollNotificationName = nil
         self.tailScrollNotificationName = tailScrollNotificationName
+        self.showLineNumbers = showLineNumbers
+        self.isMinimapActiveDrive = false // Bottom pane is never driven by minimap scrubbing
         self.onLineIndexSelected = onLineIndexSelected
     }
 
@@ -48,21 +54,20 @@ struct NativeLogViewer: NSViewRepresentable {
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
-
+        
         let tableView = NSTableView()
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("LogColumn"))
-        tableView.addTableColumn(column)
         tableView.headerView = nil
         tableView.intercellSpacing = NSSize(width: 0, height: 2)
         tableView.backgroundColor = .clear
         tableView.selectionHighlightStyle = .regular
+        
         tableView.delegate = context.coordinator
         tableView.dataSource = context.coordinator
-        column.title = ""
-        column.width = 10000
-        column.resizingMask = .userResizingMask
-
-        // LINK SELECTION SYNC JUMPS
+        
+        scrollView.documentView = tableView
+        context.coordinator.configureColumns(in: tableView, showLineNumbers: showLineNumbers)
+        
+        // SELECTIVE ROW JUMP OBSERVER (From clicking the bottom pane)
         if let notificationName = directScrollNotificationName {
             NotificationCenter.default.addObserver(
                 forName: notificationName,
@@ -72,13 +77,11 @@ struct NativeLogViewer: NSViewRepresentable {
                 if let row = notification.object as? Int, row >= 0 && row < tableView.numberOfRows {
                     DispatchQueue.main.async {
                         tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-
                         let rowRect = tableView.rect(ofRow: row)
                         if let clipView = tableView.superview as? NSClipView {
                             let clipHeight = clipView.bounds.height
                             let targetY = rowRect.origin.y - (clipHeight / 2) + (rowRect.height / 2)
                             let targetPoint = NSPoint(x: 0, y: max(0, min(targetY, tableView.frame.height - clipHeight)))
-
                             clipView.scroll(targetPoint)
                             scrollView.reflectScrolledClipView(clipView)
                         }
@@ -86,8 +89,8 @@ struct NativeLogViewer: NSViewRepresentable {
                 }
             }
         }
-
-        // UNIFIED ISOLATED LIVE TAIL OBSERVATION CHANNEL
+        
+        // LIVE TAIL AUTOMATIC SCROLL TO BOTTOM HOOK
         NotificationCenter.default.addObserver(
             forName: tailScrollNotificationName,
             object: nil,
@@ -100,24 +103,26 @@ struct NativeLogViewer: NSViewRepresentable {
                 }
             }
         }
-
-        scrollView.documentView = tableView
+        
         return scrollView
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let tableView = nsView.documentView as? NSTableView else { return }
-
+        
         context.coordinator.lines = lines
         context.coordinator.filteredLines = filteredLines
         context.coordinator.defaultTextColor = textColor
         context.coordinator.rules = rules
         context.coordinator.onLineIndexSelected = onLineIndexSelected
-
+        
+        context.coordinator.configureColumns(in: tableView, showLineNumbers: showLineNumbers)
+        
         tableView.reloadData()
-
-        // Proportional minimap scrubbing updates
-        if filteredLines == nil, let fraction = selectedFraction, !lines.isEmpty {
+        
+        // FIXED MINIMAP SCRUBBING JUMP CONDITIONS:
+        // Only auto-scroll the top pane if the user is actively dragging their cursor across the minimap bar!
+        if filteredLines == nil, isMinimapActiveDrive, let fraction = selectedFraction, !lines.isEmpty {
             let targetRow = Int(CGFloat(lines.count - 1) * fraction)
             if targetRow >= 0 && targetRow < tableView.numberOfRows {
                 DispatchQueue.main.async {
@@ -140,20 +145,75 @@ struct NativeLogViewer: NSViewRepresentable {
         var defaultTextColor: NSColor = .labelColor
         var rules: [HighlightRule] = []
         var onLineIndexSelected: ((Int) -> Void)?
-
+        
+        func configureColumns(in tableView: NSTableView, showLineNumbers: Bool) {
+            let lineColID = NSUserInterfaceItemIdentifier("GutterColumn")
+            let textColID = NSUserInterfaceItemIdentifier("LogColumn")
+            
+            let containsGutter = tableView.tableColumns.contains { $0.identifier == lineColID }
+            
+            if showLineNumbers && !containsGutter {
+                let lineColumn = NSTableColumn(identifier: lineColID)
+                lineColumn.title = ""
+                lineColumn.width = 55
+                lineColumn.resizingMask = []
+                
+                tableView.addTableColumn(lineColumn)
+                if let lineColumnIndex = tableView.tableColumns.firstIndex(of: lineColumn) {
+                    tableView.moveColumn(lineColumnIndex, toColumn: 0)
+                }
+            } else if !showLineNumbers && containsGutter {
+                if let gutterColumn = tableView.tableColumns.first(where: { $0.identifier == lineColID }) {
+                    tableView.removeTableColumn(gutterColumn)
+                }
+            }
+            
+            if !tableView.tableColumns.contains(where: { $0.identifier == textColID }) {
+                let textColumn = NSTableColumn(identifier: textColID)
+                textColumn.title = ""
+                textColumn.width = 10000
+                textColumn.resizingMask = .userResizingMask
+                tableView.addTableColumn(textColumn)
+            }
+        }
+        
         func numberOfRows(in tableView: NSTableView) -> Int {
             return filteredLines?.count ?? lines.count
         }
-
+        
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+            guard let column = tableColumn else { return nil }
+            
+            if column.identifier == NSUserInterfaceItemIdentifier("GutterColumn") {
+                let identifier = NSUserInterfaceItemIdentifier("GutterCell")
+                var cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTextField
+                
+                if cell == nil {
+                    cell = NSTextField()
+                    cell?.identifier = identifier
+                    cell?.isEditable = false
+                    cell?.isSelectable = false
+                    cell?.isBordered = false
+                    cell?.backgroundColor = .clear
+                    cell?.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .light)
+                    cell?.alignment = .right
+                }
+                
+                let actualIndex = filteredLines?[row].originalIndex ?? row
+                cell?.stringValue = "\(actualIndex + 1) "
+                cell?.textColor = .secondaryLabelColor
+                
+                return cell
+            }
+            
             let identifier = NSUserInterfaceItemIdentifier("LogCell")
             var containerCell = tableView.makeView(withIdentifier: identifier, owner: self)
             var textField: NSTextField?
-
+            
             if containerCell == nil {
                 containerCell = NSView()
                 containerCell?.identifier = identifier
-
+                
                 let text = NSTextField()
                 text.isEditable = false
                 text.isSelectable = true
@@ -162,7 +222,6 @@ struct NativeLogViewer: NSViewRepresentable {
                 text.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
                 text.cell?.wraps = false
                 text.cell?.isScrollable = true
-
                 text.frame = NSRect(x: 8, y: 0, width: 9980, height: 18)
                 containerCell?.addSubview(text)
                 textField = text
@@ -216,3 +275,4 @@ struct NativeLogViewer: NSViewRepresentable {
         }
     }
 }
+
