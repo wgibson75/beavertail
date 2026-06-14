@@ -58,7 +58,9 @@ struct HighlightSettingsView: View {
                         guard !patternInput.isEmpty else { return }
 
                         if let editingID = editingRuleID {
-                            if let index = viewModel.highlightRules.firstIndex(where: { $0.id == editingID }) {
+                            if let index = viewModel.highlightRules.firstIndex(where: {
+                                $0.id == editingID
+                            }) {
                                 var updatedRule = viewModel.highlightRules[index]
                                 updatedRule.pattern = patternInput
                                 updatedRule.foregroundColorHex = fgColor.toHex()
@@ -67,9 +69,11 @@ struct HighlightSettingsView: View {
                                 viewModel.highlightRules[index] = updatedRule
                             }
                         } else {
-                            var newRule = HighlightRule(pattern: patternInput,
-                                                        foregroundColorHex: fgColor.toHex(),
-                                                        backgroundColorHex: bgColor.toHex())
+                            var newRule = HighlightRule(
+                                pattern: patternInput,
+                                foregroundColorHex: fgColor.toHex(),
+                                backgroundColorHex: bgColor.toHex()
+                            )
                             newRule.updateCachedObjects() // Compiles regex once on save
                             viewModel.highlightRules.append(newRule)
                         }
@@ -91,14 +95,18 @@ struct HighlightSettingsView: View {
                 } else {
                     ForEach(viewModel.highlightRules) { rule in
                         HStack(spacing: 12) {
-
                             // 1. PRIORITY SEQUENCE CONTROLS: Arrow triggers handle index shifts instantly
-                            if let index = viewModel.highlightRules.firstIndex(where: { $0.id == rule.id }) {
+                            if let index = viewModel.highlightRules.firstIndex(where: {
+                                $0.id == rule.id
+                            }) {
                                 HStack(spacing: 2) {
                                     // Move Up Option Button
                                     Button {
                                         withAnimation {
-                                            viewModel.highlightRules.move(fromOffsets: IndexSet(integer: index), toOffset: index - 1)
+                                            viewModel.highlightRules.move(
+                                                fromOffsets: IndexSet(integer: index),
+                                                toOffset: index - 1
+                                            )
                                         }
                                     } label: {
                                         Image(systemName: "chevron.up")
@@ -110,14 +118,18 @@ struct HighlightSettingsView: View {
                                     // Move Down Option Button
                                     Button {
                                         withAnimation {
-                                            viewModel.highlightRules.move(fromOffsets: IndexSet(integer: index), toOffset: index + 2)
+                                            viewModel.highlightRules.move(
+                                                fromOffsets: IndexSet(integer: index),
+                                                toOffset: index + 2
+                                            )
                                         }
                                     } label: {
                                         Image(systemName: "chevron.down")
                                             .font(.system(size: 10, weight: .bold))
                                     }
                                     .buttonStyle(.borderless)
-                                    .disabled(index == viewModel.highlightRules.count - 1) // Disabled if item is already at the bottom
+                                    // Disabled if item is already at the bottom
+                                    .disabled(index == viewModel.highlightRules.count - 1)
 
                                     // Explicit Priority Badge Marker
                                     Text("\(index + 1)")

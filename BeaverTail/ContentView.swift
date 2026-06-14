@@ -14,7 +14,6 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-
             // TOP GLOBAL CONTROLS BAR
             HStack {
                 Text("BeaverTail Log Analyzer")
@@ -55,9 +54,11 @@ struct ContentView: View {
                         .tint(.blue) // Visual Anchor: High visibility accent coloring
                         .controlSize(.small) // Keeps the progress bar thin and elegant
 
-                    Text("Streaming file content... \(String(format: "%.0f%%", viewModel.fileLoadProgress * 100))")
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundColor(.secondary)
+                    Text(
+                        "Streaming file content... \(String(format: "%.0f%%", viewModel.fileLoadProgress * 100))"
+                    )
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundColor(.secondary)
                 }
                 .padding(.horizontal)
                 .padding(.vertical, 4)
@@ -75,7 +76,9 @@ struct ContentView: View {
                                 let isSelected = viewModel.selectedTabID == tab.id
                                 HStack(spacing: 6) {
                                     Text(tab.name)
-                                        .font(.system(size: 11, weight: isSelected ? .bold : .regular))
+                                        .font(
+                                            .system(size: 11, weight: isSelected ? .bold : .regular)
+                                        )
                                         .foregroundColor(isSelected ? .primary : .secondary)
 
                                     Button {
@@ -89,12 +92,13 @@ struct ContentView: View {
                                 }
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 6)
-                                .background(isSelected ? Color(NSColor.controlBackgroundColor) : Color.clear)
+                                .background(
+                                    isSelected ? Color(NSColor.controlBackgroundColor) : Color.clear
+                                )
                                 .contentShape(Rectangle())
                                 .onTapGesture {
                                     viewModel.selectedTabID = tab.id
                                     localRegexInput = tab.filterPattern
-                                    viewModel.applyFilter(with: tab.filterPattern) // Triggers processing automatically
                                     viewModel.triggerLazyLoadForTab(id: tab.id)
                                 }
 
@@ -114,7 +118,6 @@ struct ContentView: View {
             if viewModel.currentTab != nil {
                 HStack(spacing: 0) {
                     VSplitView {
-
                         // Top Pane: Full Unfiltered Text Area
                         VStack(alignment: .leading, spacing: 0) {
                             HStack {
@@ -142,7 +145,7 @@ struct ContentView: View {
                                     onLineIndexSelected: { index in
                                         viewModel.updateMinimapFromLineIndex(index)
                                     }
-                                )                                .id(viewModel.selectedTabID?.uuidString ?? "top")
+                                ).id(viewModel.selectedTabID?.uuidString ?? "top")
 
                                 // TAB STREAMING INTERFACE OVERLAY BLOCK
                                 // Adds a translucent overlay with a native loading spinner if the user switches to this tab while it is still streaming data
@@ -150,7 +153,7 @@ struct ContentView: View {
                                     VStack(spacing: 12) {
                                         ProgressView() // Standard system circular loading indicator ring
                                             .controlSize(.large)
-                                        Text("Streaming log lines safely into memory...")
+                                        Text("Loading log lines into memory...")
                                             .font(.headline)
                                             .foregroundColor(.secondary)
                                     }
@@ -165,28 +168,31 @@ struct ContentView: View {
                         // Bottom Pane: Regex Filter Node Layout Container
                         VStack(alignment: .leading, spacing: 0) {
                             Divider()
-                            
+
                             VStack(spacing: 0) {
                                 HStack(spacing: 12) {
                                     Text("Regex Filter:")
                                         .font(.headline)
-                                    
-                                    TextField("Enter regex criteria and press Enter", text: $localRegexInput)
-                                        .textFieldStyle(.roundedBorder)
-                                        .onSubmit {
-                                            viewModel.applyFilter(with: localRegexInput)
-                                        }
-                                    
+
+                                    TextField(
+                                        "Enter regex criteria and press Enter",
+                                        text: $localRegexInput
+                                    )
+                                    .textFieldStyle(.roundedBorder)
+                                    .onSubmit {
+                                        viewModel.applyFilter(with: localRegexInput)
+                                    }
+
                                     Toggle(isOn: $viewModel.isCaseInsensitive) {
                                         Text("Ignore Case")
                                     }
                                     .toggleStyle(.checkbox)
-                                    .onChange(of: viewModel.isCaseInsensitive) { oldValue, newValue in
+                                    .onChange(of: viewModel.isCaseInsensitive) { _, _ in
                                         viewModel.applyFilter(with: localRegexInput)
                                     }
                                 }
                                 .padding()
-                                
+
                                 // REGEX SEARCH PROGRESS INDICATOR OVERLAY NODE
                                 // Renders a thin, high-utility progress tracker strip right below the entry box
                                 // the exact millisecond the background utility thread kicks off a new regex query scan
@@ -196,12 +202,18 @@ struct ContentView: View {
                                             .progressViewStyle(.linear)
                                             .tint(.blue) // Visual Anchor matching file streaming accents
                                             .controlSize(.small) // Keeps the progress bar thin and elegant
-                                        
+
                                         HStack {
                                             Spacer()
-                                            Text("Applying regular expression... \(String(format: "%.0f%%", viewModel.filterProgress * 100))")
-                                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                                                .foregroundColor(.secondary)
+                                            Text(
+                                                "Applying regular expression... \(String(format: "%.0f%%", viewModel.filterProgress * 100))"
+                                            )
+                                            .font(
+                                                .system(
+                                                    size: 9, weight: .semibold, design: .monospaced
+                                                )
+                                            )
+                                            .foregroundColor(.secondary)
                                         }
                                         .padding(.horizontal, 4)
                                     }
@@ -211,10 +223,12 @@ struct ContentView: View {
                                 }
                             }
                             .background(Color(NSColor.windowBackgroundColor))
-                            
+
                             Divider()
-                            
-                            if viewModel.filteredLines.isEmpty && !viewModel.isFiltering {
+
+                            if viewModel.filteredLines.isEmpty
+                                && !viewModel.isFiltering
+                                && localRegexInput.isEmpty {
                                 VStack {
                                     Spacer()
                                     Text("Enter a criteria pattern string above to separate rows.")
@@ -229,16 +243,20 @@ struct ContentView: View {
                                     textColor: .secondaryLabelColor,
                                     rules: viewModel.highlightRules,
                                     selectedFraction: viewModel.selectedFraction,
-                                    tailScrollNotificationName: bottomPaneScrollToBottomNotification,
+                                    tailScrollNotificationName:
+                                    bottomPaneScrollToBottomNotification,
                                     showLineNumbers: viewModel.showLineNumbers,
                                     onLineIndexSelected: { originalIndex in
                                         viewModel.syncSelectionFromFilteredIndex(originalIndex)
                                     }
                                 )
-                                .id(viewModel.selectedTabID?.uuidString ?? "bot")
+                                .id(
+                                    (viewModel.selectedTabID?.uuidString ?? "bot")
+                                        + (viewModel.isFiltering ? "-loading" : "-ready")
+                                )
                             }
                         }
-                       .frame(minHeight: 120)
+                        .frame(minHeight: 120)
                     }
 
                     if viewModel.showMinimap {
@@ -273,9 +291,12 @@ struct ContentView: View {
             HighlightSettingsView(viewModel: viewModel)
         }
         .onChange(of: viewModel.selectedTabID) { _, newTabID in
-            // This resolves the deprecation warning perfectly by passing old and new parameters
             if let targetID = newTabID {
                 viewModel.triggerLazyLoadForTab(id: targetID)
+
+                if let matchingTab = viewModel.openTabs.first(where: { $0.id == targetID }) {
+                    localRegexInput = matchingTab.filterPattern
+                }
             }
         }
         // CLEANUP INTERFACE: Avoid kernel resource file locks when the application shuts down

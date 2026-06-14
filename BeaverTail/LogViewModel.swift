@@ -9,123 +9,12 @@ import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
-// Direct notification channel descriptor driving top table viewport adjustments
+/// Direct notification channel descriptor driving top table viewport adjustments
 let topPaneDirectScrollNotification = Notification.Name("BeaverTailTopPaneDirectScroll")
 
 // Distinct notification streams for targeting view scroll adjustments independently
 let topPaneScrollToBottomNotification = Notification.Name("BeaverTailTopPaneScrollToBottom")
 let bottomPaneScrollToBottomNotification = Notification.Name("BeaverTailBottomPaneScrollToBottom")
-
-struct LogLine: Identifiable, Equatable {
-    let id = UUID()
-    let originalIndex: Int
-    let text: String
-}
-
-// Struct tracking individual workspace parameters per loaded file tab node
-struct LogTab: Identifiable, Equatable, Codable {  // Added Codable conformance to easily serialize metadata
-    let id: UUID
-    let name: String
-    let fileURL: URL
-    var allLines: [String] = []
-    var filteredLines: [LogLine] = []
-    var selectedFraction: CGFloat? = nil
-    var minimapImage: NSImage? = nil
-    var isCurrentlyStreaming: Bool = false
-
-    // NEW SESSION PROPERTY: Stores the specific regex filter pattern for this tab
-    var filterPattern: String = ""
-
-    // Custom initializer mapping properties directly
-    init(
-        id: UUID = UUID(), name: String, fileURL: URL, allLines: [String] = [],
-        filteredLines: [LogLine] = [], selectedFraction: CGFloat? = nil,
-        minimapImage: NSImage? = nil, isCurrentlyStreaming: Bool = false, filterPattern: String = ""
-    ) {
-        self.id = id
-        self.name = name
-        self.fileURL = fileURL
-        self.allLines = allLines
-        self.filteredLines = filteredLines
-        self.selectedFraction = selectedFraction
-        self.minimapImage = minimapImage
-        self.isCurrentlyStreaming = isCurrentlyStreaming
-        self.filterPattern = filterPattern
-    }
-
-    // Manual Codable compliance wrappers to avoid serializing heavy runtime NSImage or String arrays
-    enum CodingKeys: String, CodingKey {
-        case id, name, fileURL, filterPattern
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try container.decode(UUID.self, forKey: .id)
-        self.name = try container.decode(String.self, forKey: .name)
-        self.fileURL = try container.decode(URL.self, forKey: .fileURL)
-        self.filterPattern = try container.decode(String.self, forKey: .filterPattern)
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(id, forKey: .id)
-        try container.encode(name, forKey: .name)
-        try container.encode(fileURL, forKey: .fileURL)
-        try container.encode(filterPattern, forKey: .filterPattern)
-    }
-
-    static func == (lhs: LogTab, rhs: LogTab) -> Bool {
-        return lhs.id == rhs.id && lhs.filterPattern == rhs.filterPattern
-    }
-}
-
-struct HighlightRule: Identifiable, Codable, Equatable {
-    var id = UUID()
-    var pattern: String
-    var foregroundColorHex: String
-    var backgroundColorHex: String
-
-    var nsForegroundColor: NSColor = .labelColor
-    var nsBackgroundColor: NSColor = .clear
-    var compiledRegex: NSRegularExpression?
-
-    var foregroundColor: Color { Color(hex: foregroundColorHex) ?? .black }
-    var backgroundColor: Color { Color(hex: backgroundColorHex) ?? .yellow }
-
-    enum CodingKeys: String, CodingKey {
-        case id, pattern, foregroundColorHex, backgroundColorHex
-    }
-
-    init(id: UUID = UUID(), pattern: String, foregroundColorHex: String, backgroundColorHex: String)
-    {
-        self.id = id
-        self.pattern = pattern
-        self.foregroundColorHex = foregroundColorHex
-        self.backgroundColorHex = backgroundColorHex
-        self.updateCachedObjects()
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try container.decode(UUID.self, forKey: .id)
-        self.pattern = try container.decode(String.self, forKey: .pattern)
-        self.foregroundColorHex = try container.decode(String.self, forKey: .foregroundColorHex)
-        self.backgroundColorHex = try container.decode(String.self, forKey: .backgroundColorHex)
-        self.updateCachedObjects()
-    }
-
-    mutating func updateCachedObjects() {
-        self.nsForegroundColor = NSColor(self.foregroundColor)
-        self.nsBackgroundColor = NSColor(self.backgroundColor)
-        self.compiledRegex = try? NSRegularExpression(pattern: self.pattern, options: [])
-    }
-
-    static func == (lhs: HighlightRule, rhs: HighlightRule) -> Bool {
-        return lhs.id == rhs.id && lhs.pattern == rhs.pattern
-            && lhs.foregroundColorHex == rhs.foregroundColorHex
-            && lhs.backgroundColorHex == rhs.backgroundColorHex
-    }
-}
 
 class LogViewModel: ObservableObject {
     @Published var openTabs: [LogTab] = [] {
@@ -134,6 +23,7 @@ class LogViewModel: ObservableObject {
             saveLoadedTabsSession()
         }
     }
+
     @Published var selectedTabID: UUID? {
         didSet {
             // Automatically pivot file system trackers to match window focus switches
@@ -142,10 +32,21 @@ class LogViewModel: ObservableObject {
         }
     }
 
-    var allLines: [String] { currentTab?.allLines ?? [] }
-    var filteredLines: [LogLine] { currentTab?.filteredLines ?? [] }
-    var selectedFraction: CGFloat? { currentTab?.selectedFraction ?? nil }
-    var minimapImage: NSImage? { currentTab?.minimapImage ?? nil }
+    var allLines: [String] {
+        currentTab?.allLines ?? []
+    }
+
+    var filteredLines: [LogLine] {
+        currentTab?.filteredLines ?? []
+    }
+
+    var selectedFraction: CGFloat? {
+        currentTab?.selectedFraction ?? nil
+    }
+
+    var minimapImage: NSImage? {
+        currentTab?.minimapImage ?? nil
+    }
 
     @Published var isFiltering: Bool = false
     @Published var filterProgress: Double = 0.0
@@ -158,7 +59,7 @@ class LogViewModel: ObservableObject {
     @AppStorage("saved_show_minimap") var showMinimap: Bool = true
     @AppStorage("saved_show_line_numbers") var showLineNumbers: Bool = true
 
-    // PERSISTENCE ENGINE: Stores secure raw data blobs rather than simple text string paths
+    /// PERSISTENCE ENGINE: Stores secure raw data blobs rather than simple text string paths
     @AppStorage("saved_session_bookmarks_v2") private var sessionBookmarksData: String = ""
 
     @Published var highlightRules: [HighlightRule] = [] {
@@ -203,7 +104,7 @@ class LogViewModel: ObservableObject {
     func loadNewTab(from url: URL) {
         // 1. Prevent loading the exact same file url twice into separate tabs
         if let existingTab = openTabs.first(where: { $0.fileURL == url }) {
-            self.selectedTabID = existingTab.id
+            selectedTabID = existingTab.id
             return
         }
 
@@ -218,12 +119,12 @@ class LogViewModel: ObservableObject {
             filteredLines: [],
             selectedFraction: nil,
             minimapImage: nil,
-            isCurrentlyStreaming: true  // Flags that data is actively compiling
+            isCurrentlyStreaming: true // Flags that data is actively compiling
         )
 
-        self.openTabs.append(placeholderTab)
-        if self.selectedTabID == nil {
-            self.selectedTabID = targetTabID
+        openTabs.append(placeholderTab)
+        if selectedTabID == nil {
+            selectedTabID = targetTabID
         }
 
         let accessed = url.startAccessingSecurityScopedResource()
@@ -273,7 +174,7 @@ class LogViewModel: ObservableObject {
                 await MainActor.run {
                     if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
                         self.openTabs[index].allLines = [
-                            "Error streaming file contents: \(error.localizedDescription)"
+                            "Error streaming file contents: \(error.localizedDescription)",
                         ]
                         self.openTabs[index].isCurrentlyStreaming = false
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
@@ -303,43 +204,37 @@ class LogViewModel: ObservableObject {
     }
 
     func applyFilter(with pattern: String) {
-        self.currentActiveFilterPattern = pattern
-
+        currentActiveFilterPattern = pattern
         filterTask?.cancel()
 
         guard let tabID = selectedTabID,
-            let tabIndex = openTabs.firstIndex(where: { $0.id == tabID })
+              let tabIndex = openTabs.firstIndex(where: { $0.id == tabID })
         else { return }
-
-        self.openTabs[tabIndex].filterPattern = pattern
+        openTabs[tabIndex].filterPattern = pattern
 
         guard !pattern.isEmpty else {
-            self.openTabs[tabIndex].filteredLines = []
-            self.isFiltering = false
+            openTabs[tabIndex].filteredLines = []
+            isFiltering = false
             return
         }
 
         let regexOptions: NSRegularExpression.Options = isCaseInsensitive ? [.caseInsensitive] : []
         guard let regex = try? NSRegularExpression(pattern: pattern, options: regexOptions) else {
-            self.openTabs[tabIndex].filteredLines = [
-                LogLine(originalIndex: 0, text: "Invalid Regular Expression")
+            openTabs[tabIndex].filteredLines = [
+                LogLine(originalIndex: 0, text: "Invalid Regular Expression"),
             ]
             return
         }
 
         isFiltering = true
         filterProgress = 0.0
-
-        // Clear the previous results immediately so the fresh streaming pass starts from a clean slate
-        self.openTabs[tabIndex].filteredLines = []
+        openTabs[tabIndex].filteredLines = [] // Clear old rows to start fresh
 
         let localLinesSnapshot = openTabs[tabIndex].allLines
 
         filterTask = Task(priority: .userInitiated) {
             var localBatch: [LogLine] = []
             let totalLines = localLinesSnapshot.count
-
-            // PERFORMANCE TUNE: Flush batches every 5,000 matches or 1% of progress to balance UI responsiveness
             let progressInterval = max(1, totalLines / 100)
             let matchBatchSize = 5000
 
@@ -351,7 +246,7 @@ class LogViewModel: ObservableObject {
                     localBatch.append(LogLine(originalIndex: index, text: line))
                 }
 
-                // PERIODIC STREAMING TRIGGER: Flush data blocks immediately if thresholds are met
+                // PERIODIC STREAMING UPDATES
                 if localBatch.count >= matchBatchSize || index % progressInterval == 0
                     || index == totalLines - 1
                 {
@@ -361,37 +256,38 @@ class LogViewModel: ObservableObject {
 
                     await MainActor.run {
                         if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                            // Append the newly gathered lines slice directly to the published state array
+                            // CHANGED: Appends the chunked batch to memory progressively
                             self.openTabs[freshIndex].filteredLines.append(
-                                contentsOf: batchToAppend)
+                                contentsOf: batchToAppend
+                            )
                             self.filterProgress = currentProgress
 
-                            // Command the bottom table view layout to scroll to its new bottom
-                            // row right after this fresh batch of regex matches updates the UI!
                             DispatchQueue.main.async {
                                 NotificationCenter.default.post(
-                                    name: bottomPaneScrollToBottomNotification, object: nil)
+                                    name: bottomPaneScrollToBottomNotification, object: nil
+                                )
                             }
                         }
                     }
                 }
             }
 
-            // FINALIZATION PASS: Cleans up any remaining rows and handles final tail anchor alignment
+            // FINAL PASS: Flush any remaining items left in the buffer array
             if !Task.isCancelled {
                 await MainActor.run {
                     if !localBatch.isEmpty,
-                        let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID })
+                       let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID })
                     {
+                        // FIXED: Replaced your old line 385 assignment with an append call matching the local batch variable
                         self.openTabs[freshIndex].filteredLines.append(contentsOf: localBatch)
                     }
                     self.filterProgress = 1.0
                     self.isFiltering = false
 
-                    // Direct the bottom pane tracking notification call to pin current items safely
                     DispatchQueue.main.async {
                         NotificationCenter.default.post(
-                            name: bottomPaneScrollToBottomNotification, object: nil)
+                            name: bottomPaneScrollToBottomNotification, object: nil
+                        )
                     }
                 }
             }
@@ -403,10 +299,10 @@ class LogViewModel: ObservableObject {
 
         guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
         let localLines = openTabs[index].allLines
-        let activeRules = self.highlightRules.filter { $0.compiledRegex != nil }
+        let activeRules = highlightRules.filter { $0.compiledRegex != nil }
 
-        guard !localLines.isEmpty && !activeRules.isEmpty else {
-            self.openTabs[index].minimapImage = nil
+        guard !localLines.isEmpty, !activeRules.isEmpty else {
+            openTabs[index].minimapImage = nil
             return
         }
 
@@ -433,7 +329,8 @@ class LogViewModel: ObservableObject {
                                 paintedBuckets.insert(bucket)
                                 context.setFillColor(rule.nsBackgroundColor.cgColor)
                                 context.fill(
-                                    CGRect(x: 0, y: CGFloat(bucket), width: 30, height: 1.5))
+                                    CGRect(x: 0, y: CGFloat(bucket), width: 30, height: 1.5)
+                                )
                                 break
                             }
                         }
@@ -467,18 +364,19 @@ class LogViewModel: ObservableObject {
         guard totalCount > 0 else { return }
 
         let fraction = CGFloat(originalIndex) / CGFloat(totalCount - 1)
-        self.openTabs[index].selectedFraction = max(0, min(1, fraction))
+        openTabs[index].selectedFraction = max(0, min(1, fraction))
 
         NotificationCenter.default.post(
-            name: topPaneDirectScrollNotification, object: originalIndex)
+            name: topPaneDirectScrollNotification, object: originalIndex
+        )
     }
 
     func jumpToFraction(_ fraction: CGFloat) {
         guard let tabID = selectedTabID, let index = openTabs.firstIndex(where: { $0.id == tabID })
         else { return }
 
-        self.isScrubbingMinimap = true
-        self.openTabs[index].selectedFraction = max(0, min(1, fraction))
+        isScrubbingMinimap = true
+        openTabs[index].selectedFraction = max(0, min(1, fraction))
     }
 
     func updateMinimapFromLineIndex(_ index: Int) {
@@ -489,10 +387,10 @@ class LogViewModel: ObservableObject {
         guard totalCount > 0 else { return }
 
         let fraction = CGFloat(index) / CGFloat(totalCount - 1)
-        self.openTabs[tabIdx].selectedFraction = max(0, min(1, fraction))
+        openTabs[tabIdx].selectedFraction = max(0, min(1, fraction))
     }
 
-    // PERSISTENCE ENGINE: SECURE LAZY SANDBOX SESSION MANAGEMENT
+    /// PERSISTENCE ENGINE: SECURE LAZY SANDBOX SESSION MANAGEMENT
     private func saveLoadedTabsSession() {
         // Struct to model our serialized payload
         struct SavedTabMetadata: Codable {
@@ -511,7 +409,7 @@ class LogViewModel: ObservableObject {
                 )
                 let metadata = SavedTabMetadata(
                     bookmarkBase64: bookmarkData.base64EncodedString(),
-                    filterPattern: tab.filterPattern  // Retain regex string criteria state
+                    filterPattern: tab.filterPattern // Retain regex string criteria state
                 )
                 serializedMetadata.append(metadata)
             } catch {
@@ -520,7 +418,7 @@ class LogViewModel: ObservableObject {
         }
 
         if let data = try? JSONEncoder().encode(serializedMetadata),
-            let string = String(data: data, encoding: .utf8)
+           let string = String(data: data, encoding: .utf8)
         {
             if sessionBookmarksData != string {
                 sessionBookmarksData = string
@@ -535,8 +433,8 @@ class LogViewModel: ObservableObject {
         }
 
         guard !sessionBookmarksData.isEmpty,
-            let data = sessionBookmarksData.data(using: .utf8),
-            let metadataArray = try? JSONDecoder().decode([SavedTabMetadata].self, from: data)
+              let data = sessionBookmarksData.data(using: .utf8),
+              let metadataArray = try? JSONDecoder().decode([SavedTabMetadata].self, from: data)
         else { return }
 
         for metadata in metadataArray {
@@ -560,9 +458,9 @@ class LogViewModel: ObservableObject {
                         selectedFraction: nil,
                         minimapImage: nil,
                         isCurrentlyStreaming: false,
-                        filterPattern: metadata.filterPattern  // Restore filter pattern back to the instance skeleton
+                        filterPattern: metadata.filterPattern // Restore filter pattern back to the instance skeleton
                     )
-                    self.openTabs.append(lazyTab)
+                    openTabs.append(lazyTab)
                 }
             } catch {
                 print("Secure session authorization check rejected: \(error.localizedDescription)")
@@ -575,18 +473,18 @@ class LogViewModel: ObservableObject {
         }
     }
 
-    // PUBLIC LAZY TRIGGER HOOK: Invoked exclusively when a tab header receives user mouse focus clicks
+    /// PUBLIC LAZY TRIGGER HOOK: Invoked exclusively when a tab header receives user mouse focus clicks
     func triggerLazyLoadForTab(id: UUID) {
         guard let index = openTabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = openTabs[index]
 
         // Only start streaming if the file text data array is completely empty and isn't already loading
-        guard tab.allLines.isEmpty && !tab.isCurrentlyStreaming else { return }
+        guard tab.allLines.isEmpty, !tab.isCurrentlyStreaming else { return }
 
         // Flag this targeted container as actively streaming inside our state tracker
-        self.openTabs[index].isCurrentlyStreaming = true
-        self.isLoadingFile = true
-        self.fileLoadProgress = 0.0
+        openTabs[index].isCurrentlyStreaming = true
+        isLoadingFile = true
+        fileLoadProgress = 0.0
 
         let url = tab.fileURL
         let accessed = url.startAccessingSecurityScopedResource()
@@ -639,7 +537,7 @@ class LogViewModel: ObservableObject {
                 await MainActor.run {
                     if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
                         self.openTabs[freshIndex].allLines = [
-                            "Error loading file contents: \(error.localizedDescription)"
+                            "Error loading file contents: \(error.localizedDescription)",
                         ]
                         self.openTabs[freshIndex].isCurrentlyStreaming = false
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
@@ -655,7 +553,7 @@ class LogViewModel: ObservableObject {
 
     private func saveRules() {
         if let encoded = try? JSONEncoder().encode(highlightRules),
-            let string = String(data: encoded, encoding: .utf8)
+           let string = String(data: encoded, encoding: .utf8)
         {
             if rulesData != string { rulesData = string }
         }
@@ -663,19 +561,19 @@ class LogViewModel: ObservableObject {
 
     private func loadRules() {
         guard !rulesData.isEmpty,
-            let data = rulesData.data(using: .utf8),
-            var decoded = try? JSONDecoder().decode([HighlightRule].self, from: data)
+              let data = rulesData.data(using: .utf8),
+              var decoded = try? JSONDecoder().decode([HighlightRule].self, from: data)
         else { return }
 
-        for i in 0..<decoded.count {
+        for i in 0 ..< decoded.count {
             decoded[i].updateCachedObjects()
         }
-        self.highlightRules = decoded
+        highlightRules = decoded
     }
 
-    // LIVE TAILING: Monitored file handle watcher system
+    /// LIVE TAILING: Monitored file handle watcher system
     func startLiveTailingForActiveTab() {
-        stopLiveTailing()  // Safely tear down any previous file handles
+        stopLiveTailing() // Safely tear down any previous file handles
 
         guard let tab = currentTab, tab.allLines.count > 0 else { return }
         let fileURL = tab.fileURL
@@ -684,7 +582,7 @@ class LogViewModel: ObservableObject {
         let fd = open(fileURL.path, O_RDONLY)
         guard fd >= 0 else { return }
 
-        self.activeTailFileDescriptor = fd
+        activeTailFileDescriptor = fd
 
         // Create a kernel event source watching for file write size modifications
         let source = DispatchSource.makeFileSystemObjectSource(
@@ -703,17 +601,16 @@ class LogViewModel: ObservableObject {
             guard let self = self else { return }
 
             guard let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
-                let currentSize = attributes[.size] as? UInt64,
-                currentSize > lastKnownSize
+                  let currentSize = attributes[.size] as? UInt64,
+                  currentSize > lastKnownSize
             else { return }
 
             let fileHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
             do {
                 try fileHandle.seek(toOffset: lastKnownSize)
                 if let newData = try fileHandle.read(upToCount: Int(currentSize - lastKnownSize)),
-                    let appendedText = String(data: newData, encoding: .utf8)
+                   let appendedText = String(data: newData, encoding: .utf8)
                 {
-
                     lastKnownSize = currentSize
 
                     // THE REAL ACCURATE SPLITTER:
@@ -733,9 +630,8 @@ class LogViewModel: ObservableObject {
 
                     Task { @MainActor in
                         if let tabID = self.selectedTabID,
-                            let index = self.openTabs.firstIndex(where: { $0.id == tabID })
+                           let index = self.openTabs.firstIndex(where: { $0.id == tabID })
                         {
-
                             // 1. Capture the exact length profile of the file BEFORE adding new text
                             // This gives us the exact starting file index for our incremental tracker calculations!
                             let baseFileIndexOffset = self.openTabs[index].allLines.count
@@ -750,14 +646,16 @@ class LogViewModel: ObservableObject {
                             // Instead of running applyFilter() and scanning millions of lines from scratch,
                             // pass ONLY the new lines cluster into the high-performance incremental scanner!
                             self.appendFilterForLiveTail(
-                                with: linesArray, startingAt: baseFileIndexOffset)
+                                with: linesArray, startingAt: baseFileIndexOffset
+                            )
 
                             self.objectWillChange.send()
 
                             // Instant top viewport scrolling tracking execution pass
                             DispatchQueue.main.async {
                                 NotificationCenter.default.post(
-                                    name: topPaneScrollToBottomNotification, object: nil)
+                                    name: topPaneScrollToBottomNotification, object: nil
+                                )
                             }
                         }
                     }
@@ -771,8 +669,8 @@ class LogViewModel: ObservableObject {
             close(fd)
         }
 
-        self.activeTailSource = source
-        source.resume()  // Fire up the kernel event loop listener
+        activeTailSource = source
+        source.resume() // Fire up the kernel event loop listener
     }
 
     func stopLiveTailing() {
@@ -781,24 +679,23 @@ class LogViewModel: ObservableObject {
         activeTailFileDescriptor = -1
     }
 
-    // HIGH-PERFORMANCE INCREMENTAL FILTERING ENGINE
-    // Runs exclusively during live tail updates to scan ONLY appended lines
+    /// HIGH-PERFORMANCE INCREMENTAL FILTERING ENGINE
+    /// Runs exclusively during live tail updates to scan ONLY appended lines
     func appendFilterForLiveTail(with newLines: [String], startingAt originalStartIndex: Int) {
-        // If there's no active regex pattern string specified, there's nothing to filter
         guard !currentActiveFilterPattern.isEmpty,
-            let tabID = selectedTabID,
-            let tabIndex = openTabs.firstIndex(where: { $0.id == tabID })
+              let tabID = selectedTabID,
+              let tabIndex = openTabs.firstIndex(where: { $0.id == tabID })
         else { return }
 
         let regexOptions: NSRegularExpression.Options = isCaseInsensitive ? [.caseInsensitive] : []
         guard
             let regex = try? NSRegularExpression(
-                pattern: currentActiveFilterPattern, options: regexOptions)
+                pattern: currentActiveFilterPattern, options: regexOptions
+            )
         else { return }
 
-        var incrementalMatches: [LogLine] = []
+        var incrementalMatches: [LogLine] = [] // This is where the incremental results live
 
-        // Scan only the localized window array slice package
         for (offset, line) in newLines.enumerated() {
             let actualFileIndex = originalStartIndex + offset
             let range = NSRange(location: 0, length: line.utf16.count)
@@ -808,14 +705,14 @@ class LogViewModel: ObservableObject {
             }
         }
 
-        // If any new lines passed the regex validation parameters, push them to the UI instantly
+        // Push our local updates to the correct tab's cache store instantly
         if !incrementalMatches.isEmpty {
-            self.openTabs[tabIndex].filteredLines.append(contentsOf: incrementalMatches)
+            openTabs[tabIndex].filteredLines.append(contentsOf: incrementalMatches) // Updated to correct identifier matching
 
-            // Command the bottom table view layout viewport to track down to the new row
             DispatchQueue.main.async {
                 NotificationCenter.default.post(
-                    name: bottomPaneScrollToBottomNotification, object: nil)
+                    name: bottomPaneScrollToBottomNotification, object: nil
+                )
             }
         }
     }
@@ -830,13 +727,14 @@ extension Color {
         self.init(
             red: Double((rgb & 0xFF0000) >> 16) / 255.0,
             green: Double((rgb & 0x00FF00) >> 8) / 255.0,
-            blue: Double(rgb & 0x0000FF) / 255.0)
+            blue: Double(rgb & 0x0000FF) / 255.0
+        )
     }
 
     func toHex() -> String {
         // Fall back to target hex mapping manually without casting conflicts
         guard let components = NSColor(self).usingColorSpace(.sRGB)?.cgColor.components,
-            components.count >= 3
+              components.count >= 3
         else {
             return "000000"
         }
