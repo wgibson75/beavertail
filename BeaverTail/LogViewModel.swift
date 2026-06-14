@@ -135,12 +135,12 @@ class LogViewModel: ObservableObject {
             startLiveTailingForActiveTab()
         }
     }
-
+    
     var allLines: [String] { currentTab?.allLines ?? [] }
     var filteredLines: [LogLine] { currentTab?.filteredLines ?? [] }
     var selectedFraction: CGFloat? { currentTab?.selectedFraction ?? nil }
     var minimapImage: NSImage? { currentTab?.minimapImage ?? nil }
-
+    
     @Published var isFiltering: Bool = false
     @Published var filterProgress: Double = 0.0
     @Published var showMinimap: Bool = true
@@ -148,29 +148,29 @@ class LogViewModel: ObservableObject {
     @Published var isScrubbingMinimap: Bool = false
     @Published var isLoadingFile: Bool = false
     @Published var fileLoadProgress: Double = 0.0
-
+    
     @AppStorage("saved_highlight_rules") private var rulesData: String = ""
-
+    
     // PERSISTENCE ENGINE: Stores secure raw data blobs rather than simple text string paths
     @AppStorage("saved_session_bookmarks_v2") private var sessionBookmarksData: String = ""
-
+    
     @Published var highlightRules: [HighlightRule] = [] {
         didSet {
             saveRules()
             generateMinimapDataForAllTabs()
         }
     }
-
+    
     private var filterTask: Task<Void, Never>?
     private var minimapTasks: [UUID: Task<Void, Never>] = [:]
     private var activeTailSource: DispatchSourceFileSystemObject?
     private var activeTailFileDescriptor: Int32 = -1
     private var currentActiveFilterPattern: String = ""
-
+    
     var currentTab: LogTab? {
         openTabs.first { $0.id == selectedTabID }
     }
-
+    
     init() {
         loadRules()
         // Delay initialization by one frame to let your SwiftUI main window scenes link cleanly
@@ -178,20 +178,20 @@ class LogViewModel: ObservableObject {
             self.loadSavedTabsSession()
         }
     }
-
+    
     func openFile() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.text, .log, .plainText]
-
+        
         if panel.runModal() == .OK {
             for url in panel.urls {
                 loadNewTab(from: url)
             }
         }
     }
-
+    
     @MainActor
     func loadNewTab(from url: URL) {
         // 1. Prevent loading the exact same file url twice into separate tabs
@@ -199,7 +199,7 @@ class LogViewModel: ObservableObject {
             self.selectedTabID = existingTab.id
             return
         }
-
+        
         // 2. CREATION PHASE: Instantly create and append an empty tab placeholder
         // This forces the tab to appear in the top toolbar carousel loop IMMEDIATELY on launch!
         let targetTabID = UUID()
@@ -213,30 +213,30 @@ class LogViewModel: ObservableObject {
             minimapImage: nil,
             isCurrentlyStreaming: true // Flags that data is actively compiling
         )
-
+        
         self.openTabs.append(placeholderTab)
         if self.selectedTabID == nil {
             self.selectedTabID = targetTabID
         }
-
+        
         let accessed = url.startAccessingSecurityScopedResource()
-
+        
         // 3. BACKGROUND STREAMING PHASE: Runs concurrently on a background worker thread
         Task(priority: .userInitiated) {
             do {
                 let fileAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
                 let totalBytes = (fileAttributes[.size] as? UInt64) ?? 1
-
+                
                 var collectedLines: [String] = []
                 var readBytes: UInt64 = 0
-
+                
                 // Core high-efficiency byte reader loop pipeline
                 for try await line in url.lines {
                     if Task.isCancelled { break }
                     collectedLines.append(line)
-
+                    
                     readBytes += UInt64(line.utf8.count + 1)
-
+                    
                     // Keep the global progress indicator updated smoothly
                     if collectedLines.count % 25000 == 0 {
                         let progress = min(1.0, Double(readBytes) / Double(totalBytes))
@@ -246,21 +246,21 @@ class LogViewModel: ObservableObject {
                         }
                     }
                 }
-
+                
                 // 4. ATOMIC CORRECTION SWAP: Inject data straight into the matching array index placeholder
                 await MainActor.run {
                     if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
                         self.openTabs[index].allLines = collectedLines
                         self.openTabs[index].isCurrentlyStreaming = false
-
+                        
                         // Re-trigger global loading state calculations
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
-
+                        
                         // Automatically trigger the background vector minimap builder script pass
                         generateMinimapData(for: targetTabID)
                     }
                 }
-
+                
             } catch {
                 print("File streaming failed: \(error.localizedDescription)")
                 await MainActor.run {
@@ -271,28 +271,28 @@ class LogViewModel: ObservableObject {
                     }
                 }
             }
-
+            
             if !accessed {
                 url.stopAccessingSecurityScopedResource()
             }
         }
     }
-
+    
     func closeTab(id: UUID) {
         guard let index = openTabs.firstIndex(where: { $0.id == id }) else { return }
-
+        
         // Call stop when completely destroying tab resources from memory
         openTabs[index].fileURL.stopAccessingSecurityScopedResource()
-
+        
         minimapTasks[id]?.cancel()
         minimapTasks.removeValue(forKey: id)
         openTabs.remove(at: index)
-
+        
         if selectedTabID == id {
             selectedTabID = openTabs.last?.id
         }
     }
-
+    
     func applyFilter(with pattern: String) {
         self.currentActiveFilterPattern = pattern
         
@@ -301,7 +301,7 @@ class LogViewModel: ObservableObject {
         guard let tabID = selectedTabID, let tabIndex = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
         
         self.openTabs[tabIndex].filterPattern = pattern
-
+        
         guard !pattern.isEmpty else {
             self.openTabs[tabIndex].filteredLines = []
             self.isFiltering = false
@@ -377,35 +377,35 @@ class LogViewModel: ObservableObject {
             }
         }
     }
-
+    
     func generateMinimapData(for tabID: UUID) {
         minimapTasks[tabID]?.cancel()
-
+        
         guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
         let localLines = openTabs[index].allLines
         let activeRules = self.highlightRules.filter { $0.compiledRegex != nil }
-
+        
         guard !localLines.isEmpty && !activeRules.isEmpty else {
             self.openTabs[index].minimapImage = nil
             return
         }
-
+        
         minimapTasks[tabID] = Task(priority: .userInitiated) {
             let totalLines = localLines.count
             let imgSize = NSSize(width: 30, height: 1500)
-
+            
             let bitmap = NSImage(size: imgSize, flipped: true) { rect in
                 guard let context = NSGraphicsContext.current?.cgContext else { return false }
                 context.setFillColor(NSColor.windowBackgroundColor.cgColor)
                 context.fill(rect)
-
+                
                 var paintedBuckets = Set<Int>()
                 for (lineIdx, line) in localLines.enumerated() {
                     if Task.isCancelled { return false }
-
+                    
                     let bucket = Int((CGFloat(lineIdx) / CGFloat(totalLines)) * 1500.0)
                     if paintedBuckets.contains(bucket) { continue }
-
+                    
                     let range = NSRange(location: 0, length: line.utf16.count)
                     for rule in activeRules {
                         if let regex = rule.compiledRegex {
@@ -431,42 +431,42 @@ class LogViewModel: ObservableObject {
             }
         }
     }
-
+    
     private func generateMinimapDataForAllTabs() {
         for tab in openTabs {
             generateMinimapData(for: tab.id)
         }
     }
-
+    
     func syncSelectionFromFilteredIndex(_ originalIndex: Int) {
         guard let tabID = selectedTabID, let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-
+        
         let totalCount = openTabs[index].allLines.count
         guard totalCount > 0 else { return }
-
+        
         let fraction = CGFloat(originalIndex) / CGFloat(totalCount - 1)
         self.openTabs[index].selectedFraction = max(0, min(1, fraction))
-
+        
         NotificationCenter.default.post(name: topPaneDirectScrollNotification, object: originalIndex)
     }
-
+    
     func jumpToFraction(_ fraction: CGFloat) {
         guard let tabID = selectedTabID, let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-
+        
         self.isScrubbingMinimap = true
         self.openTabs[index].selectedFraction = max(0, min(1, fraction))
     }
-
+    
     func updateMinimapFromLineIndex(_ index: Int) {
         guard let tabID = selectedTabID, let tabIdx = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-
+        
         let totalCount = openTabs[tabIdx].allLines.count
         guard totalCount > 0 else { return }
-
+        
         let fraction = CGFloat(index) / CGFloat(totalCount - 1)
         self.openTabs[tabIdx].selectedFraction = max(0, min(1, fraction))
     }
-
+    
     // PERSISTENCE ENGINE: SECURE LAZY SANDBOX SESSION MANAGEMENT
     private func saveLoadedTabsSession() {
         // Struct to model our serialized payload
@@ -501,7 +501,7 @@ class LogViewModel: ObservableObject {
             }
         }
     }
-
+    
     private func loadSavedTabsSession() {
         struct SavedTabMetadata: Codable {
             let bookmarkBase64: String
@@ -547,37 +547,37 @@ class LogViewModel: ObservableObject {
             triggerLazyLoadForTab(id: firstTabID)
         }
     }
-
+    
     // PUBLIC LAZY TRIGGER HOOK: Invoked exclusively when a tab header receives user mouse focus clicks
     func triggerLazyLoadForTab(id: UUID) {
         guard let index = openTabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = openTabs[index]
-
+        
         // Only start streaming if the file text data array is completely empty and isn't already loading
         guard tab.allLines.isEmpty && !tab.isCurrentlyStreaming else { return }
-
+        
         // Flag this targeted container as actively streaming inside our state tracker
         self.openTabs[index].isCurrentlyStreaming = true
         self.isLoadingFile = true
         self.fileLoadProgress = 0.0
-
+        
         let url = tab.fileURL
         let accessed = url.startAccessingSecurityScopedResource()
-
+        
         Task(priority: .userInitiated) {
             do {
                 let fileAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
                 let totalBytes = (fileAttributes[.size] as? UInt64) ?? 1
-
+                
                 var collectedLines: [String] = []
                 var readBytes: UInt64 = 0
-
+                
                 for try await line in url.lines {
                     if Task.isCancelled { break }
                     collectedLines.append(line)
-
+                    
                     readBytes += UInt64(line.utf8.count + 1)
-
+                    
                     if collectedLines.count % 25000 == 0 {
                         let progress = min(1.0, Double(readBytes) / Double(totalBytes))
                         await MainActor.run {
@@ -586,21 +586,21 @@ class LogViewModel: ObservableObject {
                         }
                     }
                 }
-
+                
                 await MainActor.run {
                     if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
                         self.openTabs[freshIndex].allLines = collectedLines
                         self.openTabs[freshIndex].isCurrentlyStreaming = false
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
-
+                        
                         self.generateMinimapData(for: id)
-
+                        
                         // If this tab was restored with a saved filter string, apply it right as the log data settles!
                         let savedPattern = self.openTabs[freshIndex].filterPattern
                         if !savedPattern.isEmpty && self.selectedTabID == id {
                             self.applyFilter(with: savedPattern)
                         }
-
+                        
                         // HERE: Start watching file handles if this loading tab is the currently focused one
                         if self.selectedTabID == id {
                             self.startLiveTailingForActiveTab()
@@ -617,102 +617,109 @@ class LogViewModel: ObservableObject {
                     }
                 }
             }
-
+            
             if !accessed {
                 url.stopAccessingSecurityScopedResource()
             }
         }
     }
-
+    
     private func saveRules() {
         if let encoded = try? JSONEncoder().encode(highlightRules),
            let string = String(data: encoded, encoding: .utf8) {
             if rulesData != string { rulesData = string }
         }
     }
-
+    
     private func loadRules() {
         guard !rulesData.isEmpty,
               let data = rulesData.data(using: .utf8),
               var decoded = try? JSONDecoder().decode([HighlightRule].self, from: data) else { return }
-
+        
         for i in 0..<decoded.count {
             decoded[i].updateCachedObjects()
         }
         self.highlightRules = decoded
     }
-
+    
     // LIVE TAILING: Monitored file handle watcher system
     func startLiveTailingForActiveTab() {
         stopLiveTailing() // Safely tear down any previous file handles
-
+        
         guard let tab = currentTab, tab.allLines.count > 0 else { return }
         let fileURL = tab.fileURL
-
+        
         // Open the file descriptor in read-only mode
         let fd = open(fileURL.path, O_RDONLY)
         guard fd >= 0 else { return }
-
+        
         self.activeTailFileDescriptor = fd
-
+        
         // Create a kernel event source watching for file write size modifications
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd,
             eventMask: .write,
             queue: DispatchQueue.global(qos: .utility)
         )
-
+        
         // Track the current byte offset position before updates hit
         var lastKnownSize: UInt64 = 0
         if let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path) {
             lastKnownSize = (attributes[.size] as? UInt64) ?? 0
         }
-
+        
         source.setEventHandler { [weak self] in
             guard let self = self else { return }
-
+            
             guard let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
                   let currentSize = attributes[.size] as? UInt64,
                   currentSize > lastKnownSize else { return }
-
+            
             let fileHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
             do {
                 try fileHandle.seek(toOffset: lastKnownSize)
                 if let newData = try fileHandle.read(upToCount: Int(currentSize - lastKnownSize)),
                    let appendedText = String(data: newData, encoding: .utf8) {
-
+                    
                     lastKnownSize = currentSize
-
+                    
                     // THE REAL ACCURATE SPLITTER:
                     // Standard components(separatedBy:) catches everything instantly.
                     // We strip any carriage returns (\r) and drop ONLY the trailing empty slice if the write ends in \n!
                     var linesArray = appendedText.components(separatedBy: .newlines)
                         .map { $0.replacingOccurrences(of: "\r", with: "") }
-
+                    
                     // If the chunk ends cleanly in a trailing newline, the last element is an empty artifact string.
                     // We remove ONLY that single true trailing artifact so we don't lag behind by one line!
                     if linesArray.last?.isEmpty == true {
                         linesArray.removeLast()
                     }
-
+                    
                     // If the chunk is empty, do nothing
                     guard !linesArray.isEmpty else { return }
-
+                    
                     Task { @MainActor in
                         if let tabID = self.selectedTabID,
                            let index = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-
-                            // 1. Append the text lines cleanly into memory
+                            
+                            // 1. Capture the exact length profile of the file BEFORE adding new text
+                            // This gives us the exact starting file index for our incremental tracker calculations!
+                            let baseFileIndexOffset = self.openTabs[index].allLines.count
+                            
+                            // 2. Append text lines safely into memory
                             self.openTabs[index].allLines.append(contentsOf: linesArray)
-
+                            
+                            // 3. Re-trigger background graphics compilation frames
                             self.generateMinimapData(for: tabID)
-                            self.applyFilter(with: self.currentActiveFilterPattern)
+                            
+                            // 4. THE OPTIMIZATION CURE:
+                            // Instead of running applyFilter() and scanning millions of lines from scratch,
+                            // pass ONLY the new lines cluster into the high-performance incremental scanner!
+                            self.appendFilterForLiveTail(with: linesArray, startingAt: baseFileIndexOffset)
+                            
                             self.objectWillChange.send()
-
-                            // THE ONSCREEN SYNCHRONISATION FIX:
-                            // We delay the notification by one layout tick. This guarantees that
-                            // updateNSView runs reloadData() FIRST, expanding the table size bounds
-                            // before we command it to jump to the new absolute last row!
+                            
+                            // Instant top viewport scrolling tracking execution pass
                             DispatchQueue.main.async {
                                 NotificationCenter.default.post(name: topPaneScrollToBottomNotification, object: nil)
                             }
@@ -723,19 +730,53 @@ class LogViewModel: ObservableObject {
                 print("Live log byte ingestion stream failed: \(error)")
             }
         }
-
+        
         source.setCancelHandler {
             close(fd)
         }
-
+        
         self.activeTailSource = source
         source.resume() // Fire up the kernel event loop listener
     }
-
+    
     func stopLiveTailing() {
         activeTailSource?.cancel()
         activeTailSource = nil
         activeTailFileDescriptor = -1
+    }
+    
+    // HIGH-PERFORMANCE INCREMENTAL FILTERING ENGINE
+    // Runs exclusively during live tail updates to scan ONLY appended lines
+    func appendFilterForLiveTail(with newLines: [String], startingAt originalStartIndex: Int) {
+        // If there's no active regex pattern string specified, there's nothing to filter
+        guard !currentActiveFilterPattern.isEmpty,
+              let tabID = selectedTabID,
+              let tabIndex = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        
+        let regexOptions: NSRegularExpression.Options = isCaseInsensitive ? [.caseInsensitive] : []
+        guard let regex = try? NSRegularExpression(pattern: currentActiveFilterPattern, options: regexOptions) else { return }
+        
+        var incrementalMatches: [LogLine] = []
+        
+        // Scan only the localized window array slice package
+        for (offset, line) in newLines.enumerated() {
+            let actualFileIndex = originalStartIndex + offset
+            let range = NSRange(location: 0, length: line.utf16.count)
+            
+            if regex.firstMatch(in: line, options: [], range: range) != nil {
+                incrementalMatches.append(LogLine(originalIndex: actualFileIndex, text: line))
+            }
+        }
+        
+        // If any new lines passed the regex validation parameters, push them to the UI instantly
+        if !incrementalMatches.isEmpty {
+            self.openTabs[tabIndex].filteredLines.append(contentsOf: incrementalMatches)
+            
+            // Command the bottom table view layout viewport to track down to the new row
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
+            }
+        }
     }
 }
 
