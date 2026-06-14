@@ -86,8 +86,8 @@ struct ContentView: View {
                                 .contentShape(Rectangle())
                                 .onTapGesture {
                                     viewModel.selectedTabID = tab.id
-                                    localRegexInput = ""
-                                    viewModel.applyFilter(with: "")
+                                    localRegexInput = tab.filterPattern
+                                    viewModel.applyFilter(with: tab.filterPattern) // Triggers processing automatically
                                     viewModel.triggerLazyLoadForTab(id: tab.id)
                                 }
 
@@ -154,32 +154,58 @@ struct ContentView: View {
                         .frame(minHeight: 120)
 
                         // Bottom Pane: Regex Filter Node
+                        // Bottom Pane: Regex Filter Node Layout Container
                         VStack(alignment: .leading, spacing: 0) {
                             Divider()
-
-                            HStack(spacing: 12) {
-                                Text("Regex Filter:")
-                                    .font(.headline)
-
-                                TextField("Enter regex criteria and press Enter", text: $localRegexInput)
-                                    .textFieldStyle(.roundedBorder)
-                                    .onSubmit {
+                            
+                            VStack(spacing: 0) {
+                                HStack(spacing: 12) {
+                                    Text("Regex Filter:")
+                                        .font(.headline)
+                                    
+                                    TextField("Enter regex criteria and press Enter", text: $localRegexInput)
+                                        .textFieldStyle(.roundedBorder)
+                                        .onSubmit {
+                                            viewModel.applyFilter(with: localRegexInput)
+                                        }
+                                    
+                                    Toggle(isOn: $viewModel.isCaseInsensitive) {
+                                        Text("Ignore Case")
+                                    }
+                                    .toggleStyle(.checkbox)
+                                    .onChange(of: viewModel.isCaseInsensitive) { oldValue, newValue in
                                         viewModel.applyFilter(with: localRegexInput)
                                     }
-
-                                Toggle(isOn: $viewModel.isCaseInsensitive) {
-                                    Text("Ignore Case")
                                 }
-                                .toggleStyle(.checkbox)
-                                .onChange(of: viewModel.isCaseInsensitive) { _ in
-                                    viewModel.applyFilter(with: localRegexInput)
+                                .padding()
+                                
+                                // REGEX SEARCH PROGRESS INDICATOR OVERLAY NODE
+                                // Renders a thin, high-utility progress tracker strip right below the entry box
+                                // the exact millisecond the background utility thread kicks off a new regex query scan
+                                if viewModel.isFiltering {
+                                    VStack(spacing: 2) {
+                                        ProgressView(value: viewModel.filterProgress)
+                                            .progressViewStyle(.linear)
+                                            .tint(.blue) // Visual Anchor matching file streaming accents
+                                            .controlSize(.small) // Keeps the progress bar thin and elegant
+                                        
+                                        HStack {
+                                            Spacer()
+                                            Text("Applying regular expression... \(String(format: "%.0f%%", viewModel.filterProgress * 100))")
+                                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                                .foregroundColor(.secondary)
+                                        }
+                                        .padding(.horizontal, 4)
+                                    }
+                                    .padding(.horizontal)
+                                    .padding(.bottom, 6)
+                                    .transition(.opacity) // Smooth fade entry transform framework
                                 }
                             }
-                            .padding()
                             .background(Color(NSColor.windowBackgroundColor))
-
+                            
                             Divider()
-
+                            
                             if viewModel.filteredLines.isEmpty && !viewModel.isFiltering {
                                 VStack {
                                     Spacer()
@@ -203,7 +229,7 @@ struct ContentView: View {
                                 .id(viewModel.selectedTabID?.uuidString ?? "bot")
                             }
                         }
-                        .frame(minHeight: 120)
+                       .frame(minHeight: 120)
                     }
 
                     if viewModel.showMinimap {

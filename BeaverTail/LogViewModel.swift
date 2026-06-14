@@ -23,18 +23,21 @@ struct LogLine: Identifiable, Equatable {
 }
 
 // Struct tracking individual workspace parameters per loaded file tab node
-struct LogTab: Identifiable, Equatable {
+struct LogTab: Identifiable, Equatable, Codable { // Added Codable conformance to easily serialize metadata
     let id: UUID
     let name: String
     let fileURL: URL
     var allLines: [String] = []
     var filteredLines: [LogLine] = []
-    var selectedFraction: CGFloat?
-    var minimapImage: NSImage?
+    var selectedFraction: CGFloat? = nil
+    var minimapImage: NSImage? = nil
     var isCurrentlyStreaming: Bool = false
-
-    // Clean compiled initializer signature block mapping properties directly
-    init(id: UUID = UUID(), name: String, fileURL: URL, allLines: [String] = [], filteredLines: [LogLine] = [], selectedFraction: CGFloat? = nil, minimapImage: NSImage? = nil, isCurrentlyStreaming: Bool = false) {
+    
+    // NEW SESSION PROPERTY: Stores the specific regex filter pattern for this tab
+    var filterPattern: String = ""
+    
+    // Custom initializer mapping properties directly
+    init(id: UUID = UUID(), name: String, fileURL: URL, allLines: [String] = [], filteredLines: [LogLine] = [], selectedFraction: CGFloat? = nil, minimapImage: NSImage? = nil, isCurrentlyStreaming: Bool = false, filterPattern: String = "") {
         self.id = id
         self.name = name
         self.fileURL = fileURL
@@ -43,10 +46,32 @@ struct LogTab: Identifiable, Equatable {
         self.selectedFraction = selectedFraction
         self.minimapImage = minimapImage
         self.isCurrentlyStreaming = isCurrentlyStreaming
+        self.filterPattern = filterPattern
+    }
+
+    // Manual Codable compliance wrappers to avoid serializing heavy runtime NSImage or String arrays
+    enum CodingKeys: String, CodingKey {
+        case id, name, fileURL, filterPattern
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.fileURL = try container.decode(URL.self, forKey: .fileURL)
+        self.filterPattern = try container.decode(String.self, forKey: .filterPattern)
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(fileURL, forKey: .fileURL)
+        try container.encode(filterPattern, forKey: .filterPattern)
     }
 
     static func == (lhs: LogTab, rhs: LogTab) -> Bool {
-        return lhs.id == rhs.id
+        return lhs.id == rhs.id && lhs.filterPattern == rhs.filterPattern
     }
 }
 
@@ -270,58 +295,84 @@ class LogViewModel: ObservableObject {
 
     func applyFilter(with pattern: String) {
         self.currentActiveFilterPattern = pattern
-
+        
         filterTask?.cancel()
+        
         guard let tabID = selectedTabID, let tabIndex = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        
+        self.openTabs[tabIndex].filterPattern = pattern
 
         guard !pattern.isEmpty else {
             self.openTabs[tabIndex].filteredLines = []
             self.isFiltering = false
             return
         }
-
+        
         let regexOptions: NSRegularExpression.Options = isCaseInsensitive ? [.caseInsensitive] : []
         guard let regex = try? NSRegularExpression(pattern: pattern, options: regexOptions) else {
             self.openTabs[tabIndex].filteredLines = [LogLine(originalIndex: 0, text: "Invalid Regular Expression")]
             return
         }
-
+        
         isFiltering = true
         filterProgress = 0.0
+        
+        // Clear the previous results immediately so the fresh streaming pass starts from a clean slate
+        self.openTabs[tabIndex].filteredLines = []
+        
         let localLinesSnapshot = openTabs[tabIndex].allLines
-
+        
         filterTask = Task(priority: .userInitiated) {
-            var matched: [LogLine] = []
+            var localBatch: [LogLine] = []
             let totalLines = localLinesSnapshot.count
-            let chunkSize = max(1, totalLines / 100)
-
+            
+            // PERFORMANCE TUNE: Flush batches every 5,000 matches or 1% of progress to balance UI responsiveness
+            let progressInterval = max(1, totalLines / 100)
+            let matchBatchSize = 5000
+            
             for (index, line) in localLinesSnapshot.enumerated() {
                 if Task.isCancelled { return }
-
+                
                 let range = NSRange(location: 0, length: line.utf16.count)
                 if regex.firstMatch(in: line, options: [], range: range) != nil {
-                    matched.append(LogLine(originalIndex: index, text: line))
+                    localBatch.append(LogLine(originalIndex: index, text: line))
                 }
-
-                if index % chunkSize == 0 || index == totalLines - 1 {
-                    let progress = Double(index + 1) / Double(totalLines)
+                
+                // PERIODIC STREAMING TRIGGER: Flush data blocks immediately if thresholds are met
+                if localBatch.count >= matchBatchSize || index % progressInterval == 0 || index == totalLines - 1 {
+                    let currentProgress = Double(index + 1) / Double(totalLines)
+                    let batchToAppend = localBatch
+                    localBatch.removeAll(keepingCapacity: true)
+                    
                     await MainActor.run {
-                        self.filterProgress = progress
+                        if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
+                            // Append the newly gathered lines slice directly to the published state array
+                            self.openTabs[freshIndex].filteredLines.append(contentsOf: batchToAppend)
+                            self.filterProgress = currentProgress
+                            
+                            // Command the bottom table view layout to scroll to its new bottom
+                            // row right after this fresh batch of regex matches updates the UI!
+                            DispatchQueue.main.async {
+                                NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
+                            }
+                        }
                     }
                 }
             }
-
+            
+            // FINALIZATION PASS: Cleans up any remaining rows and handles final tail anchor alignment
             if !Task.isCancelled {
                 await MainActor.run {
-                    if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                        self.openTabs[freshIndex].filteredLines = matched
-
-                        // Ensures AppKit updates its internal row states before the scroll fires
-                        DispatchQueue.main.async {
-                            NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
-                        }
+                    if !localBatch.isEmpty, let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
+                        self.openTabs[freshIndex].filteredLines.append(contentsOf: localBatch)
                     }
+                    self.filterProgress = 1.0
                     self.isFiltering = false
+                    
+                    // Direct the bottom pane tracking notification call to pin current items safely
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
+                    }
                 }
             }
         }
@@ -418,8 +469,14 @@ class LogViewModel: ObservableObject {
 
     // PERSISTENCE ENGINE: SECURE LAZY SANDBOX SESSION MANAGEMENT
     private func saveLoadedTabsSession() {
-        var base64Bookmarks: [String] = []
-
+        // Struct to model our serialized payload
+        struct SavedTabMetadata: Codable {
+            let bookmarkBase64: String
+            let filterPattern: String
+        }
+        
+        var serializedMetadata: [SavedTabMetadata] = []
+        
         for tab in openTabs {
             do {
                 let bookmarkData = try tab.fileURL.bookmarkData(
@@ -427,13 +484,17 @@ class LogViewModel: ObservableObject {
                     includingResourceValuesForKeys: nil,
                     relativeTo: nil
                 )
-                base64Bookmarks.append(bookmarkData.base64EncodedString())
+                let metadata = SavedTabMetadata(
+                    bookmarkBase64: bookmarkData.base64EncodedString(),
+                    filterPattern: tab.filterPattern // Retain regex string criteria state
+                )
+                serializedMetadata.append(metadata)
             } catch {
                 print("Failed to save sandbox bookmark token for \(tab.name): \(error)")
             }
         }
-
-        if let data = try? JSONEncoder().encode(base64Bookmarks),
+        
+        if let data = try? JSONEncoder().encode(serializedMetadata),
            let string = String(data: data, encoding: .utf8) {
             if sessionBookmarksData != string {
                 sessionBookmarksData = string
@@ -442,12 +503,17 @@ class LogViewModel: ObservableObject {
     }
 
     private func loadSavedTabsSession() {
+        struct SavedTabMetadata: Codable {
+            let bookmarkBase64: String
+            let filterPattern: String
+        }
+        
         guard !sessionBookmarksData.isEmpty,
               let data = sessionBookmarksData.data(using: .utf8),
-              let base64Strings = try? JSONDecoder().decode([String].self, from: data) else { return }
-
-        for string in base64Strings {
-            guard let bookmarkData = Data(base64Encoded: string) else { continue }
+              let metadataArray = try? JSONDecoder().decode([SavedTabMetadata].self, from: data) else { return }
+        
+        for metadata in metadataArray {
+            guard let bookmarkData = Data(base64Encoded: metadata.bookmarkBase64) else { continue }
             do {
                 var isStale = false
                 let restoredURL = try URL(
@@ -456,19 +522,18 @@ class LogViewModel: ObservableObject {
                     relativeTo: nil,
                     bookmarkDataIsStale: &isStale
                 )
-
-                // LAZY INITIALIZATION: Create the tab skeleton instantly so it appears on the toolbar,
-                // but do NOT read any byte data from the file system yet.
+                
                 if !openTabs.contains(where: { $0.fileURL == restoredURL }) {
                     let lazyTab = LogTab(
                         id: UUID(),
                         name: restoredURL.lastPathComponent,
                         fileURL: restoredURL,
-                        allLines: [], // Empty text block on launch pass
+                        allLines: [],
                         filteredLines: [],
                         selectedFraction: nil,
                         minimapImage: nil,
-                        isCurrentlyStreaming: false // Sits completely idle until clicked
+                        isCurrentlyStreaming: false,
+                        filterPattern: metadata.filterPattern // Restore filter pattern back to the instance skeleton
                     )
                     self.openTabs.append(lazyTab)
                 }
@@ -476,11 +541,9 @@ class LogViewModel: ObservableObject {
                 print("Secure session authorization check rejected: \(error.localizedDescription)")
             }
         }
-
-        // Automatically default focus to the first tab if paths were successfully restored
+        
         if selectedTabID == nil, let firstTabID = openTabs.first?.id {
             selectedTabID = firstTabID
-            // Trigger loading for the initially visible document context straight away
             triggerLazyLoadForTab(id: firstTabID)
         }
     }
@@ -531,6 +594,12 @@ class LogViewModel: ObservableObject {
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
 
                         self.generateMinimapData(for: id)
+
+                        // If this tab was restored with a saved filter string, apply it right as the log data settles!
+                        let savedPattern = self.openTabs[freshIndex].filterPattern
+                        if !savedPattern.isEmpty && self.selectedTabID == id {
+                            self.applyFilter(with: savedPattern)
+                        }
 
                         // HERE: Start watching file handles if this loading tab is the currently focused one
                         if self.selectedTabID == id {
