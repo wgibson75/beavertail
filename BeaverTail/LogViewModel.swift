@@ -12,13 +12,46 @@ import Combine
 // Direct notification channel descriptor driving top table viewport adjustments
 let topPaneDirectScrollNotification = Notification.Name("BeaverTailTopPaneDirectScroll")
 
+struct LogLine: Identifiable, Equatable {
+    let id = UUID()
+    let originalIndex: Int
+    let text: String
+}
+
+// Struct tracking individual workspace parameters per loaded file tab node
+struct LogTab: Identifiable, Equatable {
+    let id: UUID
+    let name: String
+    let fileURL: URL
+    var allLines: [String] = []
+    var filteredLines: [LogLine] = []
+    var selectedFraction: CGFloat? = nil
+    var minimapImage: NSImage? = nil
+    var isCurrentlyStreaming: Bool = false
+    
+    // Clean compiled initializer signature block mapping properties directly
+    init(id: UUID = UUID(), name: String, fileURL: URL, allLines: [String] = [], filteredLines: [LogLine] = [], selectedFraction: CGFloat? = nil, minimapImage: NSImage? = nil, isCurrentlyStreaming: Bool = false) {
+        self.id = id
+        self.name = name
+        self.fileURL = fileURL
+        self.allLines = allLines
+        self.filteredLines = filteredLines
+        self.selectedFraction = selectedFraction
+        self.minimapImage = minimapImage
+        self.isCurrentlyStreaming = isCurrentlyStreaming
+    }
+
+    static func == (lhs: LogTab, rhs: LogTab) -> Bool {
+        return lhs.id == rhs.id
+    }
+}
+
 struct HighlightRule: Identifiable, Codable, Equatable {
     var id = UUID()
     var pattern: String
     var foregroundColorHex: String
     var backgroundColorHex: String
     
-    // Cached objects to ensure zero allocation inside rendering loops
     var nsForegroundColor: NSColor = .labelColor
     var nsBackgroundColor: NSColor = .clear
     var compiledRegex: NSRegularExpression? = nil
@@ -59,91 +92,188 @@ struct HighlightRule: Identifiable, Codable, Equatable {
     }
 }
 
-// Explicit line wrapper that locks text to its original file position index
-struct LogLine: Identifiable, Equatable {
-    let id = UUID()
-    let originalIndex: Int
-    let text: String
-}
-
 class LogViewModel: ObservableObject {
-    @Published var allLines: [String] = []
-    @Published var filteredLines: [LogLine] = []
+    @Published var openTabs: [LogTab] = [] {
+        didSet {
+            // Instantly sync the sandbox permission bookmarks whenever tab arrays are modified
+            saveLoadedTabsSession()
+        }
+    }
+    @Published var selectedTabID: UUID? = nil
+    
+    var allLines: [String] { currentTab?.allLines ?? [] }
+    var filteredLines: [LogLine] { currentTab?.filteredLines ?? [] }
+    var selectedFraction: CGFloat? { currentTab?.selectedFraction ?? nil }
+    var minimapImage: NSImage? { currentTab?.minimapImage ?? nil }
+    
     @Published var isFiltering: Bool = false
     @Published var filterProgress: Double = 0.0
     @Published var showMinimap: Bool = true
     @Published var isCaseInsensitive: Bool = true
-    @Published var isScrubbingMinimap: Bool = false // Tracks if the minimap gesture is actively running
-    
-    // Proportional decimal state indicating selection placement
-    @Published var selectedFraction: CGFloat? = nil
-    
-    // Fully compiled flat image layer token rendering target context
-    @Published var minimapImage: NSImage? = nil
+    @Published var isScrubbingMinimap: Bool = false
+    @Published var isLoadingFile: Bool = false
+    @Published var fileLoadProgress: Double = 0.0
     
     @AppStorage("saved_highlight_rules") private var rulesData: String = ""
+    
+    // PERSISTENCE ENGINE: Stores secure raw data blobs rather than simple text string paths
+    @AppStorage("saved_session_bookmarks_v2") private var sessionBookmarksData: String = ""
+
     @Published var highlightRules: [HighlightRule] = [] {
         didSet {
             saveRules()
-            generateMinimapData() // Regenerate data when highlight criteria change
+            generateMinimapDataForAllTabs()
         }
     }
     
     private var filterTask: Task<Void, Never>?
-    private var minimapTask: Task<Void, Never>?
+    private var minimapTasks: [UUID: Task<Void, Never>] = [:]
+    
+    var currentTab: LogTab? {
+        openTabs.first { $0.id == selectedTabID }
+    }
     
     init() {
         loadRules()
+        // Delay initialization by one frame to let your SwiftUI main window scenes link cleanly
+        DispatchQueue.main.async {
+            self.loadSavedTabsSession()
+        }
     }
     
     func openFile() {
         let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.text, .log, .plainText]
         
-        if panel.runModal() == .OK, let url = panel.url {
-            loadFile(from: url)
+        if panel.runModal() == .OK {
+            for url in panel.urls {
+                loadNewTab(from: url)
+            }
         }
     }
     
     @MainActor
-    private func loadFile(from url: URL) {
-        do {
-            let data = try String(contentsOf: url, encoding: .utf8)
-            self.allLines = data.components(separatedBy: .newlines)
-            self.filteredLines = []
-            self.selectedFraction = nil // Clear cursor tracking line automatically on new file load
-            self.minimapImage = nil
+    func loadNewTab(from url: URL) {
+        // 1. Prevent loading the exact same file url twice into separate tabs
+        if let existingTab = openTabs.first(where: { $0.fileURL == url }) {
+            self.selectedTabID = existingTab.id
+            return
+        }
+        
+        // 2. CREATION PHASE: Instantly create and append an empty tab placeholder
+        // This forces the tab to appear in the top toolbar carousel loop IMMEDIATELY on launch!
+        let targetTabID = UUID()
+        let placeholderTab = LogTab(
+            id: targetTabID,
+            name: url.lastPathComponent,
+            fileURL: url,
+            allLines: ["Streaming log components from disk... Please wait."],
+            filteredLines: [],
+            selectedFraction: nil,
+            minimapImage: nil,
+            isCurrentlyStreaming: true // Flags that data is actively compiling
+        )
+        
+        self.openTabs.append(placeholderTab)
+        if self.selectedTabID == nil {
+            self.selectedTabID = targetTabID
+        }
+        
+        let accessed = url.startAccessingSecurityScopedResource()
+        
+        // 3. BACKGROUND STREAMING PHASE: Runs concurrently on a background worker thread
+        Task(priority: .userInitiated) {
+            do {
+                let fileAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                let totalBytes = (fileAttributes[.size] as? UInt64) ?? 1
+                
+                var collectedLines: [String] = []
+                var readBytes: UInt64 = 0
+                
+                // Core high-efficiency byte reader loop pipeline
+                for try await line in url.lines {
+                    if Task.isCancelled { break }
+                    collectedLines.append(line)
+                    
+                    readBytes += UInt64(line.utf8.count + 1)
+                    
+                    // Keep the global progress indicator updated smoothly
+                    if collectedLines.count % 25000 == 0 {
+                        let progress = min(1.0, Double(readBytes) / Double(totalBytes))
+                        await MainActor.run {
+                            self.fileLoadProgress = progress
+                            self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        }
+                    }
+                }
+                
+                // 4. ATOMIC CORRECTION SWAP: Inject data straight into the matching array index placeholder
+                await MainActor.run {
+                    if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
+                        self.openTabs[index].allLines = collectedLines
+                        self.openTabs[index].isCurrentlyStreaming = false
+                        
+                        // Re-trigger global loading state calculations
+                        self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        
+                        // Automatically trigger the background vector minimap builder script pass
+                        generateMinimapData(for: targetTabID)
+                    }
+                }
+                
+            } catch {
+                print("File streaming failed: \(error.localizedDescription)")
+                await MainActor.run {
+                    if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
+                        self.openTabs[index].allLines = ["Error streaming file contents: \(error.localizedDescription)"]
+                        self.openTabs[index].isCurrentlyStreaming = false
+                        self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                    }
+                }
+            }
             
-            generateMinimapData() // Generate map data immediately upon file load
-        } catch {
-            self.allLines = ["Error loading file: \(error.localizedDescription)"]
-            self.filteredLines = []
-            self.minimapImage = nil
+            if !accessed {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+    }
+
+    func closeTab(id: UUID) {
+        guard let index = openTabs.firstIndex(where: { $0.id == id }) else { return }
+        
+        // Call stop when completely destroying tab resources from memory
+        openTabs[index].fileURL.stopAccessingSecurityScopedResource()
+        
+        minimapTasks[id]?.cancel()
+        minimapTasks.removeValue(forKey: id)
+        openTabs.remove(at: index)
+        
+        if selectedTabID == id {
+            selectedTabID = openTabs.last?.id
         }
     }
     
     func applyFilter(with pattern: String) {
         filterTask?.cancel()
+        guard let tabID = selectedTabID, let tabIndex = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
         
         guard !pattern.isEmpty else {
-            self.filteredLines = []
+            self.openTabs[tabIndex].filteredLines = []
             self.isFiltering = false
             return
         }
         
         let regexOptions: NSRegularExpression.Options = isCaseInsensitive ? [.caseInsensitive] : []
-        
         guard let regex = try? NSRegularExpression(pattern: pattern, options: regexOptions) else {
-            self.filteredLines = [LogLine(originalIndex: 0, text: "Invalid Regular Expression")]
+            self.openTabs[tabIndex].filteredLines = [LogLine(originalIndex: 0, text: "Invalid Regular Expression")]
             return
         }
         
         isFiltering = true
         filterProgress = 0.0
-        
-        let localLinesSnapshot = self.allLines
+        let localLinesSnapshot = openTabs[tabIndex].allLines
         
         filterTask = Task(priority: .userInitiated) {
             var matched: [LogLine] = []
@@ -155,7 +285,6 @@ class LogViewModel: ObservableObject {
                 
                 let range = NSRange(location: 0, length: line.utf16.count)
                 if regex.firstMatch(in: line, options: [], range: range) != nil {
-                    // Lock the exact index alongside the text string snapshot frame
                     matched.append(LogLine(originalIndex: index, text: line))
                 }
                 
@@ -169,50 +298,48 @@ class LogViewModel: ObservableObject {
             
             if !Task.isCancelled {
                 await MainActor.run {
-                    self.filteredLines = matched
+                    if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
+                        self.openTabs[freshIndex].filteredLines = matched
+                    }
                     self.isFiltering = false
                 }
             }
         }
     }
+    
+    func generateMinimapData(for tabID: UUID) {
+        minimapTasks[tabID]?.cancel()
 
-    // HIG-COMPLIANT BACKGROUND BITMAP GENERATION CONTEXT
-    func generateMinimapData() {
-        minimapTask?.cancel()
-        
-        let localLines = self.allLines
+        guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        let localLines = openTabs[index].allLines
         let activeRules = self.highlightRules.filter { $0.compiledRegex != nil }
-        
+
         guard !localLines.isEmpty && !activeRules.isEmpty else {
-            self.minimapImage = nil
+            self.openTabs[index].minimapImage = nil
             return
         }
-        
-        minimapTask = Task(priority: .userInitiated) {
+
+        minimapTasks[tabID] = Task(priority: .userInitiated) {
             let totalLines = localLines.count
             let imgSize = NSSize(width: 30, height: 1500)
-            
-            // THE AMENDMENT: Set flipped to true so line index 0 is rendered at the top of the image buffer
+
             let bitmap = NSImage(size: imgSize, flipped: true) { rect in
                 guard let context = NSGraphicsContext.current?.cgContext else { return false }
-                
                 context.setFillColor(NSColor.windowBackgroundColor.cgColor)
                 context.fill(rect)
-                
+
                 var paintedBuckets = Set<Int>()
-                
-                for (index, line) in localLines.enumerated() {
+                for (lineIdx, line) in localLines.enumerated() {
                     if Task.isCancelled { return false }
-                    
-                    let bucket = Int((CGFloat(index) / CGFloat(totalLines)) * 1500.0)
+
+                    let bucket = Int((CGFloat(lineIdx) / CGFloat(totalLines)) * 1500.0)
                     if paintedBuckets.contains(bucket) { continue }
-                    
+
                     let range = NSRange(location: 0, length: line.utf16.count)
                     for rule in activeRules {
                         if let regex = rule.compiledRegex {
                             if regex.firstMatch(in: line, options: [], range: range) != nil {
                                 paintedBuckets.insert(bucket)
-                                
                                 context.setFillColor(rule.nsBackgroundColor.cgColor)
                                 context.fill(CGRect(x: 0, y: CGFloat(bucket), width: 30, height: 1.5))
                                 break
@@ -222,57 +349,200 @@ class LogViewModel: ObservableObject {
                 }
                 return true
             }
-            
             if !Task.isCancelled {
                 await MainActor.run {
-                    self.minimapImage = bitmap
+                    if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
+                        self.openTabs[freshIndex].minimapImage = bitmap
+                        // Explicitly tell SwiftUI to refresh any structural observers
+                        self.objectWillChange.send()
+                    }
                 }
             }
         }
     }
-    
-    func syncSelectionFromFilteredIndex(_ originalIndex: Int) {
-        guard !allLines.isEmpty else { return }
-        
-        // 1. Position the minimap indicator bar exactly at the target index percentage
-        let fraction = CGFloat(originalIndex) / CGFloat(allLines.count - 1)
-        self.selectedFraction = max(0, min(1, fraction))
-        
-        // 2. Direct event dispatch bypassing all string lookups and duplication bugs completely
-        NotificationCenter.default.post(name: topPaneDirectScrollNotification, object: originalIndex)
-    }
-    
-    func jumpToFraction(_ fraction: CGFloat) {
-        self.isScrubbingMinimap = true // Engages the minimap lock
-        self.selectedFraction = max(0, min(1, fraction))
+
+    private func generateMinimapDataForAllTabs() {
+        for tab in openTabs {
+            generateMinimapData(for: tab.id)
+        }
     }
 
-    func updateFractionFromScroll(_ fraction: CGFloat) {
-        // Only update the selection line position if the value is a valid change
-        let sanitized = max(0, min(1, fraction))
-        if self.selectedFraction != sanitized {
-            self.selectedFraction = sanitized
-        }
+    func syncSelectionFromFilteredIndex(_ originalIndex: Int) {
+        guard let tabID = selectedTabID, let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+
+        let totalCount = openTabs[index].allLines.count
+        guard totalCount > 0 else { return }
+
+        let fraction = CGFloat(originalIndex) / CGFloat(totalCount - 1)
+        self.openTabs[index].selectedFraction = max(0, min(1, fraction))
+
+        NotificationCenter.default.post(name: topPaneDirectScrollNotification, object: originalIndex)
+    }
+
+    func jumpToFraction(_ fraction: CGFloat) {
+        guard let tabID = selectedTabID, let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+
+        self.isScrubbingMinimap = true
+        self.openTabs[index].selectedFraction = max(0, min(1, fraction))
     }
 
     func updateMinimapFromLineIndex(_ index: Int) {
-        guard !allLines.isEmpty else { return }
-        let fraction = CGFloat(index) / CGFloat(allLines.count - 1)
-        self.selectedFraction = max(0, min(1, fraction))
+        guard let tabID = selectedTabID, let tabIdx = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+
+        let totalCount = openTabs[tabIdx].allLines.count
+        guard totalCount > 0 else { return }
+
+        let fraction = CGFloat(index) / CGFloat(totalCount - 1)
+        self.openTabs[tabIdx].selectedFraction = max(0, min(1, fraction))
     }
-    
-    private func saveRules() {
-        if let encoded = try? JSONEncoder().encode(highlightRules),
-           let string = String(data: encoded, encoding: .utf8) {
-            if rulesData != string { rulesData = string }
+
+    // PERSISTENCE ENGINE: SECURE LAZY SANDBOX SESSION MANAGEMENT
+    private func saveLoadedTabsSession() {
+        var base64Bookmarks: [String] = []
+        
+        for tab in openTabs {
+            do {
+                let bookmarkData = try tab.fileURL.bookmarkData(
+                    options: .withSecurityScope,
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                )
+                base64Bookmarks.append(bookmarkData.base64EncodedString())
+            } catch {
+                print("Failed to save sandbox bookmark token for \(tab.name): \(error)")
+            }
+        }
+        
+        if let data = try? JSONEncoder().encode(base64Bookmarks),
+           let string = String(data: data, encoding: .utf8) {
+            if sessionBookmarksData != string {
+                sessionBookmarksData = string
+            }
         }
     }
     
+    private func loadSavedTabsSession() {
+        guard !sessionBookmarksData.isEmpty,
+              let data = sessionBookmarksData.data(using: .utf8),
+              let base64Strings = try? JSONDecoder().decode([String].self, from: data) else { return }
+        
+        for string in base64Strings {
+            guard let bookmarkData = Data(base64Encoded: string) else { continue }
+            do {
+                var isStale = false
+                let restoredURL = try URL(
+                    resolvingBookmarkData: bookmarkData,
+                    options: .withSecurityScope,
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &isStale
+                )
+                
+                // LAZY INITIALIZATION: Create the tab skeleton instantly so it appears on the toolbar,
+                // but do NOT read any byte data from the file system yet.
+                if !openTabs.contains(where: { $0.fileURL == restoredURL }) {
+                    let lazyTab = LogTab(
+                        id: UUID(),
+                        name: restoredURL.lastPathComponent,
+                        fileURL: restoredURL,
+                        allLines: [], // Empty text block on launch pass
+                        filteredLines: [],
+                        selectedFraction: nil,
+                        minimapImage: nil,
+                        isCurrentlyStreaming: false // Sits completely idle until clicked
+                    )
+                    self.openTabs.append(lazyTab)
+                }
+            } catch {
+                print("Secure session authorization check rejected: \(error.localizedDescription)")
+            }
+        }
+        
+        // Automatically default focus to the first tab if paths were successfully restored
+        if selectedTabID == nil, let firstTabID = openTabs.first?.id {
+            selectedTabID = firstTabID
+            // Trigger loading for the initially visible document context straight away
+            triggerLazyLoadForTab(id: firstTabID)
+        }
+    }
+    
+    // PUBLIC LAZY TRIGGER HOOK: Invoked exclusively when a tab header receives user mouse focus clicks
+    func triggerLazyLoadForTab(id: UUID) {
+        guard let index = openTabs.firstIndex(where: { $0.id == id }) else { return }
+        let tab = openTabs[index]
+        
+        // Only start streaming if the file text data array is completely empty and isn't already loading
+        guard tab.allLines.isEmpty && !tab.isCurrentlyStreaming else { return }
+        
+        // Flag this targeted container as actively streaming inside our state tracker
+        self.openTabs[index].isCurrentlyStreaming = true
+        self.isLoadingFile = true
+        self.fileLoadProgress = 0.0
+        
+        let url = tab.fileURL
+        let accessed = url.startAccessingSecurityScopedResource()
+        
+        Task(priority: .userInitiated) {
+            do {
+                let fileAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                let totalBytes = (fileAttributes[.size] as? UInt64) ?? 1
+                
+                var collectedLines: [String] = []
+                var readBytes: UInt64 = 0
+                
+                for try await line in url.lines {
+                    if Task.isCancelled { break }
+                    collectedLines.append(line)
+                    
+                    readBytes += UInt64(line.utf8.count + 1)
+                    
+                    if collectedLines.count % 25000 == 0 {
+                        let progress = min(1.0, Double(readBytes) / Double(totalBytes))
+                        await MainActor.run {
+                            self.fileLoadProgress = progress
+                            self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        }
+                    }
+                }
+                
+                await MainActor.run {
+                    if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
+                        self.openTabs[freshIndex].allLines = collectedLines
+                        self.openTabs[freshIndex].isCurrentlyStreaming = false
+                        self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        
+                        // Dynamically compile the graphics engine map once data settles in place
+                        generateMinimapData(for: id)
+                    }
+                }
+            } catch {
+                print("Lazy streaming initialization pass failed: \(error.localizedDescription)")
+                await MainActor.run {
+                    if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
+                        self.openTabs[freshIndex].allLines = ["Error loading file contents: \(error.localizedDescription)"]
+                        self.openTabs[freshIndex].isCurrentlyStreaming = false
+                        self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                    }
+                }
+            }
+            
+            if !accessed {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+    }
+
+    private func saveRules() {
+        if let encoded = try? JSONEncoder().encode(highlightRules),
+        let string = String(data: encoded, encoding: .utf8) {
+            if rulesData != string { rulesData = string }
+        }
+    }
+
     private func loadRules() {
         guard !rulesData.isEmpty,
-              let data = rulesData.data(using: .utf8),
-              var decoded = try? JSONDecoder().decode([HighlightRule].self, from: data) else { return }
-        
+        let data = rulesData.data(using: .utf8),
+        var decoded = try? JSONDecoder().decode([HighlightRule].self, from: data) else { return }
+
         for i in 0..<decoded.count {
             decoded[i].updateCachedObjects()
         }
@@ -290,23 +560,23 @@ extension Color {
                   green: Double((rgb & 0x00FF00) >> 8) / 255.0,
                   blue: Double(rgb & 0x0000FF) / 255.0)
     }
-    
+
     func toHex() -> String {
         // Fall back to target hex mapping manually without casting conflicts
         guard let components = NSColor(self).usingColorSpace(.sRGB)?.cgColor.components, components.count >= 3 else {
             return "000000"
         }
-        
+
         // Extract directly as native CGFloat array elements
         let r: CGFloat = components[0]
         let g: CGFloat = components[1]
         let b: CGFloat = components[2]
-        
+
         // Convert to standard 0-255 Integer values using integer rounding multiplication math
         let rInt = Int(clamping: lround(Double(r * 255.0)))
         let gInt = Int(clamping: lround(Double(g * 255.0)))
         let bInt = Int(clamping: lround(Double(b * 255.0)))
-        
+
         return String(format: "%02X%02X%02X", rInt, gInt, bInt)
     }
 }
