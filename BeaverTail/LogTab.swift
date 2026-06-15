@@ -13,10 +13,10 @@ struct LogTab: Identifiable, Equatable, Codable {
     let fileURL: URL
     var allLines: [String] = []
     var filteredLines: [LogLine] = []
-    var selectedFraction: CGFloat? = nil
+    var selectedFraction: CGFloat?
     var filterPattern: String = ""
 
-    var minimapImage: NSImage? = nil
+    var minimapImage: NSImage?
     var isCurrentlyStreaming: Bool = false
 
     init(id: UUID = UUID(), name: String, fileURL: URL, allLines: [String] = [], filteredLines: [LogLine] = [], selectedFraction: CGFloat? = nil, minimapImage: NSImage? = nil, isCurrentlyStreaming: Bool = false, filterPattern: String = "") {

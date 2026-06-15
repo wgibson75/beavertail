@@ -15,7 +15,7 @@ struct HighlightRule: Identifiable, Codable, Equatable {
 
     var nsForegroundColor: NSColor = .labelColor
     var nsBackgroundColor: NSColor = .clear
-    var compiledRegex: NSRegularExpression? = nil
+    var compiledRegex: NSRegularExpression?
 
     var foregroundColor: Color {
         Color(hex: foregroundColorHex) ?? .black

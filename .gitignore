@@ -2,3 +2,5 @@
 ._*
 *.xcuserstate
 xcuserdata
+xcshareddata
+*.plist

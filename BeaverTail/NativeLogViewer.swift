@@ -137,8 +137,7 @@ struct NativeLogViewer: NSViewRepresentable {
         // FIXED MINIMAP SCRUBBING JUMP CONDITIONS:
         // Only auto-scroll the top pane if the user is actively dragging their cursor across the minimap bar!
         if filteredLines == nil, isMinimapActiveDrive, let fraction = selectedFraction,
-           !lines.isEmpty
-        {
+           !lines.isEmpty {
             let targetRow = Int(CGFloat(lines.count - 1) * fraction)
             if targetRow >= 0, targetRow < tableView.numberOfRows {
                 DispatchQueue.main.async {

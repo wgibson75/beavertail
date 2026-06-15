@@ -174,7 +174,7 @@ class LogViewModel: ObservableObject {
                 await MainActor.run {
                     if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
                         self.openTabs[index].allLines = [
-                            "Error streaming file contents: \(error.localizedDescription)",
+                            "Error streaming file contents: \(error.localizedDescription)"
                         ]
                         self.openTabs[index].isCurrentlyStreaming = false
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
@@ -221,7 +221,7 @@ class LogViewModel: ObservableObject {
         let regexOptions: NSRegularExpression.Options = isCaseInsensitive ? [.caseInsensitive] : []
         guard let regex = try? NSRegularExpression(pattern: pattern, options: regexOptions) else {
             openTabs[tabIndex].filteredLines = [
-                LogLine(originalIndex: 0, text: "Invalid Regular Expression"),
+                LogLine(originalIndex: 0, text: "Invalid Regular Expression")
             ]
             return
         }
@@ -248,8 +248,7 @@ class LogViewModel: ObservableObject {
 
                 // PERIODIC STREAMING UPDATES
                 if localBatch.count >= matchBatchSize || index % progressInterval == 0
-                    || index == totalLines - 1
-                {
+                    || index == totalLines - 1 {
                     let currentProgress = Double(index + 1) / Double(totalLines)
                     let batchToAppend = localBatch
                     localBatch.removeAll(keepingCapacity: true)
@@ -276,9 +275,7 @@ class LogViewModel: ObservableObject {
             if !Task.isCancelled {
                 await MainActor.run {
                     if !localBatch.isEmpty,
-                       let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID })
-                    {
-                        // FIXED: Replaced your old line 385 assignment with an append call matching the local batch variable
+                       let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
                         self.openTabs[freshIndex].filteredLines.append(contentsOf: localBatch)
                     }
                     self.filterProgress = 1.0
@@ -418,8 +415,7 @@ class LogViewModel: ObservableObject {
         }
 
         if let data = try? JSONEncoder().encode(serializedMetadata),
-           let string = String(data: data, encoding: .utf8)
-        {
+           let string = String(data: data, encoding: .utf8) {
             if sessionBookmarksData != string {
                 sessionBookmarksData = string
             }
@@ -537,7 +533,7 @@ class LogViewModel: ObservableObject {
                 await MainActor.run {
                     if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
                         self.openTabs[freshIndex].allLines = [
-                            "Error loading file contents: \(error.localizedDescription)",
+                            "Error loading file contents: \(error.localizedDescription)"
                         ]
                         self.openTabs[freshIndex].isCurrentlyStreaming = false
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
@@ -553,8 +549,7 @@ class LogViewModel: ObservableObject {
 
     private func saveRules() {
         if let encoded = try? JSONEncoder().encode(highlightRules),
-           let string = String(data: encoded, encoding: .utf8)
-        {
+           let string = String(data: encoded, encoding: .utf8) {
             if rulesData != string { rulesData = string }
         }
     }
@@ -565,8 +560,8 @@ class LogViewModel: ObservableObject {
               var decoded = try? JSONDecoder().decode([HighlightRule].self, from: data)
         else { return }
 
-        for i in 0 ..< decoded.count {
-            decoded[i].updateCachedObjects()
+        for idx in 0 ..< decoded.count {
+            decoded[idx].updateCachedObjects()
         }
         highlightRules = decoded
     }
@@ -579,14 +574,14 @@ class LogViewModel: ObservableObject {
         let fileURL = tab.fileURL
 
         // Open the file descriptor in read-only mode
-        let fd = open(fileURL.path, O_RDONLY)
-        guard fd >= 0 else { return }
+        let fileHandle = open(fileURL.path, O_RDONLY)
+        guard fileHandle >= 0 else { return }
 
-        activeTailFileDescriptor = fd
+        activeTailFileDescriptor = fileHandle
 
         // Create a kernel event source watching for file write size modifications
         let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd,
+            fileDescriptor: fileHandle,
             eventMask: .write,
             queue: DispatchQueue.global(qos: .utility)
         )
@@ -605,12 +600,11 @@ class LogViewModel: ObservableObject {
                   currentSize > lastKnownSize
             else { return }
 
-            let fileHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+            let fileHandle = FileHandle(fileDescriptor: fileHandle, closeOnDealloc: false)
             do {
                 try fileHandle.seek(toOffset: lastKnownSize)
                 if let newData = try fileHandle.read(upToCount: Int(currentSize - lastKnownSize)),
-                   let appendedText = String(data: newData, encoding: .utf8)
-                {
+                   let appendedText = String(data: newData, encoding: .utf8) {
                     lastKnownSize = currentSize
 
                     // THE REAL ACCURATE SPLITTER:
@@ -630,19 +624,13 @@ class LogViewModel: ObservableObject {
 
                     Task { @MainActor in
                         if let tabID = self.selectedTabID,
-                           let index = self.openTabs.firstIndex(where: { $0.id == tabID })
-                        {
-                            // 1. Capture the exact length profile of the file BEFORE adding new text
+                           let index = self.openTabs.firstIndex(where: { $0.id == tabID }) {
                             // This gives us the exact starting file index for our incremental tracker calculations!
                             let baseFileIndexOffset = self.openTabs[index].allLines.count
 
-                            // 2. Append text lines safely into memory
                             self.openTabs[index].allLines.append(contentsOf: linesArray)
-
-                            // 3. Re-trigger background graphics compilation frames
                             self.generateMinimapData(for: tabID)
 
-                            // 4. THE OPTIMIZATION CURE:
                             // Instead of running applyFilter() and scanning millions of lines from scratch,
                             // pass ONLY the new lines cluster into the high-performance incremental scanner!
                             self.appendFilterForLiveTail(
@@ -666,7 +654,7 @@ class LogViewModel: ObservableObject {
         }
 
         source.setCancelHandler {
-            close(fd)
+            close(fileHandle)
         }
 
         activeTailSource = source
@@ -740,14 +728,14 @@ extension Color {
         }
 
         // Extract directly as native CGFloat array elements
-        let r: CGFloat = components[0]
-        let g: CGFloat = components[1]
-        let b: CGFloat = components[2]
+        let red: CGFloat = components[0]
+        let green: CGFloat = components[1]
+        let blue: CGFloat = components[2]
 
         // Convert to standard 0-255 Integer values using integer rounding multiplication math
-        let rInt = Int(clamping: lround(Double(r * 255.0)))
-        let gInt = Int(clamping: lround(Double(g * 255.0)))
-        let bInt = Int(clamping: lround(Double(b * 255.0)))
+        let rInt = Int(clamping: lround(Double(red * 255.0)))
+        let gInt = Int(clamping: lround(Double(green * 255.0)))
+        let bInt = Int(clamping: lround(Double(blue * 255.0)))
 
         return String(format: "%02X%02X%02X", rInt, gInt, bInt)
     }
