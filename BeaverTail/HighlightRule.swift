@@ -12,6 +12,9 @@ struct HighlightRule: Identifiable, Codable, Equatable {
     var pattern: String
     var foregroundColorHex: String
     var backgroundColorHex: String
+    /// When true the compiled regex is case-sensitive ("Match Case" / Aa ON).
+    /// When false (default) the regex uses .caseInsensitive.
+    var isCaseSensitive: Bool
 
     var nsForegroundColor: NSColor = .labelColor
     var nsBackgroundColor: NSColor = .clear
@@ -26,14 +29,15 @@ struct HighlightRule: Identifiable, Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, pattern, foregroundColorHex, backgroundColorHex
+        case id, pattern, foregroundColorHex, backgroundColorHex, isCaseSensitive
     }
 
-    init(id: UUID = UUID(), pattern: String, foregroundColorHex: String, backgroundColorHex: String) {
+    init(id: UUID = UUID(), pattern: String, foregroundColorHex: String, backgroundColorHex: String, isCaseSensitive: Bool = false) {
         self.id = id
         self.pattern = pattern
         self.foregroundColorHex = foregroundColorHex
         self.backgroundColorHex = backgroundColorHex
+        self.isCaseSensitive = isCaseSensitive
         updateCachedObjects()
     }
 
@@ -43,17 +47,24 @@ struct HighlightRule: Identifiable, Codable, Equatable {
         pattern = try container.decode(String.self, forKey: .pattern)
         foregroundColorHex = try container.decode(String.self, forKey: .foregroundColorHex)
         backgroundColorHex = try container.decode(String.self, forKey: .backgroundColorHex)
+        // Default false (case-insensitive) when reading older saved data that lacks this key
+        isCaseSensitive = (try? container.decode(Bool.self, forKey: .isCaseSensitive)) ?? false
         updateCachedObjects()
     }
 
     mutating func updateCachedObjects() {
         nsForegroundColor = NSColor(foregroundColor)
         nsBackgroundColor = NSColor(backgroundColor)
-        compiledRegex = try? NSRegularExpression(pattern: pattern, options: [])
+        // isCaseSensitive ON  → no .caseInsensitive option  → strict case matching
+        // isCaseSensitive OFF → .caseInsensitive option     → relaxed matching
+        let regexOptions: NSRegularExpression.Options = isCaseSensitive ? [] : [.caseInsensitive]
+        compiledRegex = try? NSRegularExpression(pattern: pattern, options: regexOptions)
     }
 
     static func == (lhs: HighlightRule, rhs: HighlightRule) -> Bool {
         return lhs.id == rhs.id && lhs.pattern == rhs.pattern &&
-            lhs.foregroundColorHex == rhs.foregroundColorHex && lhs.backgroundColorHex == rhs.backgroundColorHex
+            lhs.foregroundColorHex == rhs.foregroundColorHex &&
+            lhs.backgroundColorHex == rhs.backgroundColorHex &&
+            lhs.isCaseSensitive == rhs.isCaseSensitive
     }
 }

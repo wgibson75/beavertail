@@ -14,6 +14,7 @@ struct HighlightSettingsView: View {
     @State private var patternInput = ""
     @State private var fgColor = Color.black
     @State private var bgColor = Color.yellow
+    @State private var isCaseSensitive = false   // false = case-insensitive (default), true = Match Case
     @State private var editingRuleID: UUID?
 
     var body: some View {
@@ -54,6 +55,11 @@ struct HighlightSettingsView: View {
                         Text("Fill").font(.system(size: 9)).foregroundColor(.secondary)
                     }
 
+                    Toggle("Aa", isOn: $isCaseSensitive)
+                        .toggleStyle(.button)
+                        .help("Match Case: when highlighted, the pattern matches case-sensitively")
+                        .font(.system(size: 11, weight: .semibold))
+
                     Button(editingRuleID == nil ? "Add Rule" : "Update") {
                         guard !patternInput.isEmpty else { return }
 
@@ -65,16 +71,18 @@ struct HighlightSettingsView: View {
                                 updatedRule.pattern = patternInput
                                 updatedRule.foregroundColorHex = fgColor.toHex()
                                 updatedRule.backgroundColorHex = bgColor.toHex()
-                                updatedRule.updateCachedObjects() // Compiles regex once on save
+                                updatedRule.isCaseSensitive = isCaseSensitive
+                                updatedRule.updateCachedObjects()
                                 viewModel.highlightRules[index] = updatedRule
                             }
                         } else {
                             var newRule = HighlightRule(
                                 pattern: patternInput,
                                 foregroundColorHex: fgColor.toHex(),
-                                backgroundColorHex: bgColor.toHex()
+                                backgroundColorHex: bgColor.toHex(),
+                                isCaseSensitive: isCaseSensitive
                             )
-                            newRule.updateCachedObjects() // Compiles regex once on save
+                            newRule.updateCachedObjects()
                             viewModel.highlightRules.append(newRule)
                         }
                         clearForm()
@@ -150,6 +158,13 @@ struct HighlightSettingsView: View {
                                     .foregroundColor(rule.foregroundColor)
                                     .cornerRadius(4)
 
+                                if rule.isCaseSensitive {
+                                    Label("Match Case", systemImage: "checkmark.square.fill")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.secondary)
+                                        .help("This rule matches case-sensitively")
+                                }
+
                                 Spacer()
 
                                 Image(systemName: "pencil")
@@ -163,6 +178,7 @@ struct HighlightSettingsView: View {
                                 patternInput = rule.pattern
                                 fgColor = rule.foregroundColor
                                 bgColor = rule.backgroundColor
+                                isCaseSensitive = rule.isCaseSensitive
                             }
 
                             Divider().frame(height: 16)
@@ -202,5 +218,6 @@ struct HighlightSettingsView: View {
         patternInput = ""
         fgColor = .black
         bgColor = .yellow
+        isCaseSensitive = false
     }
 }
