@@ -14,237 +14,160 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // TOP GLOBAL CONTROLS BAR
-            HStack {
-                Text("BeaverTail Log Analyzer")
-                    .font(.title3)
-                    .bold()
-                Spacer()
 
-                Toggle(isOn: $viewModel.showLineNumbers) {
-                    Text("Show Line Numbers")
-                        .font(.subheadline)
-                }
-                .toggleStyle(.checkbox)
-                .padding(.horizontal, 4)
-
-                Toggle(isOn: $viewModel.showMinimap) {
-                    Text("Show Minimap")
-                }
-                .toggleStyle(.checkbox)
-                .padding(.horizontal, 10)
-
-                Button("Highlight Rules...") {
-                    showHighlightManager = true
-                }
-                Button("Open Log File...") {
-                    viewModel.openFile()
-                }
-            }
-            .padding()
-            .background(Color(NSColor.windowBackgroundColor))
-
-            Divider()
-
-            // FILE STREAMING PROGRESS BAR INDICATION OVERLAY NODE
+            // FILE STREAMING PROGRESS BAR
             if viewModel.isLoadingFile {
                 VStack(spacing: 2) {
                     ProgressView(value: viewModel.fileLoadProgress)
                         .progressViewStyle(.linear)
-                        .tint(.blue) // Visual Anchor: High visibility accent coloring
-                        .controlSize(.small) // Keeps the progress bar thin and elegant
-
-                    Text(
-                        "Streaming file content... \(String(format: "%.0f%%", viewModel.fileLoadProgress * 100))"
-                    )
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundColor(.secondary)
+                        .controlSize(.small)
+                    Text("Loading file… \(Int(viewModel.fileLoadProgress * 100))%")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal)
-                .padding(.vertical, 4)
-                .background(Color(NSColor.underPageBackgroundColor).opacity(0.4))
-
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
                 Divider()
             }
 
-            // TAB SELECTOR CAROUSEL STRIP LAYOUT NODE
+            // TAB STRIP
             if !viewModel.openTabs.isEmpty {
-                HStack(spacing: 0) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 4) {
-                            ForEach(viewModel.openTabs) { tab in
-                                let isSelected = viewModel.selectedTabID == tab.id
-                                HStack(spacing: 6) {
-                                    Text(tab.name)
-                                        .font(
-                                            .system(size: 11, weight: isSelected ? .bold : .regular)
-                                        )
-                                        .foregroundColor(isSelected ? .primary : .secondary)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 2) {
+                        ForEach(viewModel.openTabs) { tab in
+                            let isSelected = viewModel.selectedTabID == tab.id
+                            HStack(spacing: 5) {
+                                Text(tab.name)
+                                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                                    .foregroundStyle(isSelected ? AnyShapeStyle(Color.primary) : AnyShapeStyle(Color.secondary))
+                                    .lineLimit(1)
 
-                                    Button {
-                                        viewModel.closeTab(id: tab.id)
-                                    } label: {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .font(.system(size: 10))
-                                            .foregroundColor(.secondary.opacity(0.6))
-                                    }
-                                    .buttonStyle(.plain)
+                                Button {
+                                    viewModel.closeTab(id: tab.id)
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 8, weight: .bold))
+                                        .foregroundStyle(.tertiary)
                                 }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(
-                                    isSelected ? Color(NSColor.controlBackgroundColor) : Color.clear
-                                )
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    viewModel.selectedTabID = tab.id
-                                    localRegexInput = tab.filterPattern
-                                    viewModel.triggerLazyLoadForTab(id: tab.id)
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background {
+                                if isSelected {
+                                    RoundedRectangle(cornerRadius: 5)
+                                        .fill(Color(NSColor.controlBackgroundColor))
+                                        .shadow(color: .black.opacity(0.08), radius: 1, y: 1)
                                 }
-
-                                Divider().frame(height: 24)
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                viewModel.selectedTabID = tab.id
+                                localRegexInput = tab.filterPattern
+                                viewModel.triggerLazyLoadForTab(id: tab.id)
                             }
                         }
-                        .padding(.horizontal, 6)
                     }
-                    .background(Color(NSColor.underPageBackgroundColor).opacity(0.3))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
                 }
-                .frame(height: 25)
-
+                .background(Color(NSColor.windowBackgroundColor))
                 Divider()
             }
 
-            // MAIN WORKSPACE INTERFACE LAYER
+            // MAIN WORKSPACE
             if viewModel.currentTab != nil {
                 HStack(spacing: 0) {
                     VSplitView {
-                        // Top Pane: Full Unfiltered Text Area
-                        VStack(alignment: .leading, spacing: 0) {
+                        // ── Top Pane: Full log ──
+                        VStack(spacing: 0) {
                             HStack {
-                                Text("Full Log View (\(viewModel.allLines.count) lines)")
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
+                                Label("\(viewModel.allLines.count) lines", systemImage: "doc.text")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                                 Spacer()
+                                if viewModel.currentTab?.isCurrentlyStreaming == true {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                        .padding(.trailing, 2)
+                                }
                             }
-                            .padding(.horizontal)
-                            .padding(.vertical, 6)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 5)
                             .background(Color(NSColor.controlBackgroundColor))
 
                             Divider()
 
-                            ZStack {
-                                NativeLogViewer(
-                                    lines: viewModel.allLines,
-                                    textColor: .labelColor,
-                                    rules: viewModel.highlightRules,
-                                    selectedFraction: viewModel.selectedFraction,
-                                    directScrollNotificationName: topPaneDirectScrollNotification,
-                                    tailScrollNotificationName: topPaneScrollToBottomNotification,
-                                    showLineNumbers: viewModel.showLineNumbers,
-                                    isMinimapActiveDrive: viewModel.isScrubbingMinimap,
-                                    onLineIndexSelected: { index in
-                                        viewModel.updateMinimapFromLineIndex(index)
-                                    }
-                                ).id(viewModel.selectedTabID?.uuidString ?? "top")
-
-                                // TAB STREAMING INTERFACE OVERLAY BLOCK
-                                // Adds a translucent overlay with a native loading spinner if the user switches to this tab while it is still streaming data
-                                if viewModel.currentTab?.isCurrentlyStreaming == true {
-                                    VStack(spacing: 12) {
-                                        ProgressView() // Standard system circular loading indicator ring
-                                            .controlSize(.large)
-                                        Text("Loading log lines into memory...")
-                                            .font(.headline)
-                                            .foregroundColor(.secondary)
-                                    }
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                    .background(Color(NSColor.windowBackgroundColor).opacity(0.85))
+                            NativeLogViewer(
+                                lines: viewModel.allLines,
+                                textColor: .labelColor,
+                                rules: viewModel.highlightRules,
+                                selectedFraction: viewModel.selectedFraction,
+                                directScrollNotificationName: topPaneDirectScrollNotification,
+                                tailScrollNotificationName: topPaneScrollToBottomNotification,
+                                showLineNumbers: viewModel.showLineNumbers,
+                                isMinimapActiveDrive: viewModel.isScrubbingMinimap,
+                                onLineIndexSelected: { index in
+                                    viewModel.updateMinimapFromLineIndex(index)
                                 }
-                            }
+                            ).id(viewModel.selectedTabID?.uuidString ?? "top")
                         }
                         .frame(minHeight: 120)
 
-                        // Bottom Pane: Regex Filter Node
-                        // Bottom Pane: Regex Filter Node Layout Container
-                        VStack(alignment: .leading, spacing: 0) {
-                            Divider()
+                        // ── Bottom Pane: Filter ──
+                        VStack(spacing: 0) {
+                            HStack(spacing: 8) {
+                                Text("Filter")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .frame(minWidth: 32, alignment: .trailing)
 
-                            VStack(spacing: 0) {
-                                HStack(spacing: 12) {
-                                    Text("Regex Filter:")
-                                        .font(.headline)
-
-                                    TextField(
-                                        "Enter regex criteria and press Enter",
-                                        text: $localRegexInput
-                                    )
+                                TextField("Regex pattern…", text: $localRegexInput)
                                     .textFieldStyle(.roundedBorder)
                                     .onSubmit {
                                         viewModel.applyFilter(with: localRegexInput)
                                     }
 
-                                    Toggle(isOn: $viewModel.isCaseInsensitive) {
-                                        Text("Ignore Case")
-                                    }
+                                Toggle("Ignore Case", isOn: $viewModel.isCaseInsensitive)
                                     .toggleStyle(.checkbox)
                                     .onChange(of: viewModel.isCaseInsensitive) { _, _ in
                                         viewModel.applyFilter(with: localRegexInput)
                                     }
-                                }
-                                .padding()
-
-                                // REGEX SEARCH PROGRESS INDICATOR OVERLAY NODE
-                                // Renders a thin, high-utility progress tracker strip right below the entry box
-                                // the exact millisecond the background utility thread kicks off a new regex query scan
-                                if viewModel.isFiltering {
-                                    VStack(spacing: 2) {
-                                        ProgressView(value: viewModel.filterProgress)
-                                            .progressViewStyle(.linear)
-                                            .tint(.blue) // Visual Anchor matching file streaming accents
-                                            .controlSize(.small) // Keeps the progress bar thin and elegant
-
-                                        HStack {
-                                            Spacer()
-                                            Text(
-                                                "Applying regular expression... \(String(format: "%.0f%%", viewModel.filterProgress * 100))"
-                                            )
-                                            .font(
-                                                .system(
-                                                    size: 9, weight: .semibold, design: .monospaced
-                                                )
-                                            )
-                                            .foregroundColor(.secondary)
-                                        }
-                                        .padding(.horizontal, 4)
-                                    }
-                                    .padding(.horizontal)
-                                    .padding(.bottom, 6)
-                                    .transition(.opacity) // Smooth fade entry transform framework
-                                }
                             }
-                            .background(Color(NSColor.windowBackgroundColor))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color(NSColor.controlBackgroundColor))
+
+                            if viewModel.isFiltering {
+                                ProgressView(value: viewModel.filterProgress)
+                                    .progressViewStyle(.linear)
+                                    .controlSize(.small)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 2)
+                            }
 
                             Divider()
 
                             if viewModel.filteredLines.isEmpty
                                 && !viewModel.isFiltering
-                                && localRegexInput.isEmpty {
-                                VStack {
-                                    Spacer()
-                                    Text("Enter a criteria pattern string above to separate rows.")
-                                        .foregroundColor(.secondary)
-                                    Spacer()
+                                && localRegexInput.isEmpty
+                            {
+                                VStack(spacing: 8) {
+                                    Image(systemName: "magnifyingglass")
+                                        .font(.system(size: 28))
+                                        .foregroundStyle(.tertiary)
+                                    Text("Enter a regex pattern above to filter log lines")
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
                                 }
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .background(Color(NSColor.controlBackgroundColor))
                             } else {
                                 NativeLogViewer(
                                     filteredLines: viewModel.filteredLines,
                                     textColor: .secondaryLabelColor,
                                     rules: viewModel.highlightRules,
                                     selectedFraction: viewModel.selectedFraction,
-                                    tailScrollNotificationName:
-                                    bottomPaneScrollToBottomNotification,
+                                    tailScrollNotificationName: bottomPaneScrollToBottomNotification,
                                     showLineNumbers: viewModel.showLineNumbers,
                                     onLineIndexSelected: { originalIndex in
                                         viewModel.syncSelectionFromFilteredIndex(originalIndex)
@@ -267,39 +190,85 @@ struct ContentView: View {
                     }
                 }
             } else {
-                // Initial empty drop-zone canvas layout
-                VStack(spacing: 12) {
-                    Spacer()
+                // Empty state
+                VStack(spacing: 10) {
                     Image(systemName: "doc.text.magnifyingglass")
-                        .font(.system(size: 48))
-                        .foregroundColor(.secondary.opacity(0.6))
-                    Text("No Logs Loaded")
-                        .font(.headline)
-                    Text("Click 'Open Log File...' to open one or more log files simultaneously.")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    Spacer()
+                        .font(.system(size: 44))
+                        .foregroundStyle(.tertiary)
+                    Text("No Log File Open")
+                        .font(.title3)
+                        .fontWeight(.medium)
+                    Text("Open a log file to get started.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("Open Log File…") {
+                        viewModel.openFile()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .padding(.top, 4)
+                    .keyboardShortcut("o", modifiers: .command)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(NSColor.underPageBackgroundColor).opacity(0.2))
             }
         }
+        // WindowCloseInterceptor hooks NSWindowDelegate so ⌘W closes the active tab
+        // instead of the whole window. When no tabs are open the window closes normally.
+        .background {
+            WindowCloseInterceptor {
+                guard let tabID = viewModel.selectedTabID else { return false }
+                viewModel.closeTab(id: tabID)
+                return true
+            }
+            .frame(width: 0, height: 0)
+        }
         .frame(minWidth: 800, minHeight: 500)
-        .animation(.default, value: viewModel.showMinimap)
-        .animation(.default, value: viewModel.openTabs.count)
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                HStack(spacing: 16) {
+                    Toggle(isOn: $viewModel.showLineNumbers) {
+                        Label("Line Numbers", systemImage: "list.number")
+                    }
+                    .toggleStyle(.checkbox)
+                    .help("Show line numbers")
+                    .padding(.leading, 10)
+
+                    Toggle(isOn: $viewModel.showMinimap) {
+                        Label("Minimap", systemImage: "sidebar.right")
+                    }
+                    .toggleStyle(.checkbox)
+                    .help("Show minimap")
+                }
+            }
+
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    showHighlightManager = true
+                } label: {
+                    Label("Highlight Rules", systemImage: "paintbrush")
+                }
+
+                Button {
+                    viewModel.openFile()
+                } label: {
+                    Label("Open Log File", systemImage: "folder")
+                }
+                .keyboardShortcut("o", modifiers: .command)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: viewModel.showMinimap)
+        .animation(.easeInOut(duration: 0.15), value: viewModel.openTabs.count)
         .sheet(isPresented: $showHighlightManager) {
             HighlightSettingsView(viewModel: viewModel)
         }
         .onChange(of: viewModel.selectedTabID) { _, newTabID in
             if let targetID = newTabID {
                 viewModel.triggerLazyLoadForTab(id: targetID)
-
                 if let matchingTab = viewModel.openTabs.first(where: { $0.id == targetID }) {
                     localRegexInput = matchingTab.filterPattern
                 }
             }
         }
-        // CLEANUP INTERFACE: Avoid kernel resource file locks when the application shuts down
         .onDisappear {
             viewModel.stopLiveTailing()
         }

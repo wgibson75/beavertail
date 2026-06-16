@@ -71,6 +71,7 @@ class LogViewModel: ObservableObject {
 
     private var filterTask: Task<Void, Never>?
     private var minimapTasks: [UUID: Task<Void, Never>] = [:]
+    private var sessionSaveDebounceTask: Task<Void, Never>?
     private var activeTailSource: DispatchSourceFileSystemObject?
     private var activeTailFileDescriptor: Int32 = -1
     private var currentActiveFilterPattern: String = ""
@@ -127,51 +128,63 @@ class LogViewModel: ObservableObject {
             selectedTabID = targetTabID
         }
 
+        // Reset progress bar immediately so it always starts clean from 0
+        isLoadingFile = true
+        fileLoadProgress = 0.0
+
         let accessed = url.startAccessingSecurityScopedResource()
 
-        // 3. BACKGROUND STREAMING PHASE: Runs concurrently on a background worker thread
-        Task(priority: .userInitiated) {
+        // 3. BACKGROUND STREAMING PHASE — Task.detached ensures this runs OFF the main actor
+        // so the file-reading loop never blocks SwiftUI rendering between progress updates.
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else {
+                if !accessed { url.stopAccessingSecurityScopedResource() }
+                return
+            }
             do {
                 let fileAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
-                let totalBytes = (fileAttributes[.size] as? UInt64) ?? 1
+                let totalBytes = max(1, (fileAttributes[.size] as? UInt64) ?? 1)
 
                 var collectedLines: [String] = []
                 var readBytes: UInt64 = 0
+
+                // Advance progress every ~1% of the file's byte size for even, predictable steps
+                let updateStride = max(1, totalBytes / 100)
+                var nextUpdateThreshold = updateStride
 
                 // Core high-efficiency byte reader loop pipeline
                 for try await line in url.lines {
                     if Task.isCancelled { break }
                     collectedLines.append(line)
-
                     readBytes += UInt64(line.utf8.count + 1)
 
-                    // Keep the global progress indicator updated smoothly
-                    if collectedLines.count % 25000 == 0 {
-                        let progress = min(1.0, Double(readBytes) / Double(totalBytes))
-                        await MainActor.run {
-                            self.fileLoadProgress = progress
-                            self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                    if readBytes >= nextUpdateThreshold {
+                        nextUpdateThreshold += updateStride
+                        let progress = min(0.99, Double(readBytes) / Double(totalBytes))
+                        await MainActor.run { [weak self] in
+                            self?.fileLoadProgress = progress
+                            self?.isLoadingFile = self?.openTabs.contains { $0.isCurrentlyStreaming } ?? false
                         }
                     }
                 }
 
                 // 4. ATOMIC CORRECTION SWAP: Inject data straight into the matching array index placeholder
-                await MainActor.run {
+                let finishedLines = collectedLines
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
                     if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
-                        self.openTabs[index].allLines = collectedLines
+                        self.openTabs[index].allLines = finishedLines
                         self.openTabs[index].isCurrentlyStreaming = false
-
-                        // Re-trigger global loading state calculations
+                        self.fileLoadProgress = 1.0
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
-
-                        // Automatically trigger the background vector minimap builder script pass
-                        generateMinimapData(for: targetTabID)
+                        self.generateMinimapData(for: targetTabID)
                     }
                 }
 
             } catch {
                 print("File streaming failed: \(error.localizedDescription)")
-                await MainActor.run {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
                     if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
                         self.openTabs[index].allLines = [
                             "Error streaming file contents: \(error.localizedDescription)"
@@ -232,7 +245,7 @@ class LogViewModel: ObservableObject {
 
         let localLinesSnapshot = openTabs[tabIndex].allLines
 
-        filterTask = Task(priority: .userInitiated) {
+        filterTask = Task.detached(priority: .userInitiated) { [weak self] in
             var localBatch: [LogLine] = []
             let totalLines = localLinesSnapshot.count
             let progressInterval = max(1, totalLines / 100)
@@ -253,14 +266,11 @@ class LogViewModel: ObservableObject {
                     let batchToAppend = localBatch
                     localBatch.removeAll(keepingCapacity: true)
 
-                    await MainActor.run {
+                    await MainActor.run { [weak self] in
+                        guard let self else { return }
                         if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                            // CHANGED: Appends the chunked batch to memory progressively
-                            self.openTabs[freshIndex].filteredLines.append(
-                                contentsOf: batchToAppend
-                            )
+                            self.openTabs[freshIndex].filteredLines.append(contentsOf: batchToAppend)
                             self.filterProgress = currentProgress
-
                             DispatchQueue.main.async {
                                 NotificationCenter.default.post(
                                     name: bottomPaneScrollToBottomNotification, object: nil
@@ -273,14 +283,15 @@ class LogViewModel: ObservableObject {
 
             // FINAL PASS: Flush any remaining items left in the buffer array
             if !Task.isCancelled {
-                await MainActor.run {
-                    if !localBatch.isEmpty,
+                let remaining = localBatch
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    if !remaining.isEmpty,
                        let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                        self.openTabs[freshIndex].filteredLines.append(contentsOf: localBatch)
+                        self.openTabs[freshIndex].filteredLines.append(contentsOf: remaining)
                     }
                     self.filterProgress = 1.0
                     self.isFiltering = false
-
                     DispatchQueue.main.async {
                         NotificationCenter.default.post(
                             name: bottomPaneScrollToBottomNotification, object: nil
@@ -303,45 +314,68 @@ class LogViewModel: ObservableObject {
             return
         }
 
-        minimapTasks[tabID] = Task(priority: .userInitiated) {
+        // Capture CGColors and compiled regexes on the main actor NOW, before going
+        // to the background, so we never touch NSColor or NSRegularExpression from
+        // a non-main thread.
+        struct RuleCapture {
+            let regex: NSRegularExpression
+            let color: CGColor
+        }
+        let captures = activeRules.compactMap { rule -> RuleCapture? in
+            guard let rx = rule.compiledRegex else { return nil }
+            return RuleCapture(regex: rx, color: rule.nsBackgroundColor.cgColor)
+        }
+        let bgColor = NSColor.windowBackgroundColor.cgColor
+
+        // Task.detached: runs entirely off the main actor so the pixel loop
+        // never blocks SwiftUI rendering.
+        minimapTasks[tabID] = Task.detached(priority: .utility) { [weak self] in
             let totalLines = localLines.count
-            let imgSize = NSSize(width: 30, height: 1500)
+            let imgWidth  = 30
+            let imgHeight = 1500
 
-            let bitmap = NSImage(size: imgSize, flipped: true) { rect in
-                guard let context = NSGraphicsContext.current?.cgContext else { return false }
-                context.setFillColor(NSColor.windowBackgroundColor.cgColor)
-                context.fill(rect)
+            // Build a thread-safe CGContext directly — no NSGraphicsContext required.
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            guard let ctx = CGContext(
+                data: nil,
+                width: imgWidth,
+                height: imgHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: imgWidth * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                           | CGBitmapInfo.byteOrder32Little.rawValue
+            ) else { return }
 
-                var paintedBuckets = Set<Int>()
-                for (lineIdx, line) in localLines.enumerated() {
-                    if Task.isCancelled { return false }
+            ctx.setFillColor(bgColor)
+            ctx.fill(CGRect(x: 0, y: 0, width: imgWidth, height: imgHeight))
 
-                    let bucket = Int((CGFloat(lineIdx) / CGFloat(totalLines)) * 1500.0)
-                    if paintedBuckets.contains(bucket) { continue }
+            var paintedBuckets = Set<Int>(minimumCapacity: imgHeight)
+            for (lineIdx, line) in localLines.enumerated() {
+                if Task.isCancelled { return }
 
-                    let range = NSRange(location: 0, length: line.utf16.count)
-                    for rule in activeRules {
-                        if let regex = rule.compiledRegex {
-                            if regex.firstMatch(in: line, options: [], range: range) != nil {
-                                paintedBuckets.insert(bucket)
-                                context.setFillColor(rule.nsBackgroundColor.cgColor)
-                                context.fill(
-                                    CGRect(x: 0, y: CGFloat(bucket), width: 30, height: 1.5)
-                                )
-                                break
-                            }
-                        }
+                let bucket = Int((CGFloat(lineIdx) / CGFloat(totalLines)) * CGFloat(imgHeight))
+                if paintedBuckets.contains(bucket) { continue }
+
+                let range = NSRange(location: 0, length: line.utf16.count)
+                for capture in captures {
+                    if capture.regex.firstMatch(in: line, options: [], range: range) != nil {
+                        paintedBuckets.insert(bucket)
+                        ctx.setFillColor(capture.color)
+                        ctx.fill(CGRect(x: 0, y: bucket, width: imgWidth, height: 2))
+                        break
                     }
                 }
-                return true
             }
-            if !Task.isCancelled {
-                await MainActor.run {
-                    if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                        self.openTabs[freshIndex].minimapImage = bitmap
-                        // Explicitly tell SwiftUI to refresh any structural observers
-                        self.objectWillChange.send()
-                    }
+
+            guard !Task.isCancelled, let cgImage = ctx.makeImage() else { return }
+            let bitmap = NSImage(cgImage: cgImage, size: NSSize(width: imgWidth, height: imgHeight))
+
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
+                    self.openTabs[freshIndex].minimapImage = bitmap
+                    self.objectWillChange.send()
                 }
             }
         }
@@ -389,6 +423,18 @@ class LogViewModel: ObservableObject {
 
     /// PERSISTENCE ENGINE: SECURE LAZY SANDBOX SESSION MANAGEMENT
     private func saveLoadedTabsSession() {
+        // Debounce: cancel any pending save and restart the timer.
+        // This prevents hundreds of expensive bookmark-creation calls during
+        // rapid openTabs mutations (e.g. every filtered-lines append).
+        sessionSaveDebounceTask?.cancel()
+        sessionSaveDebounceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 s quiet period
+            guard !Task.isCancelled else { return }
+            self?.flushSaveLoadedTabsSession()
+        }
+    }
+
+    private func flushSaveLoadedTabsSession() {
         // Struct to model our serialized payload
         struct SavedTabMetadata: Codable {
             let bookmarkBase64: String
@@ -485,33 +531,46 @@ class LogViewModel: ObservableObject {
         let url = tab.fileURL
         let accessed = url.startAccessingSecurityScopedResource()
 
-        Task(priority: .userInitiated) {
+        // Task.detached keeps the file-reading loop off the main actor so SwiftUI
+        // can render progress updates freely between iterations.
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else {
+                if !accessed { url.stopAccessingSecurityScopedResource() }
+                return
+            }
             do {
                 let fileAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
-                let totalBytes = (fileAttributes[.size] as? UInt64) ?? 1
+                let totalBytes = max(1, (fileAttributes[.size] as? UInt64) ?? 1)
 
                 var collectedLines: [String] = []
                 var readBytes: UInt64 = 0
 
+                // Advance progress every ~1% of the file's byte size for even, predictable steps
+                let updateStride = max(1, totalBytes / 100)
+                var nextUpdateThreshold = updateStride
+
                 for try await line in url.lines {
                     if Task.isCancelled { break }
                     collectedLines.append(line)
-
                     readBytes += UInt64(line.utf8.count + 1)
 
-                    if collectedLines.count % 25000 == 0 {
-                        let progress = min(1.0, Double(readBytes) / Double(totalBytes))
-                        await MainActor.run {
-                            self.fileLoadProgress = progress
-                            self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                    if readBytes >= nextUpdateThreshold {
+                        nextUpdateThreshold += updateStride
+                        let progress = min(0.99, Double(readBytes) / Double(totalBytes))
+                        await MainActor.run { [weak self] in
+                            self?.fileLoadProgress = progress
+                            self?.isLoadingFile = self?.openTabs.contains { $0.isCurrentlyStreaming } ?? false
                         }
                     }
                 }
 
-                await MainActor.run {
+                let finishedLines = collectedLines
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
                     if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
-                        self.openTabs[freshIndex].allLines = collectedLines
+                        self.openTabs[freshIndex].allLines = finishedLines
                         self.openTabs[freshIndex].isCurrentlyStreaming = false
+                        self.fileLoadProgress = 1.0
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
 
                         self.generateMinimapData(for: id)
@@ -522,7 +581,7 @@ class LogViewModel: ObservableObject {
                             self.applyFilter(with: savedPattern)
                         }
 
-                        // HERE: Start watching file handles if this loading tab is the currently focused one
+                        // Start watching file handles if this loading tab is the currently focused one
                         if self.selectedTabID == id {
                             self.startLiveTailingForActiveTab()
                         }
@@ -530,7 +589,8 @@ class LogViewModel: ObservableObject {
                 }
             } catch {
                 print("Lazy streaming initialization pass failed: \(error.localizedDescription)")
-                await MainActor.run {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
                     if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
                         self.openTabs[freshIndex].allLines = [
                             "Error loading file contents: \(error.localizedDescription)"
