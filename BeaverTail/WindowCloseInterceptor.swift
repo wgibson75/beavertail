@@ -55,11 +55,16 @@ struct WindowCloseInterceptor: NSViewRepresentable {
         // MARK: NSWindowDelegate
 
         func windowShouldClose(_ sender: NSWindow) -> Bool {
-            if shouldConsumeClose() {
-                return false // Tab consumed — keep window open
+            // If the close was triggered by a mouse event the user clicked the
+            // red traffic-light button — terminate the application.
+            if NSApp.currentEvent?.type == .leftMouseUp {
+                NSApp.terminate(nil)
+                return false
             }
-            // No tab to close — forward to previous delegate or allow close
-            return previousDelegate?.windowShouldClose?(sender) ?? true
+            // Otherwise this is ⌘W (a key event) — consume it to close a tab
+            // or do nothing if no tabs are open.
+            _ = shouldConsumeClose()
+            return false // Never close the window via ⌘W
         }
 
         // Forward all other delegate messages to the previous delegate

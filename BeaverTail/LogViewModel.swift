@@ -25,6 +25,7 @@ class LogViewModel: ObservableObject {
         didSet {
             stopLiveTailing()
             startLiveTailingForActiveTab()
+            saveLoadedTabsSession()
         }
     }
 
@@ -72,6 +73,16 @@ class LogViewModel: ObservableObject {
         loadFilterHistory()
         loadRecentFiles()
         DispatchQueue.main.async { self.loadSavedTabsSession() }
+
+        // Flush the session synchronously the moment the app begins terminating,
+        // before the Swift concurrency runtime shuts down and cancels the debounce task.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.flushSaveLoadedTabsSession()
+        }
     }
 
     func openFile() {
@@ -111,13 +122,8 @@ class LogViewModel: ObservableObject {
         isLoadingFile = true
         fileLoadProgress = 0.0
 
-        let accessed = url.startAccessingSecurityScopedResource()
-
         Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self else {
-                if !accessed { url.stopAccessingSecurityScopedResource() }
-                return
-            }
+            guard let self else { return }
             do {
                 let finishedLines = try Self.loadLinesFast(from: url) { frac in
                     Task { @MainActor [weak self] in
@@ -145,13 +151,11 @@ class LogViewModel: ObservableObject {
                     }
                 }
             }
-            if !accessed { url.stopAccessingSecurityScopedResource() }
         }
     }
 
     func closeTab(id: UUID) {
         guard let index = openTabs.firstIndex(where: { $0.id == id }) else { return }
-        openTabs[index].fileURL.stopAccessingSecurityScopedResource()
         minimapTasks[id]?.cancel()
         minimapTasks.removeValue(forKey: id)
         openTabs.remove(at: index)
@@ -324,44 +328,97 @@ class LogViewModel: ObservableObject {
         }
     }
 
-    private func flushSaveLoadedTabsSession() {
-        struct SavedTabMetadata: Codable { let bookmarkBase64: String; let filterPattern: String }
+    func flushSaveLoadedTabsSession() {
+        struct SavedTabMetadata: Codable {
+            let bookmarkBase64: String
+            let filterPattern: String
+            let isSelected: Bool
+        }
         var serializedMetadata: [SavedTabMetadata] = []
         for tab in openTabs {
             do {
-                let bm = try tab.fileURL.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
-                serializedMetadata.append(SavedTabMetadata(bookmarkBase64: bm.base64EncodedString(), filterPattern: tab.filterPattern))
+                // Use minimal options — security-scoped bookmarks require App Sandbox
+                // which this app does not use.
+                let bm = try tab.fileURL.bookmarkData(
+                    options: [],
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                )
+                serializedMetadata.append(SavedTabMetadata(
+                    bookmarkBase64: bm.base64EncodedString(),
+                    filterPattern: tab.filterPattern,
+                    isSelected: tab.id == selectedTabID
+                ))
             } catch { print("Failed to save bookmark for \(tab.name): \(error)") }
         }
-        if let data = try? JSONEncoder().encode(serializedMetadata), let string = String(data: data, encoding: .utf8) {
-            if sessionBookmarksData != string { sessionBookmarksData = string }
+        if let data = try? JSONEncoder().encode(serializedMetadata),
+           let string = String(data: data, encoding: .utf8) {
+            sessionBookmarksData = string
+            // Force an immediate UserDefaults flush so the data is on disk
+            // before the process exits (async batching would lose it otherwise).
+            UserDefaults.standard.synchronize()
         }
     }
 
     private func loadSavedTabsSession() {
-        struct SavedTabMetadata: Codable { let bookmarkBase64: String; let filterPattern: String }
+        struct SavedTabMetadata: Codable {
+            let bookmarkBase64: String
+            let filterPattern: String
+            let isSelected: Bool?   // nil for entries saved before this field existed
+        }
         guard !sessionBookmarksData.isEmpty,
               let data = sessionBookmarksData.data(using: .utf8),
               let metadataArray = try? JSONDecoder().decode([SavedTabMetadata].self, from: data)
         else { return }
 
+        var restoredSelectedID: UUID? = nil
+
         for metadata in metadataArray {
             guard let bookmarkData = Data(base64Encoded: metadata.bookmarkBase64) else { continue }
             do {
                 var isStale = false
-                let restoredURL = try URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
-                if !openTabs.contains(where: { $0.fileURL == restoredURL }) {
-                    let lazyTab = LogTab(id: UUID(), name: restoredURL.lastPathComponent, fileURL: restoredURL,
-                                        allLines: [], filteredLines: [], selectedFraction: nil, minimapImage: nil,
-                                        isCurrentlyStreaming: false, filterPattern: metadata.filterPattern)
-                    openTabs.append(lazyTab)
+                let restoredURL = try URL(
+                    resolvingBookmarkData: bookmarkData,
+                    options: [],
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &isStale
+                )
+
+                // Skip if the file no longer exists on disk
+                guard FileManager.default.fileExists(atPath: restoredURL.path) else {
+                    print("Session restore: file no longer exists, skipping – \(restoredURL.lastPathComponent)")
+                    continue
                 }
-            } catch { print("Session restore failed: \(error.localizedDescription)") }
+
+                guard !openTabs.contains(where: { $0.fileURL == restoredURL }) else { continue }
+
+                let newID = UUID()
+                let lazyTab = LogTab(
+                    id: newID,
+                    name: restoredURL.lastPathComponent,
+                    fileURL: restoredURL,
+                    allLines: [],
+                    filteredLines: [],
+                    selectedFraction: nil,
+                    minimapImage: nil,
+                    isCurrentlyStreaming: false,
+                    filterPattern: metadata.filterPattern
+                )
+                openTabs.append(lazyTab)
+
+                if metadata.isSelected == true {
+                    restoredSelectedID = newID
+                }
+            } catch {
+                print("Session restore failed: \(error.localizedDescription)")
+            }
         }
 
-        if selectedTabID == nil, let firstTabID = openTabs.first?.id {
-            selectedTabID = firstTabID
-            triggerLazyLoadForTab(id: firstTabID)
+        // Select the tab that was active at last close, falling back to the first tab
+        let targetID = restoredSelectedID ?? openTabs.first?.id
+        if let targetID {
+            selectedTabID = targetID
+            triggerLazyLoadForTab(id: targetID)
         }
     }
 
@@ -375,13 +432,9 @@ class LogViewModel: ObservableObject {
         fileLoadProgress = 0.0
 
         let url = tab.fileURL
-        let accessed = url.startAccessingSecurityScopedResource()
 
         Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self else {
-                if !accessed { url.stopAccessingSecurityScopedResource() }
-                return
-            }
+            guard let self else { return }
             do {
                 let finishedLines = try Self.loadLinesFast(from: url) { frac in
                     Task { @MainActor [weak self] in
@@ -414,7 +467,6 @@ class LogViewModel: ObservableObject {
                     }
                 }
             }
-            if !accessed { url.stopAccessingSecurityScopedResource() }
         }
     }
 
@@ -451,7 +503,7 @@ class LogViewModel: ObservableObject {
     // MARK: - Recent Files
 
     func addToRecentFiles(_ url: URL) {
-        guard let bookmark = try? url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil) else { return }
+        guard let bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) else { return }
         let entry = RecentFile(name: url.lastPathComponent, bookmarkBase64: bookmark.base64EncodedString())
         recentFiles.removeAll { $0.name == entry.name }
         recentFiles.insert(entry, at: 0)
@@ -463,7 +515,7 @@ class LogViewModel: ObservableObject {
         guard let bookmarkData = Data(base64Encoded: recent.bookmarkBase64) else { return }
         do {
             var isStale = false
-            let url = try URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
+            let url = try URL(resolvingBookmarkData: bookmarkData, options: [], relativeTo: nil, bookmarkDataIsStale: &isStale)
             loadNewTab(from: url)
         } catch {
             recentFiles.removeAll { $0.bookmarkBase64 == recent.bookmarkBase64 }
