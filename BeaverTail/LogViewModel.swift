@@ -142,34 +142,15 @@ class LogViewModel: ObservableObject {
                 return
             }
             do {
-                let fileAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
-                let totalBytes = max(1, (fileAttributes[.size] as? UInt64) ?? 1)
-
-                var collectedLines: [String] = []
-                var readBytes: UInt64 = 0
-
-                // Advance progress every ~1% of the file's byte size for even, predictable steps
-                let updateStride = max(1, totalBytes / 100)
-                var nextUpdateThreshold = updateStride
-
-                // Core high-efficiency byte reader loop pipeline
-                for try await line in url.lines {
-                    if Task.isCancelled { break }
-                    collectedLines.append(line)
-                    readBytes += UInt64(line.utf8.count + 1)
-
-                    if readBytes >= nextUpdateThreshold {
-                        nextUpdateThreshold += updateStride
-                        let progress = min(0.99, Double(readBytes) / Double(totalBytes))
-                        await MainActor.run { [weak self] in
-                            self?.fileLoadProgress = progress
-                            self?.isLoadingFile = self?.openTabs.contains { $0.isCurrentlyStreaming } ?? false
-                        }
+                // FAST PATH: memory-mapped, multi-core parallel parse.
+                let finishedLines = try Self.loadLinesFast(from: url) { frac in
+                    Task { @MainActor [weak self] in
+                        self?.fileLoadProgress = frac
+                        self?.isLoadingFile = self?.openTabs.contains { $0.isCurrentlyStreaming } ?? false
                     }
                 }
 
                 // 4. ATOMIC CORRECTION SWAP: Inject data straight into the matching array index placeholder
-                let finishedLines = collectedLines
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
@@ -246,57 +227,26 @@ class LogViewModel: ObservableObject {
         let localLinesSnapshot = openTabs[tabIndex].allLines
 
         filterTask = Task.detached(priority: .userInitiated) { [weak self] in
-            var localBatch: [LogLine] = []
-            let totalLines = localLinesSnapshot.count
-            let progressInterval = max(1, totalLines / 100)
-            let matchBatchSize = 5000
-
-            for (index, line) in localLinesSnapshot.enumerated() {
-                if Task.isCancelled { return }
-
-                let range = NSRange(location: 0, length: line.utf16.count)
-                if regex.firstMatch(in: line, options: [], range: range) != nil {
-                    localBatch.append(LogLine(originalIndex: index, text: line))
-                }
-
-                // PERIODIC STREAMING UPDATES
-                if localBatch.count >= matchBatchSize || index % progressInterval == 0
-                    || index == totalLines - 1 {
-                    let currentProgress = Double(index + 1) / Double(totalLines)
-                    let batchToAppend = localBatch
-                    localBatch.removeAll(keepingCapacity: true)
-
-                    await MainActor.run { [weak self] in
-                        guard let self else { return }
-                        if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                            self.openTabs[freshIndex].filteredLines.append(contentsOf: batchToAppend)
-                            self.filterProgress = currentProgress
-                            DispatchQueue.main.async {
-                                NotificationCenter.default.post(
-                                    name: bottomPaneScrollToBottomNotification, object: nil
-                                )
-                            }
-                        }
-                    }
+            // FAST PATH: multi-core parallel regex scan.
+            let result = Self.filterLinesFast(lines: localLinesSnapshot, regex: regex) { frac in
+                Task { @MainActor [weak self] in
+                    self?.filterProgress = frac
                 }
             }
 
-            // FINAL PASS: Flush any remaining items left in the buffer array
-            if !Task.isCancelled {
-                let remaining = localBatch
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    if !remaining.isEmpty,
-                       let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                        self.openTabs[freshIndex].filteredLines.append(contentsOf: remaining)
-                    }
-                    self.filterProgress = 1.0
-                    self.isFiltering = false
-                    DispatchQueue.main.async {
-                        NotificationCenter.default.post(
-                            name: bottomPaneScrollToBottomNotification, object: nil
-                        )
-                    }
+            if Task.isCancelled { return }
+
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
+                    self.openTabs[freshIndex].filteredLines = result
+                }
+                self.filterProgress = 1.0
+                self.isFiltering = false
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(
+                        name: bottomPaneScrollToBottomNotification, object: nil
+                    )
                 }
             }
         }
@@ -539,32 +489,14 @@ class LogViewModel: ObservableObject {
                 return
             }
             do {
-                let fileAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
-                let totalBytes = max(1, (fileAttributes[.size] as? UInt64) ?? 1)
-
-                var collectedLines: [String] = []
-                var readBytes: UInt64 = 0
-
-                // Advance progress every ~1% of the file's byte size for even, predictable steps
-                let updateStride = max(1, totalBytes / 100)
-                var nextUpdateThreshold = updateStride
-
-                for try await line in url.lines {
-                    if Task.isCancelled { break }
-                    collectedLines.append(line)
-                    readBytes += UInt64(line.utf8.count + 1)
-
-                    if readBytes >= nextUpdateThreshold {
-                        nextUpdateThreshold += updateStride
-                        let progress = min(0.99, Double(readBytes) / Double(totalBytes))
-                        await MainActor.run { [weak self] in
-                            self?.fileLoadProgress = progress
-                            self?.isLoadingFile = self?.openTabs.contains { $0.isCurrentlyStreaming } ?? false
-                        }
+                // FAST PATH: memory-mapped, multi-core parallel parse.
+                let finishedLines = try Self.loadLinesFast(from: url) { frac in
+                    Task { @MainActor [weak self] in
+                        self?.fileLoadProgress = frac
+                        self?.isLoadingFile = self?.openTabs.contains { $0.isCurrentlyStreaming } ?? false
                     }
                 }
 
-                let finishedLines = collectedLines
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
@@ -612,6 +544,152 @@ class LogViewModel: ObservableObject {
            let string = String(data: encoded, encoding: .utf8) {
             if rulesData != string { rulesData = string }
         }
+    }
+
+    /// FAST PARALLEL LINE LOADER
+    /// Memory-maps the file and parses line ranges concurrently across all CPU
+    /// cores using raw pointers (zero copying). This is dramatically faster than
+    /// `url.lines`, which suspends the task once per line (~6M suspensions for a
+    /// 600 MB log), and avoids the buffer-copy overhead of manual chunk reading.
+    /// `progress` is invoked from background threads as each chunk completes.
+    nonisolated static func loadLinesFast(
+        from url: URL,
+        progress: @escaping (Double) -> Void
+    ) throws -> [String] {
+        // .mappedIfSafe maps the file into virtual memory — no upfront full read.
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        let count = data.count
+        guard count > 0 else { return [] }
+
+        let newline: UInt8 = 0x0A
+        let carriageReturn: UInt8 = 0x0D
+
+        return data.withUnsafeBytes { rawBuffer -> [String] in
+            let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress!
+
+            // Divide the file into line-aligned chunks — roughly two per core.
+            let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
+            let targetChunks = min(coreCount * 2, 32)
+            let approxChunk = max(1, count / targetChunks)
+
+            var ranges: [(start: Int, end: Int)] = []
+            var start = 0
+            while start < count {
+                var end = min(start + approxChunk, count)
+                // Extend `end` until it sits just past a newline so no line is split
+                // across two chunks.
+                while end < count, base[end - 1] != newline { end += 1 }
+                ranges.append((start, end))
+                start = end
+            }
+
+            let chunkCount = ranges.count
+            var partials = [[String]](repeating: [], count: chunkCount)
+            let progressLock = NSLock()
+            var completed = 0
+
+            partials.withUnsafeMutableBufferPointer { out in
+                DispatchQueue.concurrentPerform(iterations: chunkCount) { i in
+                    let (s, e) = ranges[i]
+                    var lines: [String] = []
+                    lines.reserveCapacity((e - s) / 50)
+
+                    var lineStart = s
+                    var idx = s
+                    while idx < e {
+                        if base[idx] == newline {
+                            var lineEnd = idx
+                            if lineEnd > lineStart, base[lineEnd - 1] == carriageReturn {
+                                lineEnd -= 1 // strip CRLF's \r
+                            }
+                            lines.append(String(
+                                decoding: UnsafeBufferPointer(start: base + lineStart, count: lineEnd - lineStart),
+                                as: UTF8.self
+                            ))
+                            lineStart = idx + 1
+                        }
+                        idx += 1
+                    }
+                    // Trailing line without a terminating newline (only the final chunk)
+                    if lineStart < e {
+                        var lineEnd = e
+                        if lineEnd > lineStart, base[lineEnd - 1] == carriageReturn { lineEnd -= 1 }
+                        lines.append(String(
+                            decoding: UnsafeBufferPointer(start: base + lineStart, count: lineEnd - lineStart),
+                            as: UTF8.self
+                        ))
+                    }
+                    out[i] = lines
+
+                    progressLock.lock()
+                    completed += 1
+                    let frac = min(0.99, Double(completed) / Double(chunkCount))
+                    progressLock.unlock()
+                    progress(frac)
+                }
+            }
+
+            // Concatenate the per-chunk results in original file order.
+            var all: [String] = []
+            all.reserveCapacity(count / 50)
+            for chunk in partials { all.append(contentsOf: chunk) }
+            return all
+        }
+    }
+
+    /// FAST PARALLEL REGEX FILTER
+    /// Scans the line array concurrently across all CPU cores. NSRegularExpression
+    /// is thread-safe for matching, so the immutable regex is shared. Matches are
+    /// collected per chunk and concatenated in original file order.
+    nonisolated static func filterLinesFast(
+        lines: [String],
+        regex: NSRegularExpression,
+        progress: @escaping (Double) -> Void
+    ) -> [LogLine] {
+        let count = lines.count
+        guard count > 0 else { return [] }
+
+        let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
+        let targetChunks = min(coreCount * 2, 32)
+        let chunkSize = max(1, (count + targetChunks - 1) / targetChunks)
+
+        var ranges: [(start: Int, end: Int)] = []
+        var start = 0
+        while start < count {
+            let end = min(start + chunkSize, count)
+            ranges.append((start, end))
+            start = end
+        }
+
+        let chunkCount = ranges.count
+        var partials = [[LogLine]](repeating: [], count: chunkCount)
+        let progressLock = NSLock()
+        var completed = 0
+
+        partials.withUnsafeMutableBufferPointer { out in
+            DispatchQueue.concurrentPerform(iterations: chunkCount) { c in
+                let (s, e) = ranges[c]
+                var matches: [LogLine] = []
+                for i in s ..< e {
+                    let line = lines[i]
+                    let range = NSRange(location: 0, length: line.utf16.count)
+                    if regex.firstMatch(in: line, options: [], range: range) != nil {
+                        matches.append(LogLine(originalIndex: i, text: line))
+                    }
+                }
+                out[c] = matches
+
+                progressLock.lock()
+                completed += 1
+                let frac = min(0.99, Double(completed) / Double(chunkCount))
+                progressLock.unlock()
+                progress(frac)
+            }
+        }
+
+        var all: [LogLine] = []
+        for chunk in partials { all.append(contentsOf: chunk) }
+        return all
     }
 
     private func loadRules() {
