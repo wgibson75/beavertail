@@ -59,6 +59,7 @@ class LogViewModel: ObservableObject {
     @AppStorage("saved_show_minimap") var showMinimap: Bool = true
     @AppStorage("saved_show_line_numbers") var showLineNumbers: Bool = true
     @AppStorage("saved_filter_history_v1") private var filterHistoryData: String = ""
+    @AppStorage("saved_font_size") var fontSize: Double = 12
 
     /// PERSISTENCE ENGINE: Stores secure raw data blobs rather than simple text string paths
     @AppStorage("saved_session_bookmarks_v2") private var sessionBookmarksData: String = ""
@@ -603,7 +604,9 @@ class LogViewModel: ObservableObject {
         let carriageReturn: UInt8 = 0x0D
 
         return data.withUnsafeBytes { rawBuffer -> [String] in
-            let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress!
+            // nonisolated(unsafe): concurrentPerform is synchronous — all iterations
+            // complete before withUnsafeBytes returns, so the pointer lifetime is safe.
+            nonisolated(unsafe) let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress!
 
             // Divide the file into line-aligned chunks — roughly two per core.
             let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
@@ -626,7 +629,10 @@ class LogViewModel: ObservableObject {
             let progressLock = NSLock()
             var completed = 0
 
-            partials.withUnsafeMutableBufferPointer { out in
+            partials.withUnsafeMutableBufferPointer { outParam in
+                // nonisolated(unsafe): concurrentPerform is synchronous — all iterations
+                // complete before withUnsafeMutableBufferPointer returns, so the buffer is safe.
+                nonisolated(unsafe) let out = outParam
                 DispatchQueue.concurrentPerform(iterations: chunkCount) { i in
                     let (s, e) = ranges[i]
                     var lines: [String] = []
@@ -704,7 +710,10 @@ class LogViewModel: ObservableObject {
         let progressLock = NSLock()
         var completed = 0
 
-        partials.withUnsafeMutableBufferPointer { out in
+        partials.withUnsafeMutableBufferPointer { outParam in
+            // nonisolated(unsafe): concurrentPerform is synchronous — all iterations
+            // complete before withUnsafeMutableBufferPointer returns, so the buffer is safe.
+            nonisolated(unsafe) let out = outParam
             DispatchQueue.concurrentPerform(iterations: chunkCount) { c in
                 let (s, e) = ranges[c]
                 var matches: [LogLine] = []

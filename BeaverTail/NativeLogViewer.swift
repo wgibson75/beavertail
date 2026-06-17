@@ -117,6 +117,7 @@ struct NativeLogViewer: NSViewRepresentable {
     let directScrollNotificationName: Notification.Name?
     let tailScrollNotificationName: Notification.Name
     let showLineNumbers: Bool
+    let fontSize: CGFloat
 
     // THE CURE: Flag that ensures the minimap fraction ONLY overrides scroll positioning during active click-scrubbing
     let isMinimapActiveDrive: Bool
@@ -127,6 +128,7 @@ struct NativeLogViewer: NSViewRepresentable {
         lines: [String], textColor: NSColor, rules: [HighlightRule], selectedFraction: CGFloat?,
         directScrollNotificationName: Notification.Name?,
         tailScrollNotificationName: Notification.Name, showLineNumbers: Bool,
+        fontSize: CGFloat = 12,
         isMinimapActiveDrive: Bool, onLineIndexSelected: @escaping (Int) -> Void
     ) {
         self.lines = lines
@@ -137,6 +139,7 @@ struct NativeLogViewer: NSViewRepresentable {
         self.directScrollNotificationName = directScrollNotificationName
         self.tailScrollNotificationName = tailScrollNotificationName
         self.showLineNumbers = showLineNumbers
+        self.fontSize = fontSize
         self.isMinimapActiveDrive = isMinimapActiveDrive
         self.onLineIndexSelected = onLineIndexSelected
     }
@@ -145,7 +148,8 @@ struct NativeLogViewer: NSViewRepresentable {
     init(
         filteredLines: [LogLine], textColor: NSColor, rules: [HighlightRule],
         selectedFraction: CGFloat?, tailScrollNotificationName: Notification.Name,
-        showLineNumbers: Bool, onLineIndexSelected: @escaping (Int) -> Void
+        showLineNumbers: Bool, fontSize: CGFloat = 12,
+        onLineIndexSelected: @escaping (Int) -> Void
     ) {
         lines = []
         self.filteredLines = filteredLines
@@ -155,6 +159,7 @@ struct NativeLogViewer: NSViewRepresentable {
         directScrollNotificationName = nil
         self.tailScrollNotificationName = tailScrollNotificationName
         self.showLineNumbers = showLineNumbers
+        self.fontSize = fontSize
         isMinimapActiveDrive = false // Bottom pane is never driven by minimap scrubbing
         self.onLineIndexSelected = onLineIndexSelected
     }
@@ -235,6 +240,7 @@ struct NativeLogViewer: NSViewRepresentable {
         context.coordinator.filteredLines = filteredLines
         context.coordinator.defaultTextColor = textColor
         context.coordinator.rules = rules
+        context.coordinator.fontSize = fontSize
         context.coordinator.onLineIndexSelected = onLineIndexSelected
 
         // Keep copy closure fresh after data updates
@@ -284,6 +290,7 @@ struct NativeLogViewer: NSViewRepresentable {
         var filteredLines: [LogLine]?
         var defaultTextColor: NSColor = .labelColor
         var rules: [HighlightRule] = []
+        var fontSize: CGFloat = 12
         var onLineIndexSelected: ((Int) -> Void)?
 
         /// Set while we restore selection programmatically so the selection-change
@@ -382,9 +389,11 @@ struct NativeLogViewer: NSViewRepresentable {
                 cell?.isSelectable = false
                 cell?.isBordered = false
                 cell?.backgroundColor = .clear
-                cell?.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .light)
                 cell?.alignment = .right
             }
+
+            // Always refresh font so size changes take effect on recycled cells
+            cell?.font = NSFont.monospacedSystemFont(ofSize: max(8, fontSize - 1), weight: .light)
 
             let actualIndex = filteredLines?[row].originalIndex ?? row
             cell?.stringValue = "\(actualIndex + 1) "
@@ -399,6 +408,8 @@ struct NativeLogViewer: NSViewRepresentable {
             var containerCell = tableView.makeView(withIdentifier: identifier, owner: self)
             var textField: NSTextField?
 
+            let rowHeight = fontSize + 6
+
             if containerCell == nil {
                 containerCell = NSView()
                 containerCell?.identifier = identifier
@@ -408,16 +419,18 @@ struct NativeLogViewer: NSViewRepresentable {
                 text.isSelectable = true
                 text.isBordered = false
                 text.backgroundColor = .clear
-                text.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
                 text.cell?.wraps = false
                 text.cell?.isScrollable = true
-                text.frame = NSRect(x: 8, y: 0, width: 9980, height: 18)
                 containerCell?.addSubview(text)
                 textField = text
 
             } else {
                 textField = containerCell?.subviews.first as? NSTextField
             }
+
+            // Always refresh font and frame so size changes apply to recycled cells
+            textField?.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+            textField?.frame = NSRect(x: 8, y: 0, width: 9980, height: rowHeight)
 
             let lineText = filteredLines?[row].text ?? lines[row]
             textField?.stringValue = lineText
@@ -444,7 +457,7 @@ struct NativeLogViewer: NSViewRepresentable {
         }
 
         func tableView(_: NSTableView, heightOfRow _: Int) -> CGFloat {
-            return 18.0
+            return fontSize + 6
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {

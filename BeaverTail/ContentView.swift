@@ -145,6 +145,7 @@ struct ContentView: View {
                                 directScrollNotificationName: topPaneDirectScrollNotification,
                                 tailScrollNotificationName: topPaneScrollToBottomNotification,
                                 showLineNumbers: viewModel.showLineNumbers,
+                                fontSize: viewModel.fontSize,
                                 isMinimapActiveDrive: viewModel.isScrubbingMinimap,
                                 onLineIndexSelected: { index in
                                     viewModel.updateMinimapFromLineIndex(index)
@@ -231,6 +232,7 @@ struct ContentView: View {
                                             selectedFraction: viewModel.selectedFraction,
                                             tailScrollNotificationName: bottomPaneScrollToBottomNotification,
                                             showLineNumbers: viewModel.showLineNumbers,
+                                            fontSize: viewModel.fontSize,
                                             onLineIndexSelected: { originalIndex in
                                                 viewModel.syncSelectionFromFilteredIndex(originalIndex)
                                             }
@@ -322,6 +324,40 @@ struct ContentView: View {
                     .toggleStyle(.checkbox)
                     .help("Show minimap")
                 }
+            }
+
+            ToolbarItem(placement: .automatic) {
+                HStack(spacing: 3) {
+                    Button {
+                        viewModel.fontSize = max(8, viewModel.fontSize - 1)
+                    } label: {
+                        Image(systemName: "textformat.size.smaller")
+                            .font(.system(size: 15))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Decrease text size")
+                    .disabled(viewModel.fontSize <= 8)
+                    .opacity(viewModel.fontSize <= 8 ? 0.4 : 1)
+
+                    Text("\(Int(viewModel.fontSize))pt")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .fixedSize()
+
+                    Button {
+                        viewModel.fontSize = min(24, viewModel.fontSize + 1)
+                    } label: {
+                        Image(systemName: "textformat.size.larger")
+                            .font(.system(size: 15))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Increase text size")
+                    .disabled(viewModel.fontSize >= 24)
+                    .opacity(viewModel.fontSize >= 24 ? 0.4 : 1)
+                }
+                .padding(.leading, 16)
+                .padding(.trailing, 8)
             }
 
             ToolbarItemGroup(placement: .primaryAction) {
