@@ -23,7 +23,7 @@ struct HighlightSettingsView: View {
             Form {
                 Section {
                     HStack(spacing: 8) {
-                        TextField("Regex pattern (e.g. \\[ERROR\\])", text: $patternInput)
+                        TextField("Regex pattern", text: $patternInput)
                             .textFieldStyle(.roundedBorder)
 
                         ColorPicker("", selection: $fgColor)
