@@ -348,9 +348,11 @@ class LogViewModel: ObservableObject {
                 guard matchCount > 0, let color = matchColor else { continue }
 
                 // Scale alpha by match density: sparse → faint, dense → solid.
-                // Minimum alpha 0.25 keeps even rare matches visible.
+                // Minimum alpha 0.45 keeps even rare matches clearly visible;
+                // density is boosted 1.6× (capped at 1.0) so moderate-density
+                // regions appear noticeably stronger.
                 let density = CGFloat(matchCount) / CGFloat(totalSampled)
-                let alpha   = max(0.25, density)
+                let alpha   = max(0.45, min(1.0, density * 1.6))
                 if let scaledColor = color.copy(alpha: alpha) {
                     ctx.setFillColor(scaledColor)
                     ctx.fill(CGRect(x: 0, y: bucket, width: imgWidth, height: 1))
