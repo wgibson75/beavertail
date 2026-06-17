@@ -309,21 +309,51 @@ class LogViewModel: ObservableObject {
             ctx.setFillColor(bgColor)
             ctx.fill(CGRect(x: 0, y: 0, width: imgWidth, height: imgHeight))
 
-            var paintedBuckets = Set<Int>(minimumCapacity: imgHeight)
-            for (lineIdx, line) in localLines.enumerated() {
+            // DENSITY-BASED RENDERING
+            // For each pixel row (bucket), sample up to 30 evenly-spaced lines and compute
+            // the fraction that match. Use that fraction as the colour alpha so sparse
+            // matches appear faint and heavily-matched regions appear solid.
+            // This prevents a single rare match per bucket from painting the whole minimap.
+            let linesPerBucket = max(1, totalLines / imgHeight)
+            let maxSamples     = min(linesPerBucket, 30)
+
+            for bucket in 0..<imgHeight {
                 if Task.isCancelled { return }
 
-                let bucket = Int((CGFloat(lineIdx) / CGFloat(totalLines)) * CGFloat(imgHeight))
-                if paintedBuckets.contains(bucket) { continue }
+                let bucketStart = bucket * linesPerBucket
+                guard bucketStart < totalLines else { break }
+                let bucketEnd  = min(bucketStart + linesPerBucket, totalLines)
+                let bucketSize = bucketEnd - bucketStart
+                let step       = max(1, bucketSize / maxSamples)
 
-                let range = NSRange(location: 0, length: line.utf16.count)
-                for capture in captures {
-                    if capture.regex.firstMatch(in: line, options: [], range: range) != nil {
-                        paintedBuckets.insert(bucket)
-                        ctx.setFillColor(capture.color)
-                        ctx.fill(CGRect(x: 0, y: bucket, width: imgWidth, height: 2))
-                        break
+                var matchCount    = 0
+                var totalSampled  = 0
+                var matchColor: CGColor? = nil
+
+                var lineIdx = bucketStart
+                while lineIdx < bucketEnd {
+                    let line  = localLines[lineIdx]
+                    let range = NSRange(location: 0, length: line.utf16.count)
+                    for capture in captures {
+                        if capture.regex.firstMatch(in: line, options: [], range: range) != nil {
+                            matchCount += 1
+                            if matchColor == nil { matchColor = capture.color }
+                            break
+                        }
                     }
+                    totalSampled += 1
+                    lineIdx += step
+                }
+
+                guard matchCount > 0, let color = matchColor else { continue }
+
+                // Scale alpha by match density: sparse → faint, dense → solid.
+                // Minimum alpha 0.25 keeps even rare matches visible.
+                let density = CGFloat(matchCount) / CGFloat(totalSampled)
+                let alpha   = max(0.25, density)
+                if let scaledColor = color.copy(alpha: alpha) {
+                    ctx.setFillColor(scaledColor)
+                    ctx.fill(CGRect(x: 0, y: bucket, width: imgWidth, height: 1))
                 }
             }
 
