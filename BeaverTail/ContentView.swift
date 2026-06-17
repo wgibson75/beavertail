@@ -9,11 +9,12 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @StateObject private var viewModel = LogViewModel()
+    @EnvironmentObject private var viewModel: LogViewModel
     @State private var showHighlightManager = false
     @State private var localRegexInput = ""
     @State private var showFilterDropdown = false
     @State private var draggingTabID: UUID? = nil
+    @State private var isFileDropTargeted = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -292,7 +293,6 @@ struct ContentView: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
                     .padding(.top, 4)
-                    .keyboardShortcut("o", modifiers: .command)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -301,8 +301,12 @@ struct ContentView: View {
         // instead of the whole window. When no tabs are open the window closes normally.
         .background {
             WindowCloseInterceptor {
-                guard let tabID = viewModel.selectedTabID else { return false }
-                viewModel.closeTab(id: tabID)
+                // Always consume the close event — ⌘W closes a tab if one is open,
+                // or does nothing if no tabs are loaded. The window only ever closes
+                // via ⌘Q / File → Quit.
+                if let tabID = viewModel.selectedTabID {
+                    viewModel.closeTab(id: tabID)
+                }
                 return true
             }
             .frame(width: 0, height: 0)
@@ -366,13 +370,6 @@ struct ContentView: View {
                 } label: {
                     Label("Highlight Rules", systemImage: "paintbrush")
                 }
-
-                Button {
-                    viewModel.openFile()
-                } label: {
-                    Label("Open Log File", systemImage: "folder")
-                }
-                .keyboardShortcut("o", modifiers: .command)
             }
         }
         .animation(.easeInOut(duration: 0.2), value: viewModel.showMinimap)
@@ -390,6 +387,43 @@ struct ContentView: View {
         }
         .onDisappear {
             viewModel.stopLiveTailing()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: openFileMenuNotification)) { _ in
+            viewModel.openFile()
+        }
+        .onDrop(of: [.fileURL], isTargeted: $isFileDropTargeted) { providers in
+            for provider in providers {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    DispatchQueue.main.async {
+                        viewModel.loadNewTab(from: url)
+                    }
+                }
+            }
+            return true
+        }
+        .overlay {
+            if isFileDropTargeted {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                    .background(Color.accentColor.opacity(0.06).clipShape(RoundedRectangle(cornerRadius: 8)))
+                    .overlay {
+                        VStack(spacing: 8) {
+                            Image(systemName: "arrow.down.doc")
+                                .font(.system(size: 36))
+                                .foregroundStyle(Color.accentColor)
+                            Text("Drop log file to open")
+                                .font(.title3)
+                                .fontWeight(.medium)
+                                .foregroundStyle(Color.accentColor)
+                        }
+                    }
+                    .padding(12)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: openFileMenuNotification)) { _ in
+            viewModel.openFile()
         }
     }
 }
