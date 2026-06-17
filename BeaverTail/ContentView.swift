@@ -11,6 +11,7 @@ struct ContentView: View {
     @StateObject private var viewModel = LogViewModel()
     @State private var showHighlightManager = false
     @State private var localRegexInput = ""
+    @State private var showFilterDropdown = false  // replaces showFilterHistory
 
     var body: some View {
         VStack(spacing: 0) {
@@ -118,15 +119,34 @@ struct ContentView: View {
                         VStack(spacing: 0) {
                             HStack(spacing: 8) {
                                 Text("Filter")
-                                    .font(.caption)
+                                    .font(.body)
                                     .foregroundStyle(.secondary)
                                     .frame(minWidth: 32, alignment: .trailing)
 
-                                TextField("Regex pattern…", text: $localRegexInput)
-                                    .textFieldStyle(.roundedBorder)
-                                    .onSubmit {
+                                RegexTextField(
+                                    text: $localRegexInput,
+                                    placeholder: "Regex pattern…",
+                                    onFocus: {
+                                        if !viewModel.filterHistory.isEmpty {
+                                            showFilterDropdown = true
+                                        }
+                                    },
+                                    onTextChange: {
+                                        // User started typing — enter new-filter mode
+                                        showFilterDropdown = false
+                                    },
+                                    onBlur: {
+                                        // Small delay so a history-row tap fires first
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                                            showFilterDropdown = false
+                                        }
+                                    },
+                                    onSubmit: {
+                                        showFilterDropdown = false
                                         viewModel.applyFilter(with: localRegexInput)
+                                        NSApp.keyWindow?.makeFirstResponder(nil)
                                     }
+                                )
 
                                 Toggle("Ignore Case", isOn: $viewModel.isCaseInsensitive)
                                     .toggleStyle(.checkbox)
@@ -138,45 +158,70 @@ struct ContentView: View {
                             .padding(.vertical, 8)
                             .background(Color(NSColor.controlBackgroundColor))
 
-                            if viewModel.isFiltering {
-                                ProgressView(value: viewModel.filterProgress)
-                                    .progressViewStyle(.linear)
-                                    .controlSize(.small)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 2)
-                            }
-
-                            Divider()
-
-                            if viewModel.filteredLines.isEmpty
-                                && !viewModel.isFiltering
-                                && localRegexInput.isEmpty
-                            {
-                                VStack(spacing: 8) {
-                                    Image(systemName: "magnifyingglass")
-                                        .font(.system(size: 28))
-                                        .foregroundStyle(.tertiary)
-                                    Text("Enter a regex pattern above to filter log lines")
-                                        .font(.callout)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            } else {
-                                NativeLogViewer(
-                                    filteredLines: viewModel.filteredLines,
-                                    textColor: .secondaryLabelColor,
-                                    rules: viewModel.highlightRules,
-                                    selectedFraction: viewModel.selectedFraction,
-                                    tailScrollNotificationName: bottomPaneScrollToBottomNotification,
-                                    showLineNumbers: viewModel.showLineNumbers,
-                                    onLineIndexSelected: { originalIndex in
-                                        viewModel.syncSelectionFromFilteredIndex(originalIndex)
+                            // Wrap everything below the filter bar in a ZStack so the
+                            // history dropdown can float over the log content.
+                            ZStack(alignment: .topLeading) {
+                                VStack(spacing: 0) {
+                                    if viewModel.isFiltering {
+                                        ProgressView(value: viewModel.filterProgress)
+                                            .progressViewStyle(.linear)
+                                            .controlSize(.small)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 2)
                                     }
-                                )
-                                .id(
-                                    (viewModel.selectedTabID?.uuidString ?? "bot")
-                                        + (viewModel.isFiltering ? "-loading" : "-ready")
-                                )
+
+                                    Divider()
+
+                                    if viewModel.filteredLines.isEmpty
+                                        && !viewModel.isFiltering
+                                        && localRegexInput.isEmpty
+                                    {
+                                        VStack(spacing: 8) {
+                                            Image(systemName: "magnifyingglass")
+                                                .font(.system(size: 28))
+                                                .foregroundStyle(.tertiary)
+                                            Text("Enter a regex pattern above to filter log lines")
+                                                .font(.callout)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    } else {
+                                        NativeLogViewer(
+                                            filteredLines: viewModel.filteredLines,
+                                            textColor: .secondaryLabelColor,
+                                            rules: viewModel.highlightRules,
+                                            selectedFraction: viewModel.selectedFraction,
+                                            tailScrollNotificationName: bottomPaneScrollToBottomNotification,
+                                            showLineNumbers: viewModel.showLineNumbers,
+                                            onLineIndexSelected: { originalIndex in
+                                                viewModel.syncSelectionFromFilteredIndex(originalIndex)
+                                            }
+                                        )
+                                        .id(
+                                            (viewModel.selectedTabID?.uuidString ?? "bot")
+                                                + (viewModel.isFiltering ? "-loading" : "-ready")
+                                        )
+                                    }
+                                }
+
+                                // History dropdown — floats over log content
+                                if showFilterDropdown && !viewModel.filterHistory.isEmpty {
+                                    FilterHistoryDropdown(
+                                        history: viewModel.filterHistory,
+                                        onSelect: { pattern in
+                                            localRegexInput = pattern
+                                            showFilterDropdown = false
+                                            viewModel.applyFilter(with: pattern)
+                                            NSApp.keyWindow?.makeFirstResponder(nil)
+                                            NSApp.keyWindow?.makeFirstResponder(nil)
+                                        }
+                                    )
+                                    // Indent to align with the text field (past "Filter" label + padding)
+                                    .padding(.leading, 56)
+                                    .padding(.trailing, 90)
+                                    .padding(.top, 4)
+                                    .zIndex(100)
+                                }
                             }
                         }
                         .frame(minHeight: 120)
@@ -272,5 +317,150 @@ struct ContentView: View {
         .onDisappear {
             viewModel.stopLiveTailing()
         }
+    }
+}
+
+// MARK: - Regex Text Field (NSViewRepresentable)
+// Wraps a custom NSTextField subclass to provide reliable focus/blur/change
+// callbacks inside AppKit-backed containers such as VSplitView.
+// becomeFirstResponder fires on every click, unlike controlTextDidBeginEditing
+// which only fires once per editing session.
+
+private final class FocusableTextField: NSTextField {
+    var onBecomeFirstResponder: (() -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { onBecomeFirstResponder?() }
+        return accepted
+    }
+}
+
+private struct RegexTextField: NSViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    let onFocus: () -> Void
+    let onTextChange: () -> Void
+    let onBlur: () -> Void
+    let onSubmit: () -> Void
+
+    func makeNSView(context: Context) -> FocusableTextField {
+        let field = FocusableTextField()
+        field.placeholderString = placeholder
+        field.bezelStyle = .roundedBezel
+        field.isBordered = true
+        field.isEditable = true
+        field.isSelectable = true
+        field.cell?.wraps = false
+        field.cell?.isScrollable = true
+        field.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        field.stringValue = text
+        field.delegate = context.coordinator
+        let coordinator = context.coordinator
+        field.onBecomeFirstResponder = {
+            coordinator.parent.onFocus()
+        }
+        return field
+    }
+
+    func updateNSView(_ nsView: FocusableTextField, context: Context) {
+        context.coordinator.parent = self
+        // Re-wire the callback so it always uses the latest onFocus closure
+        let coordinator = context.coordinator
+        nsView.onBecomeFirstResponder = {
+            coordinator.parent.onFocus()
+        }
+        // Only push programmatic text changes when the user isn't mid-edit
+        if !context.coordinator.isEditing, nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: RegexTextField
+        var isEditing = false
+
+        init(_ parent: RegexTextField) { self.parent = parent }
+
+        func controlTextDidBeginEditing(_ obj: Notification) {
+            isEditing = true
+        }
+
+        func controlTextDidChange(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            parent.text = field.stringValue
+            parent.onTextChange()
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            isEditing = false
+            parent.onBlur()
+        }
+
+        func control(_ control: NSControl, textView: NSTextView,
+                     doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                parent.onSubmit()
+                return true
+            }
+            return false
+        }
+    }
+}
+
+// MARK: - Inline History Dropdown
+
+private struct FilterHistoryDropdown: View {
+    let history: [String]
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(history, id: \.self) { pattern in
+                        HistoryRow(pattern: pattern) { onSelect(pattern) }
+                        Divider()
+                    }
+                }
+            }
+            .frame(maxHeight: 200)
+        }
+        .background(Color(NSColor.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .shadow(color: .black.opacity(0.18), radius: 6, y: 3)
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(Color(NSColor.separatorColor), lineWidth: 0.5)
+        )
+    }
+}
+
+private struct HistoryRow: View {
+    let pattern: String
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "clock")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Text(pattern)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(hovered ? Color.accentColor.opacity(0.08) : Color.clear)
+        .onHover { hovered = $0 }
     }
 }

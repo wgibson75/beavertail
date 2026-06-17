@@ -58,6 +58,7 @@ class LogViewModel: ObservableObject {
     @AppStorage("saved_highlight_rules") private var rulesData: String = ""
     @AppStorage("saved_show_minimap") var showMinimap: Bool = true
     @AppStorage("saved_show_line_numbers") var showLineNumbers: Bool = true
+    @AppStorage("saved_filter_history_v1") private var filterHistoryData: String = ""
 
     /// PERSISTENCE ENGINE: Stores secure raw data blobs rather than simple text string paths
     @AppStorage("saved_session_bookmarks_v2") private var sessionBookmarksData: String = ""
@@ -68,6 +69,9 @@ class LogViewModel: ObservableObject {
             generateMinimapDataForAllTabs()
         }
     }
+
+    /// Ordered list of previously used regex patterns, newest first. Persisted across launches.
+    @Published var filterHistory: [String] = []
 
     private var filterTask: Task<Void, Never>?
     private var minimapTasks: [UUID: Task<Void, Never>] = [:]
@@ -82,6 +86,7 @@ class LogViewModel: ObservableObject {
 
     init() {
         loadRules()
+        loadFilterHistory()
         // Delay initialization by one frame to let your SwiftUI main window scenes link cleanly
         DispatchQueue.main.async {
             self.loadSavedTabsSession()
@@ -219,6 +224,9 @@ class LogViewModel: ObservableObject {
             ]
             return
         }
+
+        // Record every valid pattern in history (newest at top, deduplicated)
+        addToFilterHistory(pattern)
 
         isFiltering = true
         filterProgress = 0.0
@@ -536,6 +544,36 @@ class LogViewModel: ObservableObject {
             if !accessed {
                 url.stopAccessingSecurityScopedResource()
             }
+        }
+    }
+
+    // MARK: - Filter History
+
+    func addToFilterHistory(_ pattern: String) {
+        guard !pattern.isEmpty else { return }
+        filterHistory.removeAll { $0 == pattern }   // deduplicate
+        filterHistory.insert(pattern, at: 0)        // newest at top
+        if filterHistory.count > 50 { filterHistory = Array(filterHistory.prefix(50)) }
+        saveFilterHistory()
+    }
+
+    func clearFilterHistory() {
+        filterHistory.removeAll()
+        filterHistoryData = ""
+    }
+
+    private func loadFilterHistory() {
+        guard !filterHistoryData.isEmpty,
+              let data = filterHistoryData.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode([String].self, from: data)
+        else { return }
+        filterHistory = decoded
+    }
+
+    private func saveFilterHistory() {
+        if let data = try? JSONEncoder().encode(filterHistory),
+           let string = String(data: data, encoding: .utf8) {
+            filterHistoryData = string
         }
     }
 
