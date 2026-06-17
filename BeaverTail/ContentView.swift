@@ -6,12 +6,14 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @StateObject private var viewModel = LogViewModel()
     @State private var showHighlightManager = false
     @State private var localRegexInput = ""
-    @State private var showFilterDropdown = false  // replaces showFilterHistory
+    @State private var showFilterDropdown = false
+    @State private var draggingTabID: UUID? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -62,15 +64,51 @@ struct ContentView: View {
                                 }
                             }
                             .contentShape(Rectangle())
+                            .opacity(draggingTabID == tab.id ? 0.4 : 1.0)
                             .onTapGesture {
                                 viewModel.selectedTabID = tab.id
                                 localRegexInput = tab.filterPattern
                                 viewModel.triggerLazyLoadForTab(id: tab.id)
                             }
+                            .onDrag {
+                                draggingTabID = tab.id
+                                return NSItemProvider(object: tab.id.uuidString as NSString)
+                            }
+                            .onDrop(
+                                of: [UTType.plainText],
+                                delegate: TabDropDelegate(
+                                    targetTab: tab,
+                                    tabs: $viewModel.openTabs,
+                                    draggingTabID: $draggingTabID
+                                )
+                            )
                         }
+
+                        // Spacer fills the remaining strip width so the whole
+                        // empty area becomes a valid drop target for "move to end".
+                        Spacer()
+                            .frame(minWidth: 40)
+                            .frame(height: 28)
+                            .contentShape(Rectangle())
+                            .onDrop(of: [UTType.plainText], isTargeted: nil) { _ in
+                                guard let draggingID = draggingTabID,
+                                      let fromIndex = viewModel.openTabs.firstIndex(where: { $0.id == draggingID })
+                                else { draggingTabID = nil; return false }
+                                withAnimation(.easeInOut(duration: 0.18)) {
+                                    viewModel.openTabs.move(
+                                        fromOffsets: IndexSet(integer: fromIndex),
+                                        toOffset: viewModel.openTabs.count
+                                    )
+                                }
+                                draggingTabID = nil
+                                return true
+                            }
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
+                    // Belt-and-braces: the scroll content fills the full clip width
+                    // so the Spacer always stretches to the right edge.
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                 }
                 .background(Color(NSColor.windowBackgroundColor))
                 Divider()
@@ -320,7 +358,38 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Regex Text Field (NSViewRepresentable)
+// MARK: - Tab Drag-to-Reorder
+
+private struct TabDropDelegate: DropDelegate {
+    let targetTab: LogTab
+    @Binding var tabs: [LogTab]
+    @Binding var draggingTabID: UUID?
+
+    func dropEntered(info: DropInfo) {
+        guard
+            let draggingID = draggingTabID,
+            draggingID != targetTab.id,
+            let fromIndex = tabs.firstIndex(where: { $0.id == draggingID }),
+            let toIndex   = tabs.firstIndex(where: { $0.id == targetTab.id })
+        else { return }
+
+        withAnimation(.easeInOut(duration: 0.18)) {
+            tabs.move(
+                fromOffsets: IndexSet(integer: fromIndex),
+                toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
+            )
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggingTabID = nil
+        return true
+    }
+}
 // Wraps a custom NSTextField subclass to provide reliable focus/blur/change
 // callbacks inside AppKit-backed containers such as VSplitView.
 // becomeFirstResponder fires on every click, unlike controlTextDidBeginEditing
