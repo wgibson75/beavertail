@@ -9,6 +9,7 @@ import SwiftUI
 
 /// Notification fired from the File menu so the view model can open a file.
 let openFileMenuNotification = Notification.Name("BeaverTailOpenFileMenu")
+let showHelpNotification = Notification.Name("BeaverTailShowHelp")
 
 @main
 struct BeaverTailApp: App {
@@ -43,6 +44,12 @@ struct BeaverTailApp: App {
                         }
                     }
                 }
+            }
+            CommandGroup(replacing: .help) {
+                Button("BeaverTail Help") {
+                    NotificationCenter.default.post(name: showHelpNotification, object: nil)
+                }
+                .keyboardShortcut("?", modifiers: .command)
             }
         }
     }

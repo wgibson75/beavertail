@@ -11,6 +11,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject private var viewModel: LogViewModel
     @State private var showHighlightManager = false
+    @State private var showHelp = false
     @State private var showFilterDropdown = false
     @State private var draggingTabID: UUID? = nil
     @State private var isFileDropTargeted = false
@@ -232,6 +233,12 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.15), value: viewModel.openTabs.count)
         .sheet(isPresented: $showHighlightManager) {
             HighlightSettingsView(viewModel: viewModel)
+        }
+        .sheet(isPresented: $showHelp) {
+            HelpView()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: showHelpNotification)) { _ in
+            showHelp = true
         }
         .onChange(of: viewModel.selectedTabID) { _, newTabID in
             if let targetID = newTabID {
