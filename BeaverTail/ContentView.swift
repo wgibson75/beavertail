@@ -11,7 +11,6 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject private var viewModel: LogViewModel
     @State private var showHighlightManager = false
-    @State private var localRegexInput = ""
     @State private var showFilterDropdown = false
     @State private var draggingTabID: UUID? = nil
     @State private var isFileDropTargeted = false
@@ -68,7 +67,6 @@ struct ContentView: View {
                             .opacity(draggingTabID == tab.id ? 0.4 : 1.0)
                             .onTapGesture {
                                 viewModel.selectedTabID = tab.id
-                                localRegexInput = tab.filterPattern
                                 viewModel.triggerLazyLoadForTab(id: tab.id)
                             }
                             .onDrag {
@@ -119,153 +117,10 @@ struct ContentView: View {
             if viewModel.currentTab != nil {
                 HStack(spacing: 0) {
                     VSplitView {
-                        // ── Top Pane: Full log ──
-                        VStack(spacing: 0) {
-                            HStack {
-                                Label("\(viewModel.allLines.count) lines", systemImage: "doc.text")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                if viewModel.currentTab?.isCurrentlyStreaming == true {
-                                    ProgressView()
-                                        .controlSize(.mini)
-                                        .padding(.trailing, 2)
-                                }
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 5)
-                            .background(Color(NSColor.controlBackgroundColor))
-
-                            Divider()
-
-                            NativeLogViewer(
-                                lines: viewModel.allLines,
-                                textColor: .labelColor,
-                                rules: viewModel.highlightRules,
-                                selectedFraction: viewModel.selectedFraction,
-                                directScrollNotificationName: topPaneDirectScrollNotification,
-                                tailScrollNotificationName: topPaneScrollToBottomNotification,
-                                showLineNumbers: viewModel.showLineNumbers,
-                                fontSize: viewModel.fontSize,
-                                isMinimapActiveDrive: viewModel.isScrubbingMinimap,
-                                onLineIndexSelected: { index in
-                                    viewModel.updateMinimapFromLineIndex(index)
-                                }
-                            ).id(viewModel.selectedTabID?.uuidString ?? "top")
-                        }
-                        .frame(minHeight: 120)
-
-                        // ── Bottom Pane: Filter ──
-                        VStack(spacing: 0) {
-                            HStack(spacing: 8) {
-                                Text("Filter")
-                                    .font(.body)
-                                    .foregroundStyle(.secondary)
-                                    .frame(minWidth: 32, alignment: .trailing)
-
-                                RegexTextField(
-                                    text: $localRegexInput,
-                                    placeholder: "Regex pattern…",
-                                    onFocus: {
-                                        if !viewModel.filterHistory.isEmpty {
-                                            showFilterDropdown = true
-                                        }
-                                    },
-                                    onTextChange: {
-                                        // User started typing — enter new-filter mode
-                                        showFilterDropdown = false
-                                    },
-                                    onBlur: {
-                                        // Small delay so a history-row tap fires first
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                                            showFilterDropdown = false
-                                        }
-                                    },
-                                    onSubmit: {
-                                        showFilterDropdown = false
-                                        viewModel.applyFilter(with: localRegexInput)
-                                        NSApp.keyWindow?.makeFirstResponder(nil)
-                                    }
-                                )
-
-                                Toggle("Ignore Case", isOn: $viewModel.isCaseInsensitive)
-                                    .toggleStyle(.checkbox)
-                                    .onChange(of: viewModel.isCaseInsensitive) { _, _ in
-                                        viewModel.applyFilter(with: localRegexInput)
-                                    }
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(Color(NSColor.controlBackgroundColor))
-
-                            // Wrap everything below the filter bar in a ZStack so the
-                            // history dropdown can float over the log content.
-                            ZStack(alignment: .topLeading) {
-                                VStack(spacing: 0) {
-                                    if viewModel.isFiltering {
-                                        ProgressView(value: viewModel.filterProgress)
-                                            .progressViewStyle(.linear)
-                                            .controlSize(.small)
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 2)
-                                    }
-
-                                    Divider()
-
-                                    if viewModel.filteredLines.isEmpty
-                                        && !viewModel.isFiltering
-                                        && localRegexInput.isEmpty
-                                    {
-                                        VStack(spacing: 8) {
-                                            Image(systemName: "magnifyingglass")
-                                                .font(.system(size: 28))
-                                                .foregroundStyle(.tertiary)
-                                            Text("Enter a regex pattern above to filter log lines")
-                                                .font(.callout)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                    } else {
-                                        NativeLogViewer(
-                                            filteredLines: viewModel.filteredLines,
-                                            textColor: .secondaryLabelColor,
-                                            rules: viewModel.highlightRules,
-                                            selectedFraction: viewModel.selectedFraction,
-                                            tailScrollNotificationName: bottomPaneScrollToBottomNotification,
-                                            showLineNumbers: viewModel.showLineNumbers,
-                                            fontSize: viewModel.fontSize,
-                                            onLineIndexSelected: { originalIndex in
-                                                viewModel.syncSelectionFromFilteredIndex(originalIndex)
-                                            }
-                                        )
-                                        .id(
-                                            (viewModel.selectedTabID?.uuidString ?? "bot")
-                                                + (viewModel.isFiltering ? "-loading" : "-ready")
-                                        )
-                                    }
-                                }
-
-                                // History dropdown — floats over log content
-                                if showFilterDropdown && !viewModel.filterHistory.isEmpty {
-                                    FilterHistoryDropdown(
-                                        history: viewModel.filterHistory,
-                                        onSelect: { pattern in
-                                            localRegexInput = pattern
-                                            showFilterDropdown = false
-                                            viewModel.applyFilter(with: pattern)
-                                            NSApp.keyWindow?.makeFirstResponder(nil)
-                                            NSApp.keyWindow?.makeFirstResponder(nil)
-                                        }
-                                    )
-                                    // Indent to align with the text field (past "Filter" label + padding)
-                                    .padding(.leading, 56)
-                                    .padding(.trailing, 90)
-                                    .padding(.top, 4)
-                                    .zIndex(100)
-                                }
-                            }
-                        }
-                        .frame(minHeight: 120)
+                        TopPaneView(viewModel: viewModel)
+                            .frame(minHeight: 120)
+                        BottomPaneView(viewModel: viewModel, showFilterDropdown: $showFilterDropdown)
+                            .frame(minHeight: 120)
                     }
 
                     if viewModel.showMinimap {
@@ -381,9 +236,6 @@ struct ContentView: View {
         .onChange(of: viewModel.selectedTabID) { _, newTabID in
             if let targetID = newTabID {
                 viewModel.triggerLazyLoadForTab(id: targetID)
-                if let matchingTab = viewModel.openTabs.first(where: { $0.id == targetID }) {
-                    localRegexInput = matchingTab.filterPattern
-                }
             }
         }
         .onDisappear {
@@ -425,6 +277,137 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: openFileMenuNotification)) { _ in
             viewModel.openFile()
+        }
+    }
+}
+
+// MARK: - Top Pane
+
+private struct TopPaneView: View {
+    @ObservedObject var viewModel: LogViewModel
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label("\(viewModel.allLines.count) lines", systemImage: "doc.text")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if viewModel.currentTab?.isCurrentlyStreaming == true {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .padding(.trailing, 2)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .background(Color(NSColor.controlBackgroundColor))
+            Divider()
+            NativeLogViewer(
+                lines: viewModel.allLines,
+                textColor: .labelColor,
+                rules: viewModel.highlightRules,
+                selectedFraction: viewModel.selectedFraction,
+                directScrollNotificationName: topPaneDirectScrollNotification,
+                tailScrollNotificationName: topPaneScrollToBottomNotification,
+                showLineNumbers: viewModel.showLineNumbers,
+                fontSize: viewModel.fontSize,
+                isMinimapActiveDrive: viewModel.isScrubbingMinimap,
+                onLineIndexSelected: { viewModel.updateMinimapFromLineIndex($0) }
+            ).id(viewModel.selectedTabID?.uuidString ?? "top")
+        }
+    }
+}
+
+// MARK: - Bottom Pane
+
+private struct BottomPaneView: View {
+    @ObservedObject var viewModel: LogViewModel
+    @Binding var showFilterDropdown: Bool
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text("Filter")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 32, alignment: .trailing)
+                RegexTextField(
+                    text: $viewModel.currentFilterPattern,
+                    placeholder: "Regex pattern…",
+                    onFocus: {
+                        if !viewModel.filterHistory.isEmpty { showFilterDropdown = true }
+                    },
+                    onTextChange: { showFilterDropdown = false },
+                    onBlur: {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                            showFilterDropdown = false
+                        }
+                    },
+                    onSubmit: {
+                        showFilterDropdown = false
+                        viewModel.applyFilter(with: viewModel.currentFilterPattern)
+                        NSApp.keyWindow?.makeFirstResponder(nil)
+                    }
+                )
+                Toggle("Ignore Case", isOn: $viewModel.isCaseInsensitive)
+                    .toggleStyle(.checkbox)
+                    .onChange(of: viewModel.isCaseInsensitive) { _, _ in
+                        viewModel.applyFilter(with: viewModel.currentFilterPattern)
+                    }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(NSColor.controlBackgroundColor))
+
+            ZStack(alignment: .topLeading) {
+                VStack(spacing: 0) {
+                    if viewModel.isFiltering {
+                        ProgressView(value: viewModel.filterProgress)
+                            .progressViewStyle(.linear)
+                            .controlSize(.small)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 2)
+                    }
+                    Divider()
+                    if viewModel.filteredLines.isEmpty && !viewModel.isFiltering && viewModel.currentFilterPattern.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 28))
+                                .foregroundStyle(.tertiary)
+                            Text("Enter a regex pattern above to filter log lines")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        NativeLogViewer(
+                            filteredLines: viewModel.filteredLines,
+                            textColor: .secondaryLabelColor,
+                            rules: viewModel.highlightRules,
+                            selectedFraction: viewModel.selectedFraction,
+                            tailScrollNotificationName: bottomPaneScrollToBottomNotification,
+                            showLineNumbers: viewModel.showLineNumbers,
+                            fontSize: viewModel.fontSize,
+                            onLineIndexSelected: { viewModel.syncSelectionFromFilteredIndex($0) }
+                        )
+                        .id((viewModel.selectedTabID?.uuidString ?? "bot") + (viewModel.isFiltering ? "-loading" : "-ready"))
+                    }
+                }
+                if showFilterDropdown && !viewModel.filterHistory.isEmpty {
+                    FilterHistoryDropdown(
+                        history: viewModel.filterHistory,
+                        onSelect: { pattern in
+                            viewModel.currentFilterPattern = pattern
+                            showFilterDropdown = false
+                            viewModel.applyFilter(with: pattern)
+                            NSApp.keyWindow?.makeFirstResponder(nil)
+                        }
+                    )
+                    .padding(.leading, 56)
+                    .padding(.trailing, 90)
+                    .padding(.top, 4)
+                    .zIndex(100)
+                }
+            }
         }
     }
 }

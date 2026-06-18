@@ -26,6 +26,7 @@ class LogViewModel: ObservableObject {
             stopLiveTailing()
             startLiveTailingForActiveTab()
             saveLoadedTabsSession()
+            syncCurrentFilterPattern()
         }
     }
 
@@ -40,6 +41,7 @@ class LogViewModel: ObservableObject {
     @Published var isScrubbingMinimap: Bool = false
     @Published var isLoadingFile: Bool = false
     @Published var fileLoadProgress: Double = 0.0
+    @Published var currentFilterPattern: String = ""
 
     @AppStorage("saved_highlight_rules") private var rulesData: String = ""
     @AppStorage("saved_show_minimap") var showMinimap: Bool = true
@@ -160,6 +162,11 @@ class LogViewModel: ObservableObject {
         minimapTasks.removeValue(forKey: id)
         openTabs.remove(at: index)
         if selectedTabID == id { selectedTabID = openTabs.last?.id }
+    }
+
+    /// Keeps currentFilterPattern in sync with the selected tab's saved pattern.
+    private func syncCurrentFilterPattern() {
+        currentFilterPattern = currentTab?.filterPattern ?? ""
     }
 
     func applyFilter(with pattern: String) {
@@ -454,6 +461,7 @@ class LogViewModel: ObservableObject {
                         if !savedPattern.isEmpty && self.selectedTabID == id {
                             self.applyFilter(with: savedPattern)
                         }
+                        self.syncCurrentFilterPattern()
                         if self.selectedTabID == id { self.startLiveTailingForActiveTab() }
                     }
                 }
