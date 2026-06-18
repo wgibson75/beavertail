@@ -370,6 +370,7 @@ struct ContentView: View {
                 } label: {
                     Label("Highlight Rules", systemImage: "paintbrush")
                 }
+                .help("Set highlight filters")
             }
         }
         .animation(.easeInOut(duration: 0.2), value: viewModel.showMinimap)

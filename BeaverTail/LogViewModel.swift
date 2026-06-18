@@ -458,13 +458,12 @@ class LogViewModel: ObservableObject {
                     }
                 }
             } catch {
+                // File could not be loaded (moved, deleted, permission denied etc.) —
+                // silently remove the tab so the user never sees an error state.
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
-                        self.openTabs[freshIndex].allLines = ["Error loading file: \(error.localizedDescription)"]
-                        self.openTabs[freshIndex].isCurrentlyStreaming = false
-                        self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
-                    }
+                    self.closeTab(id: id)
+                    self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
                 }
             }
         }
