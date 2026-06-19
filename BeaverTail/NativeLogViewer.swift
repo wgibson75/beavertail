@@ -172,7 +172,7 @@ struct NativeLogViewer: NSViewRepresentable {
 
         let tableView = LogTableView()
         tableView.headerView = nil
-        tableView.intercellSpacing = NSSize(width: 0, height: 2)
+        tableView.intercellSpacing = NSSize(width: 0, height: 0)
         tableView.backgroundColor = .clear
         tableView.selectionHighlightStyle = .regular
         tableView.allowsMultipleSelection = true
@@ -402,17 +402,19 @@ struct NativeLogViewer: NSViewRepresentable {
             return cell
         }
 
-        /// 3. NEW PRIVATE LOG TEXT RENDERER
+        /// 3. LOG TEXT RENDERER
         private func makeLogCell(in tableView: NSTableView, forRow row: Int) -> NSView? {
             let identifier = NSUserInterfaceItemIdentifier("LogCell")
             var containerCell = tableView.makeView(withIdentifier: identifier, owner: self)
             var textField: NSTextField?
 
-            let rowHeight = fontSize + 6
+            let rowHeight = fontSize + 2
 
             if containerCell == nil {
-                containerCell = NSView()
-                containerCell?.identifier = identifier
+                let container = NSView()
+                container.identifier = identifier
+                container.wantsLayer = true
+                container.layer?.backgroundColor = NSColor.clear.cgColor
 
                 let text = NSTextField()
                 text.isEditable = false
@@ -421,43 +423,36 @@ struct NativeLogViewer: NSViewRepresentable {
                 text.backgroundColor = .clear
                 text.cell?.wraps = false
                 text.cell?.isScrollable = true
-                containerCell?.addSubview(text)
+                container.addSubview(text)
+                containerCell = container
                 textField = text
-
             } else {
                 textField = containerCell?.subviews.first as? NSTextField
             }
 
-            // Always refresh font and frame so size changes apply to recycled cells
+            // Refresh font and frame so size changes apply to recycled cells
             textField?.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-            textField?.frame = NSRect(x: 8, y: 0, width: 9980, height: rowHeight)
+            textField?.frame = NSRect(x: 8, y: 1, width: 9980, height: rowHeight)
 
             let lineText = filteredLines?[row].text ?? lines[row]
             textField?.stringValue = lineText
 
             var cellFgColor = defaultTextColor
             let range = NSRange(location: 0, length: lineText.utf16.count)
-
             for rule in rules {
-                if let regex = rule.compiledRegex {
-                    if regex.firstMatch(in: lineText, options: [], range: range) != nil {
-                        cellFgColor = rule.nsForegroundColor
-                        break
-                    }
+                if let regex = rule.compiledRegex,
+                   regex.firstMatch(in: lineText, options: [], range: range) != nil {
+                    cellFgColor = rule.nsForegroundColor
+                    break
                 }
             }
-
-            // Background (rule colour) is now painted by LogRowView so the faint
-            // selection tint can layer over it. Keep the cell itself transparent.
             textField?.textColor = cellFgColor
-            containerCell?.wantsLayer = true
-            containerCell?.layer?.backgroundColor = NSColor.clear.cgColor
 
             return containerCell
         }
 
         func tableView(_: NSTableView, heightOfRow _: Int) -> CGFloat {
-            return fontSize + 6
+            return fontSize + 2
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
