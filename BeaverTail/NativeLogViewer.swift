@@ -1,11 +1,9 @@
-import AppKit
-
 //
 //  NativeLogViewer.swift
 //  BeaverTail
 //
-//  Created by William Gibson on 13/06/2026.
-//
+
+import AppKit
 import SwiftUI
 
 // MARK: - LogTableView
@@ -109,8 +107,10 @@ private final class LogRowView: NSTableRowView {
 }
 
 struct NativeLogViewer: NSViewRepresentable {
-    let lines: [String]
-    let filteredLines: [LogLine]?
+    let provider: LineProvider
+    /// When true this is the filtered (bottom) pane; the provider supplies its
+    /// own originalIndex mapping for the gutter and selection.
+    let isFiltered: Bool
     let textColor: NSColor
     let rules: [HighlightRule]
     let selectedFraction: CGFloat?
@@ -125,14 +125,14 @@ struct NativeLogViewer: NSViewRepresentable {
 
     /// Initializer for the Top Pane (Full Unfiltered Log View)
     init(
-        lines: [String], textColor: NSColor, rules: [HighlightRule], selectedFraction: CGFloat?,
+        provider: LineProvider, textColor: NSColor, rules: [HighlightRule], selectedFraction: CGFloat?,
         directScrollNotificationName: Notification.Name?,
         tailScrollNotificationName: Notification.Name, showLineNumbers: Bool,
         fontSize: CGFloat = 12,
         isMinimapActiveDrive: Bool, onLineIndexSelected: @escaping (Int) -> Void
     ) {
-        self.lines = lines
-        filteredLines = nil
+        self.provider = provider
+        isFiltered = false
         self.textColor = textColor
         self.rules = rules
         self.selectedFraction = selectedFraction
@@ -146,13 +146,13 @@ struct NativeLogViewer: NSViewRepresentable {
 
     /// Initializer for the Bottom Pane (Filtered Log View)
     init(
-        filteredLines: [LogLine], textColor: NSColor, rules: [HighlightRule],
+        filteredProvider: LineProvider, textColor: NSColor, rules: [HighlightRule],
         selectedFraction: CGFloat?, tailScrollNotificationName: Notification.Name,
         showLineNumbers: Bool, fontSize: CGFloat = 12,
         onLineIndexSelected: @escaping (Int) -> Void
     ) {
-        lines = []
-        self.filteredLines = filteredLines
+        provider = filteredProvider
+        isFiltered = true
         self.textColor = textColor
         self.rules = rules
         self.selectedFraction = selectedFraction
@@ -176,6 +176,13 @@ struct NativeLogViewer: NSViewRepresentable {
         tableView.backgroundColor = .clear
         tableView.selectionHighlightStyle = .regular
         tableView.allowsMultipleSelection = true
+        // Fixed row height (every row is identical). This gives NSTableView its
+        // O(1) document-height fast path. Implementing tableView(_:heightOfRow:)
+        // instead forces AppKit to call the delegate for EVERY row on reloadData
+        // — tens of millions of main-thread calls for huge logs, which freezes
+        // the UI. Setting rowHeight directly avoids that entirely.
+        tableView.usesAutomaticRowHeights = false
+        tableView.rowHeight = fontSize + 2
 
         tableView.delegate = context.coordinator
         tableView.dataSource = context.coordinator
@@ -236,8 +243,10 @@ struct NativeLogViewer: NSViewRepresentable {
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let tableView = nsView.documentView as? LogTableView else { return }
 
-        context.coordinator.lines = lines
-        context.coordinator.filteredLines = filteredLines
+        tableView.rowHeight = fontSize + 2
+        tableView.rowHeight = fontSize + 2
+        context.coordinator.provider = provider
+        context.coordinator.isFiltered = isFiltered
         context.coordinator.defaultTextColor = textColor
         context.coordinator.rules = rules
         context.coordinator.fontSize = fontSize
@@ -265,9 +274,9 @@ struct NativeLogViewer: NSViewRepresentable {
 
         // FIXED MINIMAP SCRUBBING JUMP CONDITIONS:
         // Only auto-scroll the top pane if the user is actively dragging their cursor across the minimap bar!
-        if filteredLines == nil, isMinimapActiveDrive, let fraction = selectedFraction,
-           !lines.isEmpty {
-            let targetRow = Int(CGFloat(lines.count - 1) * fraction)
+        if !isFiltered, isMinimapActiveDrive, let fraction = selectedFraction,
+           provider.count > 0 {
+            let targetRow = Int(CGFloat(provider.count - 1) * fraction)
             if targetRow >= 0, targetRow < tableView.numberOfRows {
                 DispatchQueue.main.async {
                     if tableView.selectedRow != targetRow {
@@ -286,8 +295,8 @@ struct NativeLogViewer: NSViewRepresentable {
     }
 
     class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
-        var lines: [String] = []
-        var filteredLines: [LogLine]?
+        var provider: LineProvider = ArrayLineProvider(lines: [])
+        var isFiltered: Bool = false
         var defaultTextColor: NSColor = .labelColor
         var rules: [HighlightRule] = []
         var fontSize: CGFloat = 12
@@ -299,10 +308,7 @@ struct NativeLogViewer: NSViewRepresentable {
 
         /// Returns the display text for a row — used by LogTableView for copy operations.
         func textForRow(_ row: Int) -> String {
-            if let filtered = filteredLines {
-                return row < filtered.count ? filtered[row].text : ""
-            }
-            return row < lines.count ? lines[row] : ""
+            return provider.line(at: row)
         }
 
         /// Keeps track of your gutter column management logic
@@ -338,7 +344,7 @@ struct NativeLogViewer: NSViewRepresentable {
         }
 
         func numberOfRows(in _: NSTableView) -> Int {
-            return filteredLines?.count ?? lines.count
+            return provider.count
         }
 
         /// 1. NEW PRIMARY ROUTER METHOD
@@ -363,7 +369,7 @@ struct NativeLogViewer: NSViewRepresentable {
             }
 
             // Resolve this row's highlight-rule background colour (if any)
-            let lineText = filteredLines?[row].text ?? (row < lines.count ? lines[row] : "")
+            let lineText = provider.line(at: row)
             var bgColor = NSColor.clear
             let range = NSRange(location: 0, length: lineText.utf16.count)
             for rule in rules {
@@ -395,7 +401,7 @@ struct NativeLogViewer: NSViewRepresentable {
             // Always refresh font so size changes take effect on recycled cells
             cell?.font = NSFont.monospacedSystemFont(ofSize: max(8, fontSize - 1), weight: .light)
 
-            let actualIndex = filteredLines?[row].originalIndex ?? row
+            let actualIndex = provider.originalIndex(at: row)
             cell?.stringValue = "\(actualIndex + 1) "
             cell?.textColor = .secondaryLabelColor
 
@@ -434,7 +440,7 @@ struct NativeLogViewer: NSViewRepresentable {
             textField?.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
             textField?.frame = NSRect(x: 8, y: 1, width: 9980, height: rowHeight)
 
-            let lineText = filteredLines?[row].text ?? lines[row]
+            let lineText = provider.line(at: row)
             textField?.stringValue = lineText
 
             var cellFgColor = defaultTextColor
@@ -451,24 +457,13 @@ struct NativeLogViewer: NSViewRepresentable {
             return containerCell
         }
 
-        func tableView(_: NSTableView, heightOfRow _: Int) -> CGFloat {
-            return fontSize + 2
-        }
-
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isProgrammaticallySelecting else { return }
             guard let tableView = notification.object as? NSTableView else { return }
             let selectedRow = tableView.selectedRow
 
-            if selectedRow >= 0 {
-                if let filterData = filteredLines {
-                    if selectedRow < filterData.count {
-                        let actualIndex = filterData[selectedRow].originalIndex
-                        onLineIndexSelected?(actualIndex)
-                    }
-                } else {
-                    onLineIndexSelected?(selectedRow)
-                }
+            if selectedRow >= 0, selectedRow < provider.count {
+                onLineIndexSelected?(provider.originalIndex(at: selectedRow))
             }
         }
     }

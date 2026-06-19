@@ -2,8 +2,6 @@
 //  WindowCloseInterceptor.swift
 //  BeaverTail
 //
-//  Created by William Gibson on 16/06/2026.
-//
 //  Embeds as a zero-size background view and intercepts the window's close action
 //  (⌘W / File ▸ Close / red traffic-light button).
 //  When a log tab is open it closes the tab and keeps the window alive;

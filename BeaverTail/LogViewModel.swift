@@ -2,8 +2,6 @@
 //  LogViewModel.swift
 //  BeaverTail
 //
-//  Created by William Gibson on 13/06/2026.
-//
 
 import Combine
 import SwiftUI
@@ -30,8 +28,10 @@ class LogViewModel: ObservableObject {
         }
     }
 
-    var allLines: [String] { currentTab?.allLines ?? [] }
-    var filteredLines: [LogLine] { currentTab?.filteredLines ?? [] }
+    var lineProvider: LineProvider { currentTab?.lineProvider ?? ArrayLineProvider(lines: []) }
+    var lineCount: Int { currentTab?.lineCount ?? 0 }
+    var filteredProvider: LineProvider { currentTab?.filteredProvider ?? ArrayLineProvider(lines: []) }
+    var filteredCount: Int { currentTab?.filteredCount ?? 0 }
     var selectedFraction: CGFloat? { currentTab?.selectedFraction ?? nil }
     var minimapImage: NSImage? { currentTab?.minimapImage ?? nil }
 
@@ -61,7 +61,8 @@ class LogViewModel: ObservableObject {
     @Published var filterHistory: [String] = []
     @Published var recentFiles: [RecentFile] = []
 
-    private var filterTask: Task<Void, Never>?
+    private var filterGeneration: Int = 0
+    private var progressPollTimer: Timer?
     private var minimapTasks: [UUID: Task<Void, Never>] = [:]
     private var sessionSaveDebounceTask: Task<Void, Never>?
     private var activeTailSource: DispatchSourceFileSystemObject?
@@ -109,8 +110,9 @@ class LogViewModel: ObservableObject {
             id: targetTabID,
             name: url.lastPathComponent,
             fileURL: url,
-            allLines: ["Streaming log components from disk... Please wait."],
-            filteredLines: [],
+            content: nil,
+            statusLines: ["Indexing log from disk… Please wait."],
+            filteredIndices: [],
             selectedFraction: nil,
             minimapImage: nil,
             isCurrentlyStreaming: true
@@ -127,7 +129,7 @@ class LogViewModel: ObservableObject {
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                let finishedLines = try Self.loadLinesFast(from: url) { frac in
+                let content = try LogContent.build(from: url) { frac in
                     Task { @MainActor [weak self] in
                         self?.fileLoadProgress = frac
                         self?.isLoadingFile = self?.openTabs.contains { $0.isCurrentlyStreaming } ?? false
@@ -136,18 +138,20 @@ class LogViewModel: ObservableObject {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
-                        self.openTabs[index].allLines = finishedLines
+                        self.openTabs[index].content = content
+                        self.openTabs[index].statusLines = []
                         self.openTabs[index].isCurrentlyStreaming = false
                         self.fileLoadProgress = 1.0
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
                         self.generateMinimapData(for: targetTabID)
+                        if self.selectedTabID == targetTabID { self.startLiveTailingForActiveTab() }
                     }
                 }
             } catch {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
-                        self.openTabs[index].allLines = ["Error streaming file contents: \(error.localizedDescription)"]
+                        self.openTabs[index].statusLines = ["Error opening file: \(error.localizedDescription)"]
                         self.openTabs[index].isCurrentlyStreaming = false
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
                     }
@@ -171,7 +175,9 @@ class LogViewModel: ObservableObject {
 
     func applyFilter(with pattern: String) {
         currentActiveFilterPattern = pattern
-        filterTask?.cancel()
+        // Bump the generation so any in-flight filter's result is ignored.
+        filterGeneration &+= 1
+        let gen = filterGeneration
 
         guard let tabID = selectedTabID,
               let tabIndex = openTabs.firstIndex(where: { $0.id == tabID })
@@ -179,14 +185,18 @@ class LogViewModel: ObservableObject {
         openTabs[tabIndex].filterPattern = pattern
 
         guard !pattern.isEmpty else {
-            openTabs[tabIndex].filteredLines = []
+            progressPollTimer?.invalidate(); progressPollTimer = nil
+            openTabs[tabIndex].filteredIndices = []
+            openTabs[tabIndex].filterMessage = nil
             isFiltering = false
             return
         }
 
-        let regexOptions: NSRegularExpression.Options = isCaseInsensitive ? [.caseInsensitive] : []
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: regexOptions) else {
-            openTabs[tabIndex].filteredLines = [LogLine(originalIndex: 0, text: "Invalid Regular Expression")]
+        guard let matcher = LineMatcher.make(pattern: pattern, caseInsensitive: isCaseInsensitive) else {
+            progressPollTimer?.invalidate(); progressPollTimer = nil
+            openTabs[tabIndex].filteredIndices = []
+            openTabs[tabIndex].filterMessage = "Invalid Regular Expression"
+            isFiltering = false
             return
         }
 
@@ -194,25 +204,41 @@ class LogViewModel: ObservableObject {
 
         isFiltering = true
         filterProgress = 0.0
-        openTabs[tabIndex].filteredLines = []
+        openTabs[tabIndex].filteredIndices = []
+        openTabs[tabIndex].filterMessage = nil
 
-        let localLinesSnapshot = openTabs[tabIndex].allLines
+        guard let content = openTabs[tabIndex].content else {
+            isFiltering = false
+            return
+        }
 
-        filterTask = Task.detached(priority: .userInitiated) { [weak self] in
-            let result = Self.filterLinesFast(lines: localLinesSnapshot, regex: regex) { frac in
-                Task { @MainActor [weak self] in self?.filterProgress = frac }
-            }
-            if Task.isCancelled { return }
-            await MainActor.run { [weak self] in
+        // Drive the progress bar from a main-thread timer that polls a cheap
+        // shared counter, kept fully independent of the worker threads.
+        let progress = ScanProgress(total: content.count)
+        progressPollTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            self?.filterProgress = progress.fraction
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        progressPollTimer = timer
+
+        // Run the heavy parallel scan on a plain GCD queue (NOT a Swift Task) so
+        // the blocking `concurrentPerform` inside cannot stall the Swift
+        // concurrency cooperative pool / main-thread progress timer.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = content.filterMatches(matcher: matcher, progress: progress)
+            DispatchQueue.main.async {
                 guard let self else { return }
+                // Ignore results from a filter that has since been superseded.
+                guard gen == self.filterGeneration else { return }
+                self.progressPollTimer?.invalidate()
+                self.progressPollTimer = nil
                 if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                    self.openTabs[freshIndex].filteredLines = result
+                    self.openTabs[freshIndex].filteredIndices = result
                 }
                 self.filterProgress = 1.0
                 self.isFiltering = false
-                DispatchQueue.main.async {
-                    NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
-                }
+                NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
             }
         }
     }
@@ -220,10 +246,9 @@ class LogViewModel: ObservableObject {
     func generateMinimapData(for tabID: UUID) {
         minimapTasks[tabID]?.cancel()
         guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-        let localLines = openTabs[index].allLines
         let activeRules = highlightRules.filter { $0.compiledRegex != nil }
 
-        guard !localLines.isEmpty, !activeRules.isEmpty else {
+        guard let content = openTabs[index].content, content.count > 0, !activeRules.isEmpty else {
             openTabs[index].minimapImage = nil
             return
         }
@@ -236,7 +261,7 @@ class LogViewModel: ObservableObject {
         let bgColor = NSColor.windowBackgroundColor.cgColor
 
         minimapTasks[tabID] = Task.detached(priority: .utility) { [weak self] in
-            let totalLines = localLines.count
+            let totalLines = content.count
             let imgWidth = 30, imgHeight = 1500
             let colorSpace = CGColorSpaceCreateDeviceRGB()
             guard let ctx = CGContext(
@@ -263,7 +288,7 @@ class LogViewModel: ObservableObject {
 
                 var lineIdx = bucketStart
                 while lineIdx < bucketEnd {
-                    let line = localLines[lineIdx]
+                    let line = content.line(at: lineIdx)
                     let range = NSRange(location: 0, length: line.utf16.count)
                     for capture in captures {
                         if capture.regex.firstMatch(in: line, options: [], range: range) != nil {
@@ -303,7 +328,7 @@ class LogViewModel: ObservableObject {
 
     func syncSelectionFromFilteredIndex(_ originalIndex: Int) {
         guard let tabID = selectedTabID, let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-        let totalCount = openTabs[index].allLines.count
+        let totalCount = openTabs[index].lineCount
         guard totalCount > 0 else { return }
         let fraction = CGFloat(originalIndex) / CGFloat(totalCount - 1)
         openTabs[index].selectedFraction = max(0, min(1, fraction))
@@ -318,7 +343,7 @@ class LogViewModel: ObservableObject {
 
     func updateMinimapFromLineIndex(_ index: Int) {
         guard let tabID = selectedTabID, let tabIdx = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-        let totalCount = openTabs[tabIdx].allLines.count
+        let totalCount = openTabs[tabIdx].lineCount
         guard totalCount > 0 else { return }
         let fraction = CGFloat(index) / CGFloat(totalCount - 1)
         openTabs[tabIdx].selectedFraction = max(0, min(1, fraction))
@@ -404,8 +429,10 @@ class LogViewModel: ObservableObject {
                     id: newID,
                     name: restoredURL.lastPathComponent,
                     fileURL: restoredURL,
-                    allLines: [],
-                    filteredLines: [],
+                    content: nil,
+                    statusLines: [],
+                    filteredIndices: [],
+                    filterMessage: nil,
                     selectedFraction: nil,
                     minimapImage: nil,
                     isCurrentlyStreaming: false,
@@ -432,7 +459,7 @@ class LogViewModel: ObservableObject {
     func triggerLazyLoadForTab(id: UUID) {
         guard let index = openTabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = openTabs[index]
-        guard tab.allLines.isEmpty, !tab.isCurrentlyStreaming else { return }
+        guard tab.content == nil, !tab.isCurrentlyStreaming else { return }
 
         openTabs[index].isCurrentlyStreaming = true
         isLoadingFile = true
@@ -443,7 +470,7 @@ class LogViewModel: ObservableObject {
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                let finishedLines = try Self.loadLinesFast(from: url) { frac in
+                let content = try LogContent.build(from: url) { frac in
                     Task { @MainActor [weak self] in
                         self?.fileLoadProgress = frac
                         self?.isLoadingFile = self?.openTabs.contains { $0.isCurrentlyStreaming } ?? false
@@ -452,7 +479,8 @@ class LogViewModel: ObservableObject {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
-                        self.openTabs[freshIndex].allLines = finishedLines
+                        self.openTabs[freshIndex].content = content
+                        self.openTabs[freshIndex].statusLines = []
                         self.openTabs[freshIndex].isCurrentlyStreaming = false
                         self.fileLoadProgress = 1.0
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
@@ -568,125 +596,11 @@ class LogViewModel: ObservableObject {
         highlightRules = decoded
     }
 
-    // MARK: - Fast Parallel Line Loader
-
-    nonisolated static func loadLinesFast(from url: URL, progress: @escaping (Double) -> Void) throws -> [String] {
-        let data = try Data(contentsOf: url, options: .mappedIfSafe)
-        let count = data.count
-        guard count > 0 else { return [] }
-        let newline: UInt8 = 0x0A
-        let carriageReturn: UInt8 = 0x0D
-
-        return data.withUnsafeBytes { rawBuffer -> [String] in
-            nonisolated(unsafe) let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress!
-            let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
-            let targetChunks = min(coreCount * 2, 32)
-            let approxChunk = max(1, count / targetChunks)
-
-            var ranges: [(start: Int, end: Int)] = []
-            var start = 0
-            while start < count {
-                var end = min(start + approxChunk, count)
-                while end < count, base[end - 1] != newline { end += 1 }
-                ranges.append((start, end))
-                start = end
-            }
-
-            let chunkCount = ranges.count
-            var partials = [[String]](repeating: [], count: chunkCount)
-            let progressLock = NSLock()
-            var completed = 0
-
-            partials.withUnsafeMutableBufferPointer { outParam in
-                nonisolated(unsafe) let out = outParam
-                DispatchQueue.concurrentPerform(iterations: chunkCount) { i in
-                    let (s, e) = ranges[i]
-                    var lines: [String] = []
-                    lines.reserveCapacity((e - s) / 50)
-                    var lineStart = s, idx = s
-                    while idx < e {
-                        if base[idx] == newline {
-                            var lineEnd = idx
-                            if lineEnd > lineStart, base[lineEnd - 1] == carriageReturn { lineEnd -= 1 }
-                            lines.append(String(decoding: UnsafeBufferPointer(start: base + lineStart, count: lineEnd - lineStart), as: UTF8.self))
-                            lineStart = idx + 1
-                        }
-                        idx += 1
-                    }
-                    if lineStart < e {
-                        var lineEnd = e
-                        if lineEnd > lineStart, base[lineEnd - 1] == carriageReturn { lineEnd -= 1 }
-                        lines.append(String(decoding: UnsafeBufferPointer(start: base + lineStart, count: lineEnd - lineStart), as: UTF8.self))
-                    }
-                    out[i] = lines
-                    progressLock.lock()
-                    completed += 1
-                    let frac = min(0.99, Double(completed) / Double(chunkCount))
-                    progressLock.unlock()
-                    progress(frac)
-                }
-            }
-
-            var all: [String] = []
-            all.reserveCapacity(count / 50)
-            for chunk in partials { all.append(contentsOf: chunk) }
-            return all
-        }
-    }
-
-    // MARK: - Fast Parallel Regex Filter
-
-    nonisolated static func filterLinesFast(lines: [String], regex: NSRegularExpression, progress: @escaping (Double) -> Void) -> [LogLine] {
-        let count = lines.count
-        guard count > 0 else { return [] }
-        let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
-        let targetChunks = min(coreCount * 2, 32)
-        let chunkSize = max(1, (count + targetChunks - 1) / targetChunks)
-
-        var ranges: [(start: Int, end: Int)] = []
-        var start = 0
-        while start < count {
-            let end = min(start + chunkSize, count)
-            ranges.append((start, end))
-            start = end
-        }
-
-        let chunkCount = ranges.count
-        var partials = [[LogLine]](repeating: [], count: chunkCount)
-        let progressLock = NSLock()
-        var completed = 0
-
-        partials.withUnsafeMutableBufferPointer { outParam in
-            nonisolated(unsafe) let out = outParam
-            DispatchQueue.concurrentPerform(iterations: chunkCount) { c in
-                let (s, e) = ranges[c]
-                var matches: [LogLine] = []
-                for i in s ..< e {
-                    let line = lines[i]
-                    let range = NSRange(location: 0, length: line.utf16.count)
-                    if regex.firstMatch(in: line, options: [], range: range) != nil {
-                        matches.append(LogLine(originalIndex: i, text: line))
-                    }
-                }
-                out[c] = matches
-                progressLock.lock()
-                completed += 1
-                let frac = min(0.99, Double(completed) / Double(chunkCount))
-                progressLock.unlock()
-                progress(frac)
-            }
-        }
-
-        var all: [LogLine] = []
-        for chunk in partials { all.append(contentsOf: chunk) }
-        return all
-    }
-
     // MARK: - Live Tailing
 
     func startLiveTailingForActiveTab() {
         stopLiveTailing()
-        guard let tab = currentTab, tab.allLines.count > 0 else { return }
+        guard let tab = currentTab, tab.content != nil else { return }
         let fileURL = tab.fileURL
         let fileHandle = open(fileURL.path, O_RDONLY)
         guard fileHandle >= 0 else { return }
@@ -715,9 +629,10 @@ class LogViewModel: ObservableObject {
                     if linesArray.last?.isEmpty == true { linesArray.removeLast() }
                     guard !linesArray.isEmpty else { return }
                     Task { @MainActor in
-                        if let tabID = self.selectedTabID, let index = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                            let baseOffset = self.openTabs[index].allLines.count
-                            self.openTabs[index].allLines.append(contentsOf: linesArray)
+                        if let tabID = self.selectedTabID, let index = self.openTabs.firstIndex(where: { $0.id == tabID }),
+                           let content = self.openTabs[index].content {
+                            let baseOffset = content.count
+                            content.appendLines(linesArray)
                             self.generateMinimapData(for: tabID)
                             self.appendFilterForLiveTail(with: linesArray, startingAt: baseOffset)
                             self.objectWillChange.send()
@@ -750,16 +665,16 @@ class LogViewModel: ObservableObject {
         let regexOptions: NSRegularExpression.Options = isCaseInsensitive ? [.caseInsensitive] : []
         guard let regex = try? NSRegularExpression(pattern: currentActiveFilterPattern, options: regexOptions) else { return }
 
-        var incrementalMatches: [LogLine] = []
+        var incrementalMatches: [Int] = []
         for (offset, line) in newLines.enumerated() {
             let range = NSRange(location: 0, length: line.utf16.count)
             if regex.firstMatch(in: line, options: [], range: range) != nil {
-                incrementalMatches.append(LogLine(originalIndex: originalStartIndex + offset, text: line))
+                incrementalMatches.append(originalStartIndex + offset)
             }
         }
 
         if !incrementalMatches.isEmpty {
-            openTabs[tabIndex].filteredLines.append(contentsOf: incrementalMatches)
+            openTabs[tabIndex].filteredIndices.append(contentsOf: incrementalMatches)
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
             }

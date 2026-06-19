@@ -2,8 +2,6 @@
 //  LogLine.swift
 //  BeaverTail
 //
-//  Created by William Gibson on 14/06/2026.
-//
 
 import Foundation
 

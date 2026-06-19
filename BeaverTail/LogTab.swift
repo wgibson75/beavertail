@@ -2,8 +2,7 @@
 //  LogTab.swift
 //  BeaverTail
 //
-//  Created by William Gibson on 14/06/2026.
-//
+
 import AppKit
 
 /// Struct tracking individual workspace parameters per loaded file tab node
@@ -11,20 +10,70 @@ struct LogTab: Identifiable, Equatable, Codable {
     let id: UUID
     let name: String
     let fileURL: URL
-    var allLines: [String] = []
-    var filteredLines: [LogLine] = []
+
+    /// Memory-mapped, lazily-indexed file content. `nil` until the file is loaded.
+    var content: LogContent?
+    /// Placeholder / status / error text shown when there is no loaded content yet.
+    var statusLines: [String] = []
+
+    /// Original line indices that match the current filter (decoded on demand).
+    var filteredIndices: [Int] = []
+    /// Optional message shown in the filtered pane (e.g. invalid regex).
+    var filterMessage: String?
+
     var selectedFraction: CGFloat?
     var filterPattern: String = ""
 
     var minimapImage: NSImage?
     var isCurrentlyStreaming: Bool = false
 
-    init(id: UUID = UUID(), name: String, fileURL: URL, allLines: [String] = [], filteredLines: [LogLine] = [], selectedFraction: CGFloat? = nil, minimapImage: NSImage? = nil, isCurrentlyStreaming: Bool = false, filterPattern: String = "") {
+    /// Random-access provider used by the viewer: real content if loaded,
+    /// otherwise the placeholder/status text.
+    var lineProvider: LineProvider {
+        content ?? ArrayLineProvider(lines: statusLines)
+    }
+
+    /// Total number of displayable lines (content if loaded, else status lines).
+    var lineCount: Int {
+        content?.count ?? statusLines.count
+    }
+
+    /// Provider for the filtered (bottom) pane — decodes matched lines on demand.
+    var filteredProvider: LineProvider {
+        if let message = filterMessage {
+            return ArrayLineProvider(lines: [message])
+        }
+        if let content {
+            return FilteredLineProvider(content: content, indices: filteredIndices)
+        }
+        return ArrayLineProvider(lines: [])
+    }
+
+    /// Number of filtered matches (or 1 when showing a filter message).
+    var filteredCount: Int {
+        filterMessage != nil ? 1 : filteredIndices.count
+    }
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        fileURL: URL,
+        content: LogContent? = nil,
+        statusLines: [String] = [],
+        filteredIndices: [Int] = [],
+        filterMessage: String? = nil,
+        selectedFraction: CGFloat? = nil,
+        minimapImage: NSImage? = nil,
+        isCurrentlyStreaming: Bool = false,
+        filterPattern: String = ""
+    ) {
         self.id = id
         self.name = name
         self.fileURL = fileURL
-        self.allLines = allLines
-        self.filteredLines = filteredLines
+        self.content = content
+        self.statusLines = statusLines
+        self.filteredIndices = filteredIndices
+        self.filterMessage = filterMessage
         self.selectedFraction = selectedFraction
         self.minimapImage = minimapImage
         self.isCurrentlyStreaming = isCurrentlyStreaming
@@ -41,8 +90,10 @@ struct LogTab: Identifiable, Equatable, Codable {
         name = try container.decode(String.self, forKey: .name)
         fileURL = try container.decode(URL.self, forKey: .fileURL)
         filterPattern = try container.decode(String.self, forKey: .filterPattern)
-        allLines = []
-        filteredLines = []
+        content = nil
+        statusLines = []
+        filteredIndices = []
+        filterMessage = nil
         selectedFraction = nil
         minimapImage = nil
         isCurrentlyStreaming = false
@@ -57,6 +108,10 @@ struct LogTab: Identifiable, Equatable, Codable {
     }
 
     static func == (lhs: LogTab, rhs: LogTab) -> Bool {
-        return lhs.id == rhs.id && lhs.filterPattern == rhs.filterPattern && lhs.filteredLines.count == rhs.filteredLines.count
+        return lhs.id == rhs.id
+            && lhs.filterPattern == rhs.filterPattern
+            && lhs.filteredCount == rhs.filteredCount
+            && lhs.lineCount == rhs.lineCount
+            && lhs.isCurrentlyStreaming == rhs.isCurrentlyStreaming
     }
 }

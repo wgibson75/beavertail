@@ -2,8 +2,6 @@
 //  ContentView.swift
 //  BeaverTail
 //
-//  Created by William Gibson on 13/06/2026.
-//
 
 import SwiftUI
 import UniformTypeIdentifiers
@@ -295,7 +293,7 @@ private struct TopPaneView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Label("\(viewModel.allLines.count) lines", systemImage: "doc.text")
+                Label("\(viewModel.lineCount) lines", systemImage: "doc.text")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -310,7 +308,7 @@ private struct TopPaneView: View {
             .background(Color(NSColor.controlBackgroundColor))
             Divider()
             NativeLogViewer(
-                lines: viewModel.allLines,
+                provider: viewModel.lineProvider,
                 textColor: .labelColor,
                 rules: viewModel.highlightRules,
                 selectedFraction: viewModel.selectedFraction,
@@ -375,7 +373,7 @@ private struct BottomPaneView: View {
                             .padding(.vertical, 2)
                     }
                     Divider()
-                    if viewModel.filteredLines.isEmpty && !viewModel.isFiltering && viewModel.currentFilterPattern.isEmpty {
+                    if viewModel.filteredCount == 0 && !viewModel.isFiltering && viewModel.currentFilterPattern.isEmpty {
                         VStack(spacing: 8) {
                             Image(systemName: "magnifyingglass")
                                 .font(.system(size: 28))
@@ -387,7 +385,7 @@ private struct BottomPaneView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         NativeLogViewer(
-                            filteredLines: viewModel.filteredLines,
+                            filteredProvider: viewModel.filteredProvider,
                             textColor: .secondaryLabelColor,
                             rules: viewModel.highlightRules,
                             selectedFraction: viewModel.selectedFraction,
