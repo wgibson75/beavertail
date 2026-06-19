@@ -23,6 +23,7 @@ struct ContentView: View {
                     ProgressView(value: viewModel.fileLoadProgress)
                         .progressViewStyle(.linear)
                         .controlSize(.small)
+                        .animation(.none, value: viewModel.fileLoadProgress)
                     Text("Loading file… \(Int(viewModel.fileLoadProgress * 100))%")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -369,6 +370,7 @@ private struct BottomPaneView: View {
                         ProgressView(value: viewModel.filterProgress)
                             .progressViewStyle(.linear)
                             .controlSize(.small)
+                            .animation(.none, value: viewModel.filterProgress)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 2)
                     }

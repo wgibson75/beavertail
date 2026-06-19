@@ -239,14 +239,14 @@ private func asciiInsensitiveContainsPtr(_ hay: UnsafePointer<UInt8>, _ len: Int
 /// reporting from the scan so the bar stays smooth even while every core is busy.
 final class ScanProgress: @unchecked Sendable {
     private var _current: Int = 0
-    private var lock = os_unfair_lock()
+    private let lock = NSLock()
     let total: Int
     init(total: Int) { self.total = max(total, 1) }
     func add(_ n: Int) {
-        os_unfair_lock_lock(&lock); _current += n; os_unfair_lock_unlock(&lock)
+        lock.lock(); _current += n; lock.unlock()
     }
     var fraction: Double {
-        os_unfair_lock_lock(&lock); let c = _current; os_unfair_lock_unlock(&lock)
+        lock.lock(); let c = _current; lock.unlock()
         return min(1.0, Double(c) / Double(total))
     }
 }
@@ -348,7 +348,7 @@ final class LogContent: LineProvider {
     // MARK: - Fast parallel index build
 
     /// Memory-maps `url` and builds the line-start index in parallel.
-    nonisolated static func build(from url: URL, progress: @escaping (Double) -> Void) throws -> LogContent {
+    nonisolated static func build(from url: URL, progress: ScanProgress? = nil) throws -> LogContent {
         let data = try Data(contentsOf: url, options: .alwaysMapped)
         let total = data.count
         guard total > 0 else {
@@ -368,7 +368,9 @@ final class LogContent: LineProvider {
         let lineStarts: ContiguousArray<Int> = data.withUnsafeBytes { rawBuffer in
             nonisolated(unsafe) let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress!
             let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
-            let targetChunks = min(coreCount * 2, 64)
+            // Use massive chunks so threads chew through linear memory sequentially
+            // instead of thrashing the disk readhead with hundreds of tiny cross-file chunks
+            let targetChunks = coreCount
             let approxChunk = max(1, total / targetChunks)
 
             // Split the byte range into chunks. Newline counting doesn't care
@@ -385,10 +387,6 @@ final class LogContent: LineProvider {
             // Each chunk records the start offset (newlinePos + 1) of every line
             // that begins within it.
             var partials = [[Int]](repeating: [], count: chunkCount)
-            let lock = NSLock()
-            var processedBytes = 0
-            let denom = Double(max(total, 1))
-            let reportEvery = max(1, total / 200)   // ~200 smooth updates overall
 
             partials.withUnsafeMutableBufferPointer { outParam in
                 nonisolated(unsafe) let out = outParam
@@ -396,29 +394,31 @@ final class LogContent: LineProvider {
                     let (cs, ce) = ranges[i]
                     var local: [Int] = []
                     local.reserveCapacity((ce - cs) / 40)
-                    var idx = cs
+                    
+                    var ptr: UnsafeRawPointer = UnsafeRawPointer(base + cs)
+                    let endPtr: UnsafeRawPointer = UnsafeRawPointer(base + ce)
+                    
                     var sinceReport = 0
-                    while idx < ce {
-                        if base[idx] == newline { local.append(idx + 1) }
-                        idx += 1
-                        sinceReport += 1
-                        if sinceReport >= reportEvery {
-                            lock.lock()
-                            processedBytes += sinceReport
-                            let frac = min(0.99, Double(processedBytes) / denom)
-                            lock.unlock()
+                    let reportChunk = min((ce - cs) / 200, 100_000)
+
+                    while ptr < endPtr, let found = memchr(ptr, Int32(newline), ptr.distance(to: endPtr)) {
+                        let foundPtr = found.assumingMemoryBound(to: UInt8.self)
+                        let dist = base.distance(to: foundPtr)
+                        local.append(dist + 1)
+                        let advanced = ptr.distance(to: UnsafeRawPointer(foundPtr + 1))
+                        sinceReport += advanced
+                        ptr = UnsafeRawPointer(foundPtr + 1)
+
+                        if sinceReport >= reportChunk {
+                            progress?.add(sinceReport)
                             sinceReport = 0
-                            progress(frac)
                         }
                     }
+                    
                     out[i] = local
-                    if sinceReport > 0 {
-                        lock.lock()
-                        processedBytes += sinceReport
-                        let frac = min(0.99, Double(processedBytes) / denom)
-                        lock.unlock()
-                        progress(frac)
-                    }
+                    let left = ptr.distance(to: endPtr)
+                    if left > 0 { sinceReport += left }
+                    if sinceReport > 0 { progress?.add(sinceReport) }
                 }
             }
 
@@ -445,12 +445,17 @@ final class LogContent: LineProvider {
     /// allocates a String — it searches the raw memory-mapped bytes directly.
     /// Progress is reported into `progress` (a cheap shared counter polled by the
     /// UI), not via per-update closures.
-    func filterMatches(matcher: LineMatcher, progress: ScanProgress) -> [Int] {
+    func filterMatches(matcher: LineMatcher, progress: ScanProgress, onUpdate: @escaping ([Int]) -> Void) {
         let indexed = lineStarts.count
-        guard indexed > 0 || !appended.isEmpty else { return [] }
+        guard indexed > 0 || !appended.isEmpty else {
+            onUpdate([])
+            return
+        }
 
         let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
-        let targetChunks = min(coreCount * 4, 256)
+        // Use enough chunks to stream results smoothly to the UI while still allowing
+        // prefetchers to operate on large enough blocks.
+        let targetChunks = min(coreCount * 8, 128)
         let chunkSize = max(1, (indexed + targetChunks - 1) / targetChunks)
 
         var ranges: [(start: Int, end: Int)] = []
@@ -506,13 +511,18 @@ final class LogContent: LineProvider {
             }
         }
 
+        let outLock = NSLock()
+        var nextChunkToEmit = 0
+        var emittedSoFar: [Int] = []
+        var completeChunks: [Int: [Int]] = [:]
+
         if chunkCount > 0 {
             fb.withUnsafeBufferPointer { fbPtr in
                 let fbBase = fbPtr.baseAddress!
                 blob.withUnsafeBufferPointer { blobPtr in
                     let blobBase = blobPtr.baseAddress
                     data.withUnsafeBytes { rawBuffer in
-                        nonisolated(unsafe) let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress!
+                        nonisolated(unsafe) let base = UnsafePointer(rawBuffer.bindMemory(to: UInt8.self).baseAddress!)
                         let starts = lineStarts
                         let total = totalBytes
                         nonisolated(unsafe) let nBlob = blobBase
@@ -522,126 +532,147 @@ final class LogContent: LineProvider {
                             DispatchQueue.concurrentPerform(iterations: chunkCount) { c in
                                 let (cs, ce) = ranges[c]
                                 var matches: [Int] = []
-                                var sinceReport = 0
-                                for i in cs ..< ce {
-                                    let start = starts[i]
-                                    let rawEnd = (i + 1 < indexed) ? starts[i + 1] - 1 : total
-                                    var e = max(start, rawEnd)
-                                    if e > start, base[e - 1] == 0x0D { e -= 1 }
-                                    let len = e - start
+                                
+                                var startIdx = cs
+                                while startIdx < ce {
+                                    autoreleasepool {
+                                        let endIdx = min(startIdx + 2048, ce)
+                                        var sinceReport = 0
+                                        
+                                        for i in startIdx ..< endIdx {
+                                            let start = starts[i]
+                                        let rawEnd = (i + 1 < indexed) ? starts[i + 1] - 1 : total
+                                        var e = max(start, rawEnd)
+                                        if e > start, base[e - 1] == 0x0D { e -= 1 }
+                                        let len = e - start
 
-                                    var isMatch = false
-                                    switch mode {
-                                    case .litSensitive:
-                                        let nl = lensLet[0]
-                                        if nl <= len { isMatch = memmem(base + start, len, nBlob, nl) != nil }
-                                    case .litInsensitive:
-                                        isMatch = asciiInsensitiveContainsPtr(base + start, len, nBlob, lensLet[0])
-                                    case .multiLitSensitive:
-                                        var p = 0
-                                        while p < len {
-                                            if fbBase[Int(base[start + p])] {
-                                                var k = 0
-                                                while k < needleCount {
-                                                    let nl = lensLet[k]
-                                                    if nl <= len - p {
-                                                        let no = offsLet[k]
-                                                        var j = 0
-                                                        while j < nl {
-                                                            if base[start + p + j] != nBlob![no + j] { break }
-                                                            j += 1
+                                        var isMatch = false
+                                        switch mode {
+                                        case .litSensitive:
+                                            let nl = lensLet[0]
+                                            if nl <= len { isMatch = memmem(base + start, len, nBlob, nl) != nil }
+                                        case .litInsensitive:
+                                            isMatch = asciiInsensitiveContainsPtr(base + start, len, nBlob, lensLet[0])
+                                        case .multiLitSensitive:
+                                            var p = 0
+                                            while p < len {
+                                                if fbBase[Int(base[start + p])] {
+                                                    var k = 0
+                                                    while k < needleCount {
+                                                        let nl = lensLet[k]
+                                                        if nl <= len - p {
+                                                            let no = offsLet[k]
+                                                            var j = 0
+                                                            while j < nl {
+                                                                if base[start + p + j] != nBlob![no + j] { break }
+                                                                j += 1
+                                                            }
+                                                            if j == nl { isMatch = true; break }
                                                         }
-                                                        if j == nl { isMatch = true; break }
+                                                        k += 1
                                                     }
-                                                    k += 1
+                                                    if isMatch { break }
                                                 }
-                                                if isMatch { break }
+                                                p += 1
                                             }
-                                            p += 1
-                                        }
-                                    case .multiLitInsensitive:
-                                        var p = 0
-                                        while p < len {
-                                            if fbBase[Int(base[start + p])] {
-                                                var k = 0
-                                                while k < needleCount {
-                                                    let nl = lensLet[k]
-                                                    if nl <= len - p {
-                                                        let no = offsLet[k]
-                                                        var j = 0
-                                                        while j < nl {
-                                                            var cc = base[start + p + j]
-                                                            if cc >= 65 && cc <= 90 { cc += 32 }
-                                                            if cc != nBlob![no + j] { break }
-                                                            j += 1
+                                        case .multiLitInsensitive:
+                                            var p = 0
+                                            while p < len {
+                                                if fbBase[Int(base[start + p])] {
+                                                    var k = 0
+                                                    while k < needleCount {
+                                                        let nl = lensLet[k]
+                                                        if nl <= len - p {
+                                                            let no = offsLet[k]
+                                                            var j = 0
+                                                            while j < nl {
+                                                                var cc = base[start + p + j]
+                                                                if cc >= 65 && cc <= 90 { cc += 32 }
+                                                                if cc != nBlob![no + j] { break }
+                                                                j += 1
+                                                            }
+                                                            if j == nl { isMatch = true; break }
                                                         }
-                                                        if j == nl { isMatch = true; break }
+                                                        k += 1
                                                     }
-                                                    k += 1
+                                                    if isMatch { break }
                                                 }
-                                                if isMatch { break }
+                                                p += 1
                                             }
-                                            p += 1
+                                        case .regexOnly:
+                                            let line = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
+                                            let range = NSRange(location: 0, length: line.utf16.count)
+                                            isMatch = rx!.firstMatch(in: line, options: [], range: range) != nil
+                                        case .regexPreSensitive:
+                                            var hit = false
+                                            var k = 0
+                                            while k < needleCount {
+                                                let nl = lensLet[k]
+                                                if nl <= len, memmem(base + start, len, nBlob! + offsLet[k], nl) != nil { hit = true; break }
+                                                k += 1
+                                            }
+                                            if hit {
+                                                let line = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
+                                                let range = NSRange(location: 0, length: line.utf16.count)
+                                                isMatch = rx!.firstMatch(in: line, options: [], range: range) != nil
+                                            }
+                                        case .regexPreInsensitive:
+                                            var hit = false
+                                            var k = 0
+                                            while k < needleCount {
+                                                if asciiInsensitiveContainsPtr(base + start, len, nBlob! + offsLet[k], lensLet[k]) { hit = true; break }
+                                                k += 1
+                                            }
+                                            if hit {
+                                                let line = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
+                                                let range = NSRange(location: 0, length: line.utf16.count)
+                                                isMatch = rx!.firstMatch(in: line, options: [], range: range) != nil
+                                            }
                                         }
-                                    case .regexOnly:
-                                    let line = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
-                                    let range = NSRange(location: 0, length: line.utf16.count)
-                                    isMatch = rx!.firstMatch(in: line, options: [], range: range) != nil
-                                case .regexPreSensitive:
-                                    var hit = false
-                                    var k = 0
-                                    while k < needleCount {
-                                        let nl = lensLet[k]
-                                        if nl <= len, memmem(base + start, len, nBlob! + offsLet[k], nl) != nil { hit = true; break }
-                                        k += 1
-                                    }
-                                    if hit {
-                                        let line = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
-                                        let range = NSRange(location: 0, length: line.utf16.count)
-                                        isMatch = rx!.firstMatch(in: line, options: [], range: range) != nil
-                                    }
-                                case .regexPreInsensitive:
-                                    var hit = false
-                                    var k = 0
-                                    while k < needleCount {
-                                        if asciiInsensitiveContainsPtr(base + start, len, nBlob! + offsLet[k], lensLet[k]) { hit = true; break }
-                                        k += 1
-                                    }
-                                    if hit {
-                                        let line = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
-                                        let range = NSRange(location: 0, length: line.utf16.count)
-                                        isMatch = rx!.firstMatch(in: line, options: [], range: range) != nil
-                                    }
-                                }
 
-                                if isMatch { matches.append(i) }
-
-                                sinceReport += 1
-                                if sinceReport >= reportEvery {
-                                    progress.add(sinceReport)
-                                    sinceReport = 0
+                                        if isMatch { matches.append(i) }
+                                        sinceReport += 1
+                                    }
+                                    
+                                    if sinceReport > 0 { progress.add(sinceReport) }
+                                    startIdx = endIdx
                                 }
                             }
+                            
                             out[c] = matches
-                            if sinceReport > 0 { progress.add(sinceReport) }
+                            
+                            outLock.lock()
+                            completeChunks[c] = matches
+                            var didEmit = false
+                            while let ready = completeChunks.removeValue(forKey: nextChunkToEmit) {
+                                emittedSoFar.append(contentsOf: ready)
+                                nextChunkToEmit += 1
+                                didEmit = true
+                            }
+                            let snapshot = emittedSoFar
+                            outLock.unlock()
+                            
+                            if didEmit {
+                                onUpdate(snapshot)
+                            }
                         }
                     }
                 }
             }
-            }
+        }
         }
 
-        var all: [Int] = []
-        for chunk in partials { all.append(contentsOf: chunk) }
+        // Catch the remaining live-tail lines
+        var finalMatches: [Int] = []
+        for chunk in partials { finalMatches.append(contentsOf: chunk) }
 
-        // Include any live-tailed lines that aren't part of the indexed region.
         if !appended.isEmpty {
             for (offset, line) in appended.enumerated() {
-                if lineMatches(line, matcher: matcher) { all.append(indexed + offset) }
+                if lineMatches(line, matcher: matcher) { finalMatches.append(indexed + offset) }
             }
         }
 
-        return all
+        onUpdate(finalMatches)
     }
 
     /// Tests a single decoded line against the matcher (used for live-tail lines).

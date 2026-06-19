@@ -62,7 +62,8 @@ class LogViewModel: ObservableObject {
     @Published var recentFiles: [RecentFile] = []
 
     private var filterGeneration: Int = 0
-    private var progressPollTimer: Timer?
+    private var filterTimer: Timer?
+    private var fileLoadTimer: Timer?
     private var minimapTasks: [UUID: Task<Void, Never>] = [:]
     private var sessionSaveDebounceTask: Task<Void, Never>?
     private var activeTailSource: DispatchSourceFileSystemObject?
@@ -126,21 +127,31 @@ class LogViewModel: ObservableObject {
         isLoadingFile = true
         fileLoadProgress = 0.0
 
+        let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let totalSize = (attr?[.size] as? Int) ?? 1
+        let progress = ScanProgress(total: totalSize)
+        
+        fileLoadTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            let f = progress.fraction
+            if f > self.fileLoadProgress { self.fileLoadProgress = f }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        fileLoadTimer = timer
+
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                let content = try LogContent.build(from: url) { frac in
-                    Task { @MainActor [weak self] in
-                        self?.fileLoadProgress = frac
-                        self?.isLoadingFile = self?.openTabs.contains { $0.isCurrentlyStreaming } ?? false
-                    }
-                }
+                let content = try LogContent.build(from: url, progress: progress)
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
                         self.openTabs[index].content = content
                         self.openTabs[index].statusLines = []
                         self.openTabs[index].isCurrentlyStreaming = false
+                        self.fileLoadTimer?.invalidate()
+                        self.fileLoadTimer = nil
                         self.fileLoadProgress = 1.0
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
                         self.generateMinimapData(for: targetTabID)
@@ -150,6 +161,8 @@ class LogViewModel: ObservableObject {
             } catch {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
+                    self.fileLoadTimer?.invalidate()
+                    self.fileLoadTimer = nil
                     if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
                         self.openTabs[index].statusLines = ["Error opening file: \(error.localizedDescription)"]
                         self.openTabs[index].isCurrentlyStreaming = false
@@ -185,7 +198,7 @@ class LogViewModel: ObservableObject {
         openTabs[tabIndex].filterPattern = pattern
 
         guard !pattern.isEmpty else {
-            progressPollTimer?.invalidate(); progressPollTimer = nil
+            filterTimer?.invalidate(); filterTimer = nil
             openTabs[tabIndex].filteredIndices = []
             openTabs[tabIndex].filterMessage = nil
             isFiltering = false
@@ -193,7 +206,7 @@ class LogViewModel: ObservableObject {
         }
 
         guard let matcher = LineMatcher.make(pattern: pattern, caseInsensitive: isCaseInsensitive) else {
-            progressPollTimer?.invalidate(); progressPollTimer = nil
+            filterTimer?.invalidate(); filterTimer = nil
             openTabs[tabIndex].filteredIndices = []
             openTabs[tabIndex].filterMessage = "Invalid Regular Expression"
             isFiltering = false
@@ -215,27 +228,52 @@ class LogViewModel: ObservableObject {
         // Drive the progress bar from a main-thread timer that polls a cheap
         // shared counter, kept fully independent of the worker threads.
         let progress = ScanProgress(total: content.count)
-        progressPollTimer?.invalidate()
+        filterTimer?.invalidate()
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            self?.filterProgress = progress.fraction
+            guard let self = self else { return }
+            let f = progress.fraction
+            // Ensure visual progress never shrinks
+            if f > self.filterProgress {
+                self.filterProgress = f
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
-        progressPollTimer = timer
+        filterTimer = timer
 
         // Run the heavy parallel scan on a plain GCD queue (NOT a Swift Task) so
         // the blocking `concurrentPerform` inside cannot stall the Swift
         // concurrency cooperative pool / main-thread progress timer.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = content.filterMatches(matcher: matcher, progress: progress)
+            let t0 = DispatchTime.now()
+            var finalCount = 0
+            content.filterMatches(matcher: matcher, progress: progress) { matches in
+                finalCount = matches.count
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    // Ignore results from a filter that has since been superseded.
+                    guard gen == self.filterGeneration else { return }
+                    if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
+                        self.openTabs[freshIndex].filteredIndices = matches
+                    }
+                }
+            }
+            
+            let ms = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000
+            let modeDesc: String
+            switch matcher {
+            case .literalSensitive: modeDesc = "literal (case-sensitive byte scan)"
+            case .literalInsensitiveASCII: modeDesc = "literal (case-insensitive byte scan)"
+            case .multiLiteralSensitive: modeDesc = "multi-literal (case-sensitive byte scan)"
+            case .multiLiteralInsensitiveASCII: modeDesc = "multi-literal (case-insensitive byte scan)"
+            case .regex(_, let pfs, _): modeDesc = pfs.isEmpty ? "REGEX (no pre-filter — full engine on every line)" : "regex + pre-filter [\(pfs.map { String(decoding: $0, as: UTF8.self) }.joined(separator: ", "))]"
+            }
+            print("BeaverTail filter: \(modeDesc) — \(content.count) lines in \(String(format: "%.0f", ms)) ms, \(finalCount) matches")
+            
             DispatchQueue.main.async {
                 guard let self else { return }
-                // Ignore results from a filter that has since been superseded.
                 guard gen == self.filterGeneration else { return }
-                self.progressPollTimer?.invalidate()
-                self.progressPollTimer = nil
-                if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                    self.openTabs[freshIndex].filteredIndices = result
-                }
+                self.filterTimer?.invalidate()
+                self.filterTimer = nil
                 self.filterProgress = 1.0
                 self.isFiltering = false
                 NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
@@ -466,22 +504,31 @@ class LogViewModel: ObservableObject {
         fileLoadProgress = 0.0
 
         let url = tab.fileURL
+        let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let totalSize = (attr?[.size] as? Int) ?? 1
+        let progress = ScanProgress(total: totalSize)
+        
+        fileLoadTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            let f = progress.fraction
+            if f > self.fileLoadProgress { self.fileLoadProgress = f }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        fileLoadTimer = timer
 
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                let content = try LogContent.build(from: url) { frac in
-                    Task { @MainActor [weak self] in
-                        self?.fileLoadProgress = frac
-                        self?.isLoadingFile = self?.openTabs.contains { $0.isCurrentlyStreaming } ?? false
-                    }
-                }
+                let content = try LogContent.build(from: url, progress: progress)
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
                         self.openTabs[freshIndex].content = content
                         self.openTabs[freshIndex].statusLines = []
                         self.openTabs[freshIndex].isCurrentlyStreaming = false
+                        self.fileLoadTimer?.invalidate()
+                        self.fileLoadTimer = nil
                         self.fileLoadProgress = 1.0
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
                         self.generateMinimapData(for: id)
@@ -498,6 +545,8 @@ class LogViewModel: ObservableObject {
                 // silently remove the tab so the user never sees an error state.
                 await MainActor.run { [weak self] in
                     guard let self else { return }
+                    self.fileLoadTimer?.invalidate()
+                    self.fileLoadTimer = nil
                     self.closeTab(id: id)
                     self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
                 }
