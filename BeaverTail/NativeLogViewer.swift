@@ -535,7 +535,7 @@ struct NativeLogViewer: NSViewRepresentable {
 
             // Refresh font and frame so size changes apply to recycled cells
             textField?.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-            textField?.frame = NSRect(x: 8, y: 1, width: 9980, height: rowHeight)
+            textField?.frame = NSRect(x: 2, y: 1, width: 9980, height: rowHeight)
 
             let lineText = provider.line(at: row)
             textField?.stringValue = lineText

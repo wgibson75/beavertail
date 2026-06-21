@@ -95,14 +95,21 @@ private let helpSections: [HelpSection] = [
     HelpSection(title: "Filtering", items: [
         HelpItem(shortcut: "↵",   description: "Type a regular expression into the Filter field and press Return to filter log lines. Results appear in the lower pane."),
         HelpItem(shortcut: nil,   description: "Click the Filter field to see a history of previously used patterns and select one to reuse it."),
+        HelpItem(shortcut: nil,   description: "Use the dropdown next to the filter field to choose whether to display 'Marks and matches', 'Marks' only, or 'Matches' only in the lower pane."),
         HelpItem(shortcut: nil,   description: "Ignore Case — when checked, the filter matches regardless of letter case."),
     ]),
     HelpSection(title: "Highlight Filters", items: [
         HelpItem(shortcut: nil,   description: "Open Highlight Filters (paintbrush icon, top-right) to define colour rules that highlight matching lines in both panes."),
         HelpItem(shortcut: nil,   description: "Each rule takes a regex pattern, a text colour, a background colour, and an optional Aa (match-case) toggle."),
-        HelpItem(shortcut: nil,   description: "Use the ▲▼ arrows to change rule priority order. Changes are reflected instantly without re-running the filter."),
+        HelpItem(shortcut: nil,   description: "Use the ▲▼ arrows or drag and drop rules to change priority order. Changes are reflected instantly without re-running the filter."),
+    ]),
+    HelpSection(title: "Marking Lines", items: [
+        HelpItem(shortcut: nil,   description: "Right-click any line and select 'Toggle Mark' to mark or unmark it. You can select multiple lines to mark them simultaneously."),
+        HelpItem(shortcut: nil,   description: "Marked lines display a dark blue circle with a yellow edge in the gutter."),
+        HelpItem(shortcut: nil,   description: "Right-click and select 'Clear All Marks' to remove all marks from the current log. Marks are remembered between launches."),
     ]),
     HelpSection(title: "Navigation", items: [
+        HelpItem(shortcut: "⌘C",  description: "Right-click selected lines or press ⌘C to Copy them."),
         HelpItem(shortcut: nil,   description: "Click any line in the lower (filtered) pane to jump to that line in the upper (full log) pane."),
         HelpItem(shortcut: nil,   description: "Use the minimap on the right edge to scrub quickly through large files. Coloured bands show where highlight rules match."),
         HelpItem(shortcut: nil,   description: "Toggle Line Numbers and Minimap visibility using the checkboxes in the toolbar."),

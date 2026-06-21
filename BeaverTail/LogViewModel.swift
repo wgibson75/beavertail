@@ -15,7 +15,7 @@ let topPaneScrollToBottomNotification = Notification.Name("BeaverTailTopPaneScro
 let bottomPaneScrollToBottomNotification = Notification.Name("BeaverTailBottomPaneScrollToBottom")
 
 enum FilterDisplayMode: String, CaseIterable, Identifiable {
-    case marksAndMatches = "Marks + matches"
+    case marksAndMatches = "Marks & matches"
     case marks = "Marks"
     case matches = "Matches"
     var id: String { self.rawValue }

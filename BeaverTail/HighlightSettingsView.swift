@@ -41,9 +41,15 @@ private struct WheelColorWell: NSViewRepresentable {
     func updateNSView(_ nsView: WheelColorWellView, context: Context) {
         context.coordinator.well = nsView
         context.coordinator.binding = $color
-        let desired = srgbNSColor(from: color)
-        if !nsView.color.isEqual(desired) {
-            nsView.color = desired
+
+        // Don't overwrite the well's colour while it's actively being edited by the user.
+        // This prevents feedback loops where colour-space conversions clamp the value
+        // and cause the picker to "pop" back in.
+        if !nsView.isActive {
+            let desired = srgbNSColor(from: color)
+            if !nsView.color.isEqual(desired) {
+                nsView.color = desired
+            }
         }
     }
 
@@ -62,10 +68,12 @@ private struct WheelColorWell: NSViewRepresentable {
 
         @objc func colorChanged(_ note: Notification) {
             guard let panel = note.object as? NSColorPanel,
-                  well?.isActive == true,
-                  let srgb = panel.color.usingColorSpace(.sRGB) else { return }
+                  well?.isActive == true else { return }
+
+            // Pass the native panel colour to SwiftUI without forcing sRGB conversion here,
+            // so we don't clamp the user's selection while they are dragging the wheel.
             DispatchQueue.main.async { [weak self] in
-                self?.binding.wrappedValue = Color(srgb)
+                self?.binding.wrappedValue = Color(panel.color)
             }
         }
     }
@@ -239,6 +247,9 @@ struct HighlightSettingsView: View {
                             }
                             .padding(.vertical, 2)
                         }
+                    }
+                    .onMove { fromOffsets, toOffset in
+                        viewModel.highlightRules.move(fromOffsets: fromOffsets, toOffset: toOffset)
                     }
                 }
             }

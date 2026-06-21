@@ -345,7 +345,7 @@ private struct BottomPaneView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .frame(width: 140)
+                .frame(width: 155)
                 
                 RegexTextField(
                     text: $viewModel.currentFilterPattern,
