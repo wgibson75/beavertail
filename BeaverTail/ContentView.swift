@@ -171,7 +171,7 @@ struct ContentView: View {
             ToolbarItem(placement: .automatic) {
                 HStack(spacing: 16) {
                     Toggle(isOn: $viewModel.showLineNumbers) {
-                        Label("Line Numbers", systemImage: "list.number")
+                        Label("Line #", systemImage: "list.number")
                     }
                     .toggleStyle(.checkbox)
                     .help("Show line numbers")
