@@ -12,6 +12,9 @@ import SwiftUI
 private final class LogTableView: NSTableView, NSMenuItemValidation {
     /// Closure that returns the display text for a given visible row index.
     var lineTextForRow: ((Int) -> String)?
+    var onToggleMark: ((IndexSet) -> Void)?
+    var onClearAllMarks: (() -> Void)?
+    var hasMarks: Bool = false
 
     // Right-click → context menu
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -28,18 +31,40 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
             ? selectedRowIndexes
             : IndexSet(integer: clickedRow)
 
-        let title = rowsToAction.count == 1 ? "Copy Line" : "Copy \(rowsToAction.count) Lines"
+        let title = "Copy"
+        let markTitle = rowsToAction.count == 1 ? "Toggle Mark" : "Toggle Mark for \(rowsToAction.count) Lines"
+        
         let menu = NSMenu()
-        let item = NSMenuItem(title: title, action: #selector(copyMenuAction(_:)), keyEquivalent: "")
-        item.target = self
-        item.representedObject = rowsToAction
-        menu.addItem(item)
+        let copyItem = NSMenuItem(title: title, action: #selector(copyMenuAction(_:)), keyEquivalent: "")
+        copyItem.target = self
+        copyItem.representedObject = rowsToAction
+        menu.addItem(copyItem)
+        
+        let markItem = NSMenuItem(title: markTitle, action: #selector(markMenuAction(_:)), keyEquivalent: "")
+        markItem.target = self
+        markItem.representedObject = rowsToAction
+        menu.addItem(markItem)
+        
+        let clearAllMarksItem = NSMenuItem(title: "Clear All Marks", action: #selector(clearAllMarksMenuAction(_:)), keyEquivalent: "")
+        clearAllMarksItem.target = self
+        clearAllMarksItem.isEnabled = hasMarks
+        menu.addItem(clearAllMarksItem)
+        
         return menu
     }
 
     @objc private func copyMenuAction(_ sender: NSMenuItem) {
         guard let indexes = sender.representedObject as? IndexSet else { return }
         copyRows(indexes)
+    }
+
+    @objc private func markMenuAction(_ sender: NSMenuItem) {
+        guard let indexes = sender.representedObject as? IndexSet else { return }
+        onToggleMark?(indexes)
+    }
+
+    @objc private func clearAllMarksMenuAction(_ sender: NSMenuItem) {
+        onClearAllMarks?()
     }
 
     // ⌘C — the standard Edit ▸ Copy menu item sends `copy:` down the responder
@@ -53,6 +78,9 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(copy(_:)) {
             return !selectedRowIndexes.isEmpty
+        }
+        if menuItem.action == #selector(clearAllMarksMenuAction(_:)) {
+            return hasMarks
         }
         return true
     }
@@ -90,11 +118,27 @@ private final class LogRowView: NSTableRowView {
         set { }
     }
 
+    var isMarked: Bool = false {
+        didSet { needsDisplay = true }
+    }
+
     override func drawBackground(in dirtyRect: NSRect) {
         super.drawBackground(in: dirtyRect)
         if ruleBackgroundColor != .clear {
             ruleBackgroundColor.setFill()
             dirtyRect.fill()
+        }
+        if isMarked {
+            let diameter: CGFloat = 6.0
+            let circleRect = NSRect(x: 4.0, y: (bounds.height - diameter) / 2.0, width: diameter, height: diameter)
+            let path = NSBezierPath(ovalIn: circleRect)
+            
+            NSColor.systemYellow.setStroke()
+            path.lineWidth = 1.5
+            path.stroke()
+            
+            NSColor(red: 0.0, green: 0.2, blue: 0.7, alpha: 1.0).setFill()
+            path.fill()
         }
     }
 
@@ -103,6 +147,19 @@ private final class LogRowView: NSTableRowView {
         // Faint translucent tint so any rule colour beneath still shows through
         NSColor.selectedContentBackgroundColor.withAlphaComponent(0.22).setFill()
         bounds.fill()
+    }
+}
+
+private class LogTextField: NSTextField {
+    override func menu(for event: NSEvent) -> NSMenu? {
+        var responder: NSResponder? = self.nextResponder
+        while responder != nil {
+            if let tableView = responder as? NSTableView {
+                return tableView.menu(for: event)
+            }
+            responder = responder?.nextResponder
+        }
+        return super.menu(for: event)
     }
 }
 
@@ -118,6 +175,9 @@ struct NativeLogViewer: NSViewRepresentable {
     let tailScrollNotificationName: Notification.Name
     let showLineNumbers: Bool
     let fontSize: CGFloat
+    let markedIndices: Set<Int>
+    var onToggleMark: ((Set<Int>) -> Void)?
+    var onClearAllMarks: (() -> Void)?
 
     // THE CURE: Flag that ensures the minimap fraction ONLY overrides scroll positioning during active click-scrubbing
     let isMinimapActiveDrive: Bool
@@ -129,7 +189,10 @@ struct NativeLogViewer: NSViewRepresentable {
         directScrollNotificationName: Notification.Name?,
         tailScrollNotificationName: Notification.Name, showLineNumbers: Bool,
         fontSize: CGFloat = 12,
-        isMinimapActiveDrive: Bool, onLineIndexSelected: @escaping (Int) -> Void
+        markedIndices: Set<Int> = [],
+        isMinimapActiveDrive: Bool, onLineIndexSelected: @escaping (Int) -> Void,
+        onToggleMark: ((Set<Int>) -> Void)? = nil,
+        onClearAllMarks: (() -> Void)? = nil
     ) {
         self.provider = provider
         isFiltered = false
@@ -140,8 +203,11 @@ struct NativeLogViewer: NSViewRepresentable {
         self.tailScrollNotificationName = tailScrollNotificationName
         self.showLineNumbers = showLineNumbers
         self.fontSize = fontSize
+        self.markedIndices = markedIndices
         self.isMinimapActiveDrive = isMinimapActiveDrive
         self.onLineIndexSelected = onLineIndexSelected
+        self.onToggleMark = onToggleMark
+        self.onClearAllMarks = onClearAllMarks
     }
 
     /// Initializer for the Bottom Pane (Filtered Log View)
@@ -149,7 +215,10 @@ struct NativeLogViewer: NSViewRepresentable {
         filteredProvider: LineProvider, textColor: NSColor, rules: [HighlightRule],
         selectedFraction: CGFloat?, tailScrollNotificationName: Notification.Name,
         showLineNumbers: Bool, fontSize: CGFloat = 12,
-        onLineIndexSelected: @escaping (Int) -> Void
+        markedIndices: Set<Int> = [],
+        onLineIndexSelected: @escaping (Int) -> Void,
+        onToggleMark: ((Set<Int>) -> Void)? = nil,
+        onClearAllMarks: (() -> Void)? = nil
     ) {
         provider = filteredProvider
         isFiltered = true
@@ -160,8 +229,11 @@ struct NativeLogViewer: NSViewRepresentable {
         self.tailScrollNotificationName = tailScrollNotificationName
         self.showLineNumbers = showLineNumbers
         self.fontSize = fontSize
+        self.markedIndices = markedIndices
         isMinimapActiveDrive = false // Bottom pane is never driven by minimap scrubbing
         self.onLineIndexSelected = onLineIndexSelected
+        self.onToggleMark = onToggleMark
+        self.onClearAllMarks = onClearAllMarks
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -191,6 +263,12 @@ struct NativeLogViewer: NSViewRepresentable {
         let coordinator = context.coordinator
         tableView.lineTextForRow = { [weak coordinator] row in
             coordinator?.textForRow(row) ?? ""
+        }
+        tableView.onToggleMark = { [weak coordinator] rowIndexes in
+            coordinator?.toggleMarks(rowIndexes)
+        }
+        tableView.onClearAllMarks = { [weak coordinator] in
+            coordinator?.clearAllMarks()
         }
 
         scrollView.documentView = tableView
@@ -244,13 +322,16 @@ struct NativeLogViewer: NSViewRepresentable {
         guard let tableView = nsView.documentView as? LogTableView else { return }
 
         tableView.rowHeight = fontSize + 2
-        tableView.rowHeight = fontSize + 2
+        tableView.hasMarks = !markedIndices.isEmpty
         context.coordinator.provider = provider
         context.coordinator.isFiltered = isFiltered
         context.coordinator.defaultTextColor = textColor
         context.coordinator.rules = rules
         context.coordinator.fontSize = fontSize
+        context.coordinator.markedIndices = markedIndices
         context.coordinator.onLineIndexSelected = onLineIndexSelected
+        context.coordinator.onToggleMark = onToggleMark
+        context.coordinator.onClearAllMarks = onClearAllMarks
 
         // Keep copy closure fresh after data updates
         let coordinator = context.coordinator
@@ -300,7 +381,10 @@ struct NativeLogViewer: NSViewRepresentable {
         var defaultTextColor: NSColor = .labelColor
         var rules: [HighlightRule] = []
         var fontSize: CGFloat = 12
+        var markedIndices: Set<Int> = []
         var onLineIndexSelected: ((Int) -> Void)?
+        var onToggleMark: ((Set<Int>) -> Void)?
+        var onClearAllMarks: (() -> Void)?
 
         /// Set while we restore selection programmatically so the selection-change
         /// delegate callback is suppressed (prevents a reload feedback loop).
@@ -309,6 +393,15 @@ struct NativeLogViewer: NSViewRepresentable {
         /// Returns the display text for a row — used by LogTableView for copy operations.
         func textForRow(_ row: Int) -> String {
             return provider.line(at: row)
+        }
+
+        func toggleMarks(_ rowIndexes: IndexSet) {
+            let actualIndices = Set(rowIndexes.map { provider.originalIndex(at: $0) })
+            onToggleMark?(actualIndices)
+        }
+
+        func clearAllMarks() {
+            onClearAllMarks?()
         }
 
         /// Keeps track of your gutter column management logic
@@ -380,16 +473,20 @@ struct NativeLogViewer: NSViewRepresentable {
                 }
             }
             rowView?.ruleBackgroundColor = bgColor
+            
+            let actualIndex = provider.originalIndex(at: row)
+            rowView?.isMarked = markedIndices.contains(actualIndex)
+            
             return rowView
         }
 
         /// 2. NEW PRIVATE GUTTER CELL RENDERER
         private func makeGutterCell(in tableView: NSTableView, forRow row: Int) -> NSView? {
             let identifier = NSUserInterfaceItemIdentifier("GutterCell")
-            var cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTextField
+            var cell = tableView.makeView(withIdentifier: identifier, owner: self) as? LogTextField
 
             if cell == nil {
-                cell = NSTextField()
+                cell = LogTextField()
                 cell?.identifier = identifier
                 cell?.isEditable = false
                 cell?.isSelectable = false
@@ -412,7 +509,7 @@ struct NativeLogViewer: NSViewRepresentable {
         private func makeLogCell(in tableView: NSTableView, forRow row: Int) -> NSView? {
             let identifier = NSUserInterfaceItemIdentifier("LogCell")
             var containerCell = tableView.makeView(withIdentifier: identifier, owner: self)
-            var textField: NSTextField?
+            var textField: LogTextField?
 
             let rowHeight = fontSize + 2
 
@@ -422,9 +519,9 @@ struct NativeLogViewer: NSViewRepresentable {
                 container.wantsLayer = true
                 container.layer?.backgroundColor = NSColor.clear.cgColor
 
-                let text = NSTextField()
+                let text = LogTextField()
                 text.isEditable = false
-                text.isSelectable = true
+                text.isSelectable = false
                 text.isBordered = false
                 text.backgroundColor = .clear
                 text.cell?.wraps = false
@@ -433,7 +530,7 @@ struct NativeLogViewer: NSViewRepresentable {
                 containerCell = container
                 textField = text
             } else {
-                textField = containerCell?.subviews.first as? NSTextField
+                textField = containerCell?.subviews.first as? LogTextField
             }
 
             // Refresh font and frame so size changes apply to recycled cells
