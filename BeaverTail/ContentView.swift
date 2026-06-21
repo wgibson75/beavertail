@@ -317,11 +317,8 @@ private struct TopPaneView: View {
                 tailScrollNotificationName: topPaneScrollToBottomNotification,
                 showLineNumbers: viewModel.showLineNumbers,
                 fontSize: viewModel.fontSize,
-                markedIndices: viewModel.currentTab?.markedIndices ?? [],
                 isMinimapActiveDrive: viewModel.isScrubbingMinimap,
-                onLineIndexSelected: { viewModel.updateMinimapFromLineIndex($0) },
-                onToggleMark: { viewModel.toggleMarks($0) },
-                onClearAllMarks: { viewModel.clearAllMarks() }
+                onLineIndexSelected: { viewModel.updateMinimapFromLineIndex($0) }
             ).id(viewModel.selectedTabID?.uuidString ?? "top")
         }
     }
@@ -339,14 +336,6 @@ private struct BottomPaneView: View {
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .frame(minWidth: 32, alignment: .trailing)
-                Picker("", selection: $viewModel.filterDisplayMode) {
-                    ForEach(FilterDisplayMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(width: 140)
-                
                 RegexTextField(
                     text: $viewModel.currentFilterPattern,
                     placeholder: "Regex pattern…",
@@ -405,10 +394,7 @@ private struct BottomPaneView: View {
                             tailScrollNotificationName: bottomPaneScrollToBottomNotification,
                             showLineNumbers: viewModel.showLineNumbers,
                             fontSize: viewModel.fontSize,
-                            markedIndices: viewModel.currentTab?.markedIndices ?? [],
-                            onLineIndexSelected: { viewModel.syncSelectionFromFilteredIndex($0) },
-                            onToggleMark: { viewModel.toggleMarks($0) },
-                            onClearAllMarks: { viewModel.clearAllMarks() }
+                            onLineIndexSelected: { viewModel.syncSelectionFromFilteredIndex($0) }
                         )
                         .id((viewModel.selectedTabID?.uuidString ?? "bot") + (viewModel.isFiltering ? "-loading" : "-ready"))
                     }
