@@ -14,6 +14,13 @@ let topPaneDirectScrollNotification = Notification.Name("BeaverTailTopPaneDirect
 let topPaneScrollToBottomNotification = Notification.Name("BeaverTailTopPaneScrollToBottom")
 let bottomPaneScrollToBottomNotification = Notification.Name("BeaverTailBottomPaneScrollToBottom")
 
+enum FilterDisplayMode: String, CaseIterable, Identifiable {
+    case marksAndMatches = "Marks and matches"
+    case marks = "Marks"
+    case matches = "Matches"
+    var id: String { self.rawValue }
+}
+
 class LogViewModel: ObservableObject {
     @Published var openTabs: [LogTab] = [] {
         didSet { saveLoadedTabsSession() }
@@ -50,6 +57,7 @@ class LogViewModel: ObservableObject {
     @AppStorage("saved_font_size") var fontSize: Double = 12
     @AppStorage("saved_recent_files_v1") private var recentFilesData: String = ""
     @AppStorage("saved_session_bookmarks_v2") private var sessionBookmarksData: String = ""
+    @AppStorage("saved_filter_display_mode") private var filterDisplayModeRaw: String = FilterDisplayMode.marksAndMatches.rawValue
 
     @Published var highlightRules: [HighlightRule] = [] {
         didSet {
@@ -71,6 +79,15 @@ class LogViewModel: ObservableObject {
     private var currentActiveFilterPattern: String = ""
 
     var currentTab: LogTab? { openTabs.first { $0.id == selectedTabID } }
+
+    var filterDisplayMode: FilterDisplayMode {
+        get { FilterDisplayMode(rawValue: filterDisplayModeRaw) ?? .marksAndMatches }
+        set {
+            filterDisplayModeRaw = newValue.rawValue
+            objectWillChange.send()
+            updateAllDisplayedIndices()
+        }
+    }
 
     init() {
         loadRules()
@@ -187,6 +204,76 @@ class LogViewModel: ObservableObject {
         if selectedTabID == id { selectedTabID = openTabs.last?.id }
     }
 
+    /// Toggles marks on the provided original line indices for the currently selected tab.
+    func toggleMarks(_ originalIndices: Set<Int>) {
+        guard let tabID = selectedTabID,
+              let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+
+        var marked = openTabs[index].markedIndices
+        for idx in originalIndices {
+            if marked.contains(idx) {
+                marked.remove(idx)
+            } else {
+                marked.insert(idx)
+            }
+        }
+        openTabs[index].markedIndices = marked
+        updateDisplayedIndices(for: index)
+    }
+
+    func clearAllMarks() {
+        guard let tabID = selectedTabID,
+              let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+
+        openTabs[index].markedIndices.removeAll()
+        updateDisplayedIndices(for: index)
+    }
+
+    /// Re-evaluates what is shown in the bottom pane for all tabs based on the active mode.
+    private func updateAllDisplayedIndices() {
+        for index in 0..<openTabs.count {
+            updateDisplayedIndices(for: index)
+        }
+    }
+
+    /// Updates the displayed indices for a specific log tab depending on the current filter mode.
+    private func updateDisplayedIndices(for tabIndex: Int) {
+        let tab = openTabs[tabIndex]
+        switch filterDisplayMode {
+        case .matches:
+            openTabs[tabIndex].displayedIndices = tab.filteredIndices
+        case .marks:
+            openTabs[tabIndex].displayedIndices = Array(tab.markedIndices).sorted()
+        case .marksAndMatches:
+            let sortedMarks = Array(tab.markedIndices).sorted()
+            let filtered = tab.filteredIndices
+            
+            // filteredIndices is already sorted. Merge it with sortedMarks in O(N) without Set allocations.
+            var merged = [Int]()
+            merged.reserveCapacity(filtered.count + sortedMarks.count)
+            
+            var i = 0
+            var j = 0
+            while i < filtered.count && j < sortedMarks.count {
+                if filtered[i] < sortedMarks[j] {
+                    merged.append(filtered[i])
+                    i += 1
+                } else if filtered[i] > sortedMarks[j] {
+                    merged.append(sortedMarks[j])
+                    j += 1
+                } else {
+                    merged.append(filtered[i])
+                    i += 1
+                    j += 1
+                }
+            }
+            while i < filtered.count { merged.append(filtered[i]); i += 1 }
+            while j < sortedMarks.count { merged.append(sortedMarks[j]); j += 1 }
+            
+            openTabs[tabIndex].displayedIndices = merged
+        }
+    }
+
     /// Keeps currentFilterPattern in sync with the selected tab's saved pattern.
     private func syncCurrentFilterPattern() {
         currentFilterPattern = currentTab?.filterPattern ?? ""
@@ -208,6 +295,7 @@ class LogViewModel: ObservableObject {
             openTabs[tabIndex].filteredIndices = []
             openTabs[tabIndex].filterMessage = nil
             isFiltering = false
+            updateDisplayedIndices(for: tabIndex)
             return
         }
 
@@ -216,6 +304,7 @@ class LogViewModel: ObservableObject {
             openTabs[tabIndex].filteredIndices = []
             openTabs[tabIndex].filterMessage = "Invalid Regular Expression"
             isFiltering = false
+            updateDisplayedIndices(for: tabIndex)
             return
         }
 
@@ -224,6 +313,7 @@ class LogViewModel: ObservableObject {
         isFiltering = true
         filterProgress = 0.0
         openTabs[tabIndex].filteredIndices = []
+        openTabs[tabIndex].displayedIndices = []
         openTabs[tabIndex].filterMessage = nil
 
         guard let content = openTabs[tabIndex].content else {
@@ -260,6 +350,7 @@ class LogViewModel: ObservableObject {
                     guard gen == self.filterGeneration else { return }
                     if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
                         self.openTabs[freshIndex].filteredIndices = matches
+                        self.updateDisplayedIndices(for: freshIndex)
                     }
                 }
             }
@@ -409,6 +500,7 @@ class LogViewModel: ObservableObject {
             let bookmarkBase64: String
             let filterPattern: String
             let isSelected: Bool
+            let markedIndices: [Int]?
         }
         var serializedMetadata: [SavedTabMetadata] = []
         for tab in openTabs {
@@ -423,7 +515,8 @@ class LogViewModel: ObservableObject {
                 serializedMetadata.append(SavedTabMetadata(
                     bookmarkBase64: bm.base64EncodedString(),
                     filterPattern: tab.filterPattern,
-                    isSelected: tab.id == selectedTabID
+                    isSelected: tab.id == selectedTabID,
+                    markedIndices: Array(tab.markedIndices)
                 ))
             } catch { print("Failed to save bookmark for \(tab.name): \(error)") }
         }
@@ -441,6 +534,7 @@ class LogViewModel: ObservableObject {
             let bookmarkBase64: String
             let filterPattern: String
             let isSelected: Bool?   // nil for entries saved before this field existed
+            let markedIndices: [Int]?
         }
         guard !sessionBookmarksData.isEmpty,
               let data = sessionBookmarksData.data(using: .utf8),
@@ -476,6 +570,8 @@ class LogViewModel: ObservableObject {
                     content: nil,
                     statusLines: [],
                     filteredIndices: [],
+                    markedIndices: Set(metadata.markedIndices ?? []),
+                    displayedIndices: (metadata.markedIndices ?? []).sorted(),
                     filterMessage: nil,
                     selectedFraction: nil,
                     minimapImage: nil,
@@ -738,6 +834,7 @@ class LogViewModel: ObservableObject {
 
         if !incrementalMatches.isEmpty {
             openTabs[tabIndex].filteredIndices.append(contentsOf: incrementalMatches)
+            updateDisplayedIndices(for: tabIndex)
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
             }

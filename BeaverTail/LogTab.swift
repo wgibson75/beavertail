@@ -18,6 +18,10 @@ struct LogTab: Identifiable, Equatable, Codable {
 
     /// Original line indices that match the current filter (decoded on demand).
     var filteredIndices: [Int] = []
+    /// Indices of explicitly marked lines.
+    var markedIndices: Set<Int> = []
+    /// The actual indices to display in the bottom pane (depends on filter mode).
+    var displayedIndices: [Int] = []
     /// Optional message shown in the filtered pane (e.g. invalid regex).
     var filterMessage: String?
 
@@ -44,14 +48,14 @@ struct LogTab: Identifiable, Equatable, Codable {
             return ArrayLineProvider(lines: [message])
         }
         if let content {
-            return FilteredLineProvider(content: content, indices: filteredIndices)
+            return FilteredLineProvider(content: content, indices: displayedIndices)
         }
         return ArrayLineProvider(lines: [])
     }
 
     /// Number of filtered matches (or 1 when showing a filter message).
     var filteredCount: Int {
-        filterMessage != nil ? 1 : filteredIndices.count
+        filterMessage != nil ? 1 : displayedIndices.count
     }
 
     init(
@@ -61,6 +65,8 @@ struct LogTab: Identifiable, Equatable, Codable {
         content: LogContent? = nil,
         statusLines: [String] = [],
         filteredIndices: [Int] = [],
+        markedIndices: Set<Int> = [],
+        displayedIndices: [Int] = [],
         filterMessage: String? = nil,
         selectedFraction: CGFloat? = nil,
         minimapImage: NSImage? = nil,
@@ -73,6 +79,8 @@ struct LogTab: Identifiable, Equatable, Codable {
         self.content = content
         self.statusLines = statusLines
         self.filteredIndices = filteredIndices
+        self.markedIndices = markedIndices
+        self.displayedIndices = displayedIndices
         self.filterMessage = filterMessage
         self.selectedFraction = selectedFraction
         self.minimapImage = minimapImage
@@ -81,7 +89,7 @@ struct LogTab: Identifiable, Equatable, Codable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, fileURL, filterPattern
+        case id, name, fileURL, filterPattern, markedIndices
     }
 
     init(from decoder: Decoder) throws {
@@ -90,9 +98,11 @@ struct LogTab: Identifiable, Equatable, Codable {
         name = try container.decode(String.self, forKey: .name)
         fileURL = try container.decode(URL.self, forKey: .fileURL)
         filterPattern = try container.decode(String.self, forKey: .filterPattern)
+        markedIndices = (try? container.decode(Set<Int>.self, forKey: .markedIndices)) ?? []
         content = nil
         statusLines = []
         filteredIndices = []
+        displayedIndices = markedIndices.sorted()
         filterMessage = nil
         selectedFraction = nil
         minimapImage = nil
@@ -105,12 +115,14 @@ struct LogTab: Identifiable, Equatable, Codable {
         try container.encode(name, forKey: .name)
         try container.encode(fileURL, forKey: .fileURL)
         try container.encode(filterPattern, forKey: .filterPattern)
+        try container.encode(markedIndices, forKey: .markedIndices)
     }
 
     static func == (lhs: LogTab, rhs: LogTab) -> Bool {
         return lhs.id == rhs.id
             && lhs.filterPattern == rhs.filterPattern
             && lhs.filteredCount == rhs.filteredCount
+            && lhs.markedIndices == rhs.markedIndices
             && lhs.lineCount == rhs.lineCount
             && lhs.isCurrentlyStreaming == rhs.isCurrentlyStreaming
     }
