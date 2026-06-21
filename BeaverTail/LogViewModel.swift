@@ -89,6 +89,7 @@ class LogViewModel: ObservableObject {
         }
     }
 
+    @MainActor
     func openFile() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
@@ -100,7 +101,7 @@ class LogViewModel: ObservableObject {
     }
 
     @MainActor
-    func loadNewTab(from url: URL) {
+    func loadNewTab(from url: URL, isRecent: Bool = false) {
         if let existingTab = openTabs.first(where: { $0.fileURL == url }) {
             selectedTabID = existingTab.id
             return
@@ -120,7 +121,7 @@ class LogViewModel: ObservableObject {
         )
 
         openTabs.append(placeholderTab)
-        if selectedTabID == nil { selectedTabID = targetTabID }
+        selectedTabID = targetTabID
 
         addToRecentFiles(url)
 
@@ -163,7 +164,12 @@ class LogViewModel: ObservableObject {
                     guard let self else { return }
                     self.fileLoadTimer?.invalidate()
                     self.fileLoadTimer = nil
-                    if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
+                    if isRecent {
+                        self.closeTab(id: targetTabID)
+                        self.recentFiles.removeAll { $0.name == url.lastPathComponent }
+                        self.saveRecentFiles()
+                        self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                    } else if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
                         self.openTabs[index].statusLines = ["Error opening file: \(error.localizedDescription)"]
                         self.openTabs[index].isCurrentlyStreaming = false
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
@@ -595,12 +601,20 @@ class LogViewModel: ObservableObject {
         saveRecentFiles()
     }
 
+    @MainActor
     func openRecentFile(_ recent: RecentFile) {
         guard let bookmarkData = Data(base64Encoded: recent.bookmarkBase64) else { return }
         do {
             var isStale = false
             let url = try URL(resolvingBookmarkData: bookmarkData, options: [], relativeTo: nil, bookmarkDataIsStale: &isStale)
-            loadNewTab(from: url)
+            
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                recentFiles.removeAll { $0.bookmarkBase64 == recent.bookmarkBase64 }
+                saveRecentFiles()
+                return
+            }
+            
+            loadNewTab(from: url, isRecent: true)
         } catch {
             recentFiles.removeAll { $0.bookmarkBase64 == recent.bookmarkBase64 }
             saveRecentFiles()
