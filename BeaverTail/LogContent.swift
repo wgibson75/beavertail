@@ -252,7 +252,7 @@ final class ScanProgress: @unchecked Sendable {
 }
 
 /// Random-access provider of log lines by index.
-protocol LineProvider {
+protocol LineProvider: Sendable {
     var count: Int { get }
     func line(at index: Int) -> String
     /// Maps a display row back to its original line number in the source file.
@@ -262,15 +262,15 @@ protocol LineProvider {
 }
 
 extension LineProvider {
-    func originalIndex(at index: Int) -> Int { index }
+    nonisolated func originalIndex(at index: Int) -> Int { index }
 }
 
 /// Trivial provider backed by an in-memory array — used for placeholder/status
 /// text (e.g. "Loading…") and error messages.
-struct ArrayLineProvider: LineProvider {
+struct ArrayLineProvider: LineProvider, Sendable {
     let lines: [String]
-    var count: Int { lines.count }
-    func line(at index: Int) -> String {
+    nonisolated var count: Int { lines.count }
+    nonisolated func line(at index: Int) -> String {
         (index >= 0 && index < lines.count) ? lines[index] : ""
     }
 }
@@ -278,7 +278,7 @@ struct ArrayLineProvider: LineProvider {
 /// Provider for filtered results: a list of matching original line indices,
 /// decoded on demand from the underlying memory-mapped content. This avoids
 /// materialising millions of copied strings for large match sets.
-final class FilteredLineProvider: LineProvider {
+struct FilteredLineProvider: LineProvider, @unchecked Sendable {
     let content: LogContent
     let indices: [Int]
 
@@ -300,36 +300,46 @@ final class FilteredLineProvider: LineProvider {
 }
 
 /// Memory-mapped log file with a lazily-decoded line index.
-final class LogContent: LineProvider {
+final class LogContent: LineProvider, @unchecked Sendable {
     private let data: Data
     /// Byte offset of the first character of each indexed line.
     private let lineStarts: ContiguousArray<Int>
     private let totalBytes: Int
+    private let lock = NSLock()
 
     /// Lines appended at runtime by live-tailing (not part of the mmap index).
-    private var appended: [String] = []
+    nonisolated(unsafe) private var appended: [String] = []
 
     /// Number of lines that came from the on-disk index (excludes live-tail appends).
-    var indexedCount: Int { lineStarts.count }
-    var count: Int { lineStarts.count + appended.count }
+    nonisolated var indexedCount: Int { lineStarts.count }
+    nonisolated var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return lineStarts.count + appended.count
+    }
 
-    init(data: Data, lineStarts: ContiguousArray<Int>, totalBytes: Int) {
+    nonisolated init(data: Data, lineStarts: ContiguousArray<Int>, totalBytes: Int) {
         self.data = data
         self.lineStarts = lineStarts
         self.totalBytes = totalBytes
     }
 
     /// Appends live-tailed lines that arrived after the file was indexed.
-    func appendLines(_ lines: [String]) {
+    nonisolated func appendLines(_ lines: [String]) {
+        lock.lock()
         appended.append(contentsOf: lines)
+        lock.unlock()
     }
 
-    func line(at index: Int) -> String {
+    nonisolated func line(at index: Int) -> String {
         let indexed = lineStarts.count
         // Live-tail overflow region
         if index >= indexed {
             let a = index - indexed
-            return (a >= 0 && a < appended.count) ? appended[a] : ""
+            lock.lock()
+            let apps = appended
+            lock.unlock()
+            return (a >= 0 && a < apps.count) ? apps[a] : ""
         }
         guard index >= 0 else { return "" }
         let start = lineStarts[index]
@@ -468,7 +478,7 @@ final class LogContent: LineProvider {
 
         let chunkCount = ranges.count
         var partials = [[Int]](repeating: [], count: max(chunkCount, 1))
-        let reportEvery = 65_536   // lines between progress bumps per worker
+        _ = 65_536   // lines between progress bumps per worker
 
         // Decode the matcher into a fast dispatch mode plus a flattened "blob" of
         // all search needles (literal needle, or the per-branch regex pre-filters)
@@ -663,8 +673,9 @@ final class LogContent: LineProvider {
         }
 
         // Catch the remaining live-tail lines
-        var finalMatches: [Int] = []
-        for chunk in partials { finalMatches.append(contentsOf: chunk) }
+        outLock.lock()
+        var finalMatches: [Int] = emittedSoFar
+        outLock.unlock()
 
         if !appended.isEmpty {
             for (offset, line) in appended.enumerated() {

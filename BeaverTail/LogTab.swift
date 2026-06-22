@@ -29,6 +29,10 @@ struct LogTab: Identifiable, Equatable, Codable {
     var filterPattern: String = ""
 
     var minimapImage: NSImage?
+    var timelineImage: NSImage?
+    var timelineMatches: [[Int]] = []
+    var timelineActiveRuleIDs: [UUID] = []
+    var isGeneratingTimeline: Bool = false
     var isCurrentlyStreaming: Bool = false
 
     /// Random-access provider used by the viewer: real content if loaded,
@@ -70,6 +74,10 @@ struct LogTab: Identifiable, Equatable, Codable {
         filterMessage: String? = nil,
         selectedFraction: CGFloat? = nil,
         minimapImage: NSImage? = nil,
+        timelineImage: NSImage? = nil,
+        timelineMatches: [[Int]] = [],
+        timelineActiveRuleIDs: [UUID] = [],
+        isGeneratingTimeline: Bool = false,
         isCurrentlyStreaming: Bool = false,
         filterPattern: String = ""
     ) {
@@ -84,6 +92,10 @@ struct LogTab: Identifiable, Equatable, Codable {
         self.filterMessage = filterMessage
         self.selectedFraction = selectedFraction
         self.minimapImage = minimapImage
+        self.timelineImage = timelineImage
+        self.timelineMatches = timelineMatches
+        self.timelineActiveRuleIDs = timelineActiveRuleIDs
+        self.isGeneratingTimeline = isGeneratingTimeline
         self.isCurrentlyStreaming = isCurrentlyStreaming
         self.filterPattern = filterPattern
     }
@@ -106,6 +118,10 @@ struct LogTab: Identifiable, Equatable, Codable {
         filterMessage = nil
         selectedFraction = nil
         minimapImage = nil
+        timelineImage = nil
+        timelineMatches = []
+        timelineActiveRuleIDs = []
+        isGeneratingTimeline = false
         isCurrentlyStreaming = false
     }
 

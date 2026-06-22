@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var viewModel: LogViewModel
+    @Environment(\.colorScheme) private var colorScheme
     @State private var showHighlightManager = false
     @State private var showHelp = false
     @State private var showFilterDropdown = false
@@ -119,8 +120,14 @@ struct ContentView: View {
                     VSplitView {
                         TopPaneView(viewModel: viewModel)
                             .frame(minHeight: 120)
-                        BottomPaneView(viewModel: viewModel, showFilterDropdown: $showFilterDropdown)
-                            .frame(minHeight: 120)
+
+                        if viewModel.showTimeline {
+                            TimelinePaneView(viewModel: viewModel, showFilterDropdown: $showFilterDropdown)
+                                .frame(minHeight: 120)
+                        } else {
+                            BottomPaneView(viewModel: viewModel, showFilterDropdown: $showFilterDropdown)
+                                .frame(minHeight: 120)
+                        }
                     }
 
                     if viewModel.showMinimap {
@@ -168,24 +175,7 @@ struct ContentView: View {
         }
         .frame(minWidth: 800, minHeight: 500)
         .toolbar {
-            ToolbarItem(placement: .automatic) {
-                HStack(spacing: 16) {
-                    Toggle(isOn: $viewModel.showLineNumbers) {
-                        Label("Line #", systemImage: "list.number")
-                    }
-                    .toggleStyle(.checkbox)
-                    .help("Show line numbers")
-                    .padding(.leading, 10)
-
-                    Toggle(isOn: $viewModel.showMinimap) {
-                        Label("Minimap", systemImage: "sidebar.right")
-                    }
-                    .toggleStyle(.checkbox)
-                    .help("Show minimap")
-                }
-            }
-
-            ToolbarItem(placement: .automatic) {
+            ToolbarItemGroup(placement: .primaryAction) {
                 HStack(spacing: 3) {
                     Button {
                         viewModel.fontSize = max(8, viewModel.fontSize - 1)
@@ -215,17 +205,32 @@ struct ContentView: View {
                     .disabled(viewModel.fontSize >= 24)
                     .opacity(viewModel.fontSize >= 24 ? 0.4 : 1)
                 }
-                .padding(.leading, 16)
-                .padding(.trailing, 8)
-            }
+                .padding(.leading, 8)
 
-            ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     showHighlightManager = true
                 } label: {
                     Label("Highlight Rules", systemImage: "paintbrush")
                 }
                 .help("Set highlight filters")
+
+                Toggle(isOn: $viewModel.showLineNumbers) {
+                    Label("Line #", systemImage: "list.number")
+                }
+                .toggleStyle(.button)
+                .help("Show line numbers")
+
+                Toggle(isOn: $viewModel.showMinimap) {
+                    Label("Minimap", systemImage: "sidebar.right")
+                }
+                .toggleStyle(.button)
+                .help("Show minimap")
+
+                Toggle(isOn: $viewModel.showTimeline) {
+                    Label("Timeline", systemImage: "clock")
+                }
+                .toggleStyle(.button)
+                .help("Show highlight timeline")
             }
         }
         .animation(.easeInOut(duration: 0.2), value: viewModel.showMinimap)
@@ -238,6 +243,12 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: showHelpNotification)) { _ in
             showHelp = true
+        }
+        .onChange(of: colorScheme) { _, newScheme in
+            viewModel.appearanceChanged(isDark: newScheme == .dark)
+        }
+        .onAppear {
+            viewModel.appearanceChanged(isDark: colorScheme == .dark)
         }
         .onChange(of: viewModel.selectedTabID) { _, newTabID in
             if let targetID = newTabID {
@@ -327,6 +338,148 @@ private struct TopPaneView: View {
     }
 }
 
+// MARK: - Timeline Pane
+
+private struct TimelinePaneView: View {
+    @ObservedObject var viewModel: LogViewModel
+    @Binding var showFilterDropdown: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            FilterBarView(viewModel: viewModel, showFilterDropdown: $showFilterDropdown)
+            Divider()
+            
+            ZStack(alignment: .topLeading) {
+                VStack(spacing: 0) {
+                    let allActiveRules = viewModel.highlightRules.filter { $0.compiledRegex != nil }
+                    let displayedRuleIDs = viewModel.currentTab?.timelineActiveRuleIDs ?? []
+                    let activeRules = allActiveRules.filter { displayedRuleIDs.contains($0.id) }
+                    
+                    let hasMarks = !(viewModel.currentTab?.markedIndices.isEmpty ?? true)
+                    if !activeRules.isEmpty || hasMarks {
+                        HStack(spacing: 0) {
+                            if hasMarks {
+                                Image(systemName: "circle.fill")
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(Color.primary)
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                                    .help("Marks")
+                            }
+                            ForEach(activeRules) { rule in
+                                Text(rule.pattern)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .lineLimit(1)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                                    .help(rule.pattern)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                        .background(Color(NSColor.controlBackgroundColor))
+                        Divider()
+                    }
+
+                    GeometryReader { geometry in
+                        ZStack {
+                            ScrollView(.vertical) {
+                                if let image = viewModel.currentTab?.timelineImage {
+                                    Image(nsImage: image)
+                                        .resizable()
+                                        .interpolation(.none)
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: max(geometry.size.height, image.size.height))
+                                        .opacity(viewModel.currentTab?.isGeneratingTimeline == true ? 0.3 : 1.0)
+                                        .overlay {
+                                            GeometryReader { overlayGeom in
+                                                HStack(spacing: 0) {
+                                                    if hasMarks {
+                                                        Color.clear
+                                                            .frame(maxWidth: .infinity)
+                                                            .contentShape(Rectangle())
+                                                            .help("Marks")
+                                                            .gesture(
+                                                                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                                                                    .onEnded { value in
+                                                                        viewModel.jumpFromTimeline(fraction: value.location.y / max(geometry.size.height, image.size.height), ruleIndex: -1)
+                                                                    }
+                                                            )
+                                                    }
+                                                    ForEach(Array(activeRules.enumerated()), id: \.element.id) { index, rule in
+                                                        Color.clear
+                                                            .frame(maxWidth: .infinity)
+                                                            .contentShape(Rectangle())
+                                                            .help(rule.pattern)
+                                                            .gesture(
+                                                                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                                                                    .onEnded { value in
+                                                                        viewModel.jumpFromTimeline(fraction: value.location.y / max(geometry.size.height, image.size.height), ruleIndex: index)
+                                                                    }
+                                                            )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                } else if viewModel.currentTab?.isGeneratingTimeline == true {
+                                    Color.clear
+                                        .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+                                } else if viewModel.highlightRules.isEmpty && !hasMarks {
+                                    VStack(spacing: 8) {
+                                        Image(systemName: "paintbrush")
+                                            .font(.system(size: 28))
+                                            .foregroundStyle(.tertiary)
+                                        Text("No Highlight Rules defined")
+                                            .font(.callout)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+                                } else {
+                                    VStack(spacing: 8) {
+                                        Image(systemName: "line.3.horizontal.decrease.circle")
+                                            .font(.system(size: 28))
+                                            .foregroundStyle(.tertiary)
+                                        Text("No lines match the active filter")
+                                            .font(.callout)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+                                }
+                            }
+
+                            if viewModel.currentTab?.isGeneratingTimeline == true {
+                                VStack(spacing: 8) {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                    Text("Generating Timeline...")
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(14)
+                                .background(Material.regular, in: RoundedRectangle(cornerRadius: 10))
+                            }
+                        }
+                    }
+                }
+                
+                if showFilterDropdown && !viewModel.filterHistory.isEmpty {
+                    FilterHistoryDropdown(
+                        history: viewModel.filterHistory,
+                        onSelect: { pattern in
+                            viewModel.currentFilterPattern = pattern
+                            showFilterDropdown = false
+                            viewModel.applyFilter(with: pattern)
+                            NSApp.keyWindow?.makeFirstResponder(nil)
+                        }
+                    )
+                    .padding(.leading, 56)
+                    .padding(.trailing, 90)
+                    .padding(.top, 4)
+                    .zIndex(100)
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Bottom Pane
 
 private struct BottomPaneView: View {
@@ -334,46 +487,7 @@ private struct BottomPaneView: View {
     @Binding var showFilterDropdown: Bool
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text("Filter")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .frame(minWidth: 32, alignment: .trailing)
-                Picker("", selection: $viewModel.filterDisplayMode) {
-                    ForEach(FilterDisplayMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(width: 155)
-                
-                RegexTextField(
-                    text: $viewModel.currentFilterPattern,
-                    placeholder: "Regex pattern…",
-                    onFocus: {
-                        if !viewModel.filterHistory.isEmpty { showFilterDropdown = true }
-                    },
-                    onTextChange: { showFilterDropdown = false },
-                    onBlur: {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                            showFilterDropdown = false
-                        }
-                    },
-                    onSubmit: {
-                        showFilterDropdown = false
-                        viewModel.applyFilter(with: viewModel.currentFilterPattern)
-                        NSApp.keyWindow?.makeFirstResponder(nil)
-                    }
-                )
-                Toggle("Ignore Case", isOn: $viewModel.isCaseInsensitive)
-                    .toggleStyle(.checkbox)
-                    .onChange(of: viewModel.isCaseInsensitive) { _, _ in
-                        viewModel.applyFilter(with: viewModel.currentFilterPattern)
-                    }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color(NSColor.controlBackgroundColor))
+            FilterBarView(viewModel: viewModel, showFilterDropdown: $showFilterDropdown)
 
             ZStack(alignment: .topLeading) {
                 VStack(spacing: 0) {
@@ -410,7 +524,7 @@ private struct BottomPaneView: View {
                             onToggleMark: { viewModel.toggleMarks($0) },
                             onClearAllMarks: { viewModel.clearAllMarks() }
                         )
-                        .id((viewModel.selectedTabID?.uuidString ?? "bot") + (viewModel.isFiltering ? "-loading" : "-ready"))
+                        .id(viewModel.selectedTabID?.uuidString ?? "bot")
                     }
                 }
                 if showFilterDropdown && !viewModel.filterHistory.isEmpty {
@@ -430,6 +544,56 @@ private struct BottomPaneView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Filter Bar
+
+private struct FilterBarView: View {
+    @ObservedObject var viewModel: LogViewModel
+    @Binding var showFilterDropdown: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Filter")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 32, alignment: .trailing)
+            Picker("", selection: $viewModel.filterDisplayMode) {
+                ForEach(FilterDisplayMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.menu)
+            .frame(width: 155)
+            
+            RegexTextField(
+                text: $viewModel.currentFilterPattern,
+                placeholder: "Regex pattern…",
+                onFocus: {
+                    if !viewModel.filterHistory.isEmpty { showFilterDropdown = true }
+                },
+                onTextChange: { showFilterDropdown = false },
+                onBlur: {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        showFilterDropdown = false
+                    }
+                },
+                onSubmit: {
+                    showFilterDropdown = false
+                    viewModel.applyFilter(with: viewModel.currentFilterPattern)
+                    NSApp.keyWindow?.makeFirstResponder(nil)
+                }
+            )
+            Toggle("Ignore Case", isOn: $viewModel.isCaseInsensitive)
+                .toggleStyle(.checkbox)
+                .onChange(of: viewModel.isCaseInsensitive) { _, _ in
+                    viewModel.applyFilter(with: viewModel.currentFilterPattern)
+                }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color(NSColor.controlBackgroundColor))
     }
 }
 

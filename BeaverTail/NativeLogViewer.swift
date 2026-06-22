@@ -151,15 +151,76 @@ private final class LogRowView: NSTableRowView {
 }
 
 private class LogTextField: NSTextField {
-    override func menu(for event: NSEvent) -> NSMenu? {
+    override func mouseDown(with event: NSEvent) {
         var responder: NSResponder? = self.nextResponder
         while responder != nil {
             if let tableView = responder as? NSTableView {
-                return tableView.menu(for: event)
+                let point = tableView.convert(event.locationInWindow, from: nil)
+                let row = tableView.row(at: point)
+                if row >= 0 {
+                    if event.modifierFlags.contains(.command) {
+                        var indexes = tableView.selectedRowIndexes
+                        if indexes.contains(row) {
+                            indexes.remove(row)
+                        } else {
+                            indexes.insert(row)
+                        }
+                        tableView.selectRowIndexes(indexes, byExtendingSelection: false)
+                    } else if event.modifierFlags.contains(.shift) {
+                        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: true)
+                    } else {
+                        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                    }
+                }
+                break
             }
             responder = responder?.nextResponder
         }
-        return super.menu(for: event)
+        super.mouseDown(with: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        var responder: NSResponder? = self.nextResponder
+        while responder != nil {
+            if let tableView = responder as? NSTableView {
+                let point = tableView.convert(event.locationInWindow, from: nil)
+                let row = tableView.row(at: point)
+                if row >= 0 && !tableView.selectedRowIndexes.contains(row) {
+                    tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                }
+                break
+            }
+            responder = responder?.nextResponder
+        }
+        super.rightMouseDown(with: event)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        var responder: NSResponder? = self.nextResponder
+        var foundTableView: NSTableView?
+        while responder != nil {
+            if let tableView = responder as? NSTableView {
+                foundTableView = tableView
+                break
+            }
+            responder = responder?.nextResponder
+        }
+        
+        if let tableView = foundTableView, let tvMenu = tableView.menu(for: event) {
+            if !menu.items.isEmpty {
+                menu.addItem(NSMenuItem.separator())
+            }
+            for item in tvMenu.items {
+                if let copyItem = item.copy() as? NSMenuItem {
+                    if copyItem.title == "Copy" {
+                        copyItem.title = "Copy Row(s)"
+                    }
+                    menu.addItem(copyItem)
+                }
+            }
+        }
+        return menu
     }
 }
 
@@ -375,7 +436,7 @@ struct NativeLogViewer: NSViewRepresentable {
         Coordinator()
     }
 
-    class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
         var provider: LineProvider = ArrayLineProvider(lines: [])
         var isFiltered: Bool = false
         var defaultTextColor: NSColor = .labelColor
@@ -402,6 +463,33 @@ struct NativeLogViewer: NSViewRepresentable {
 
         func clearAllMarks() {
             onClearAllMarks?()
+        }
+
+        func textView(_ view: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int) -> NSMenu? {
+            var responder: NSResponder? = view.nextResponder
+            var foundTableView: NSTableView?
+            while responder != nil {
+                if let tableView = responder as? NSTableView {
+                    foundTableView = tableView
+                    break
+                }
+                responder = responder?.nextResponder
+            }
+            
+            if let tableView = foundTableView, let tvMenu = tableView.menu(for: event) {
+                if !menu.items.isEmpty {
+                    menu.addItem(NSMenuItem.separator())
+                }
+                for item in tvMenu.items {
+                    if let copyItem = item.copy() as? NSMenuItem {
+                        if copyItem.title == "Copy" {
+                            copyItem.title = "Copy Row(s)"
+                        }
+                        menu.addItem(copyItem)
+                    }
+                }
+            }
+            return menu
         }
 
         /// Keeps track of your gutter column management logic
@@ -521,7 +609,8 @@ struct NativeLogViewer: NSViewRepresentable {
 
                 let text = LogTextField()
                 text.isEditable = false
-                text.isSelectable = false
+                text.isSelectable = true
+                text.delegate = self
                 text.isBordered = false
                 text.backgroundColor = .clear
                 text.cell?.wraps = false

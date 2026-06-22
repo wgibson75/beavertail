@@ -117,6 +117,11 @@ private let helpSections: [HelpSection] = [
     HelpSection(title: "Text Size", items: [
         HelpItem(shortcut: nil,   description: "Use the A / A buttons in the toolbar to increase or decrease log text size. The setting is remembered between launches."),
     ]),
+    HelpSection(title: "Timeline", items: [
+        HelpItem(shortcut: nil,   description: "Toggle the Timeline view (clock icon, top-right) to replace the lower pane with a visual representation of all highlight matches and marks across the entire log."),
+        HelpItem(shortcut: nil,   description: "Hover over timeline column headers to view full regex patterns. Marks and rules are positioned from highest priority (left) to lowest (right)."),
+        HelpItem(shortcut: nil,   description: "Click any coloured dot or mark in the timeline to snap the upper pane directly to the exact corresponding log line."),
+    ]),
     HelpSection(title: "Live Tailing", items: [
         HelpItem(shortcut: nil,   description: "If a log file is actively being written to, BeaverTail automatically appends new lines and scrolls to the bottom as they arrive."),
     ]),

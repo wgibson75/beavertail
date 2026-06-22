@@ -53,6 +53,7 @@ class LogViewModel: ObservableObject {
     @AppStorage("saved_highlight_rules") private var rulesData: String = ""
     @AppStorage("saved_show_minimap") var showMinimap: Bool = true
     @AppStorage("saved_show_line_numbers") var showLineNumbers: Bool = true
+    @AppStorage("saved_show_timeline") var showTimeline: Bool = false
     @AppStorage("saved_filter_history_v1") private var filterHistoryData: String = ""
     @AppStorage("saved_font_size") var fontSize: Double = 12
     @AppStorage("saved_recent_files_v1") private var recentFilesData: String = ""
@@ -63,6 +64,7 @@ class LogViewModel: ObservableObject {
         didSet {
             saveRules()
             generateMinimapDataForAllTabs()
+            generateTimelineDataForAllTabs()
         }
     }
 
@@ -73,11 +75,15 @@ class LogViewModel: ObservableObject {
     private var filterTimer: Timer?
     private var fileLoadTimer: Timer?
     private var minimapTasks: [UUID: Task<Void, Never>] = [:]
+    private var timelineTasks: [UUID: Task<Void, Never>] = [:]
+    private var liveTailTasks: [UUID: Task<Void, Never>] = [:]
     private var sessionSaveDebounceTask: Task<Void, Never>?
     private var activeTailSource: DispatchSourceFileSystemObject?
     private var activeTailFileDescriptor: Int32 = -1
     private var currentActiveFilterPattern: String = ""
 
+    @Published var isSystemDark: Bool = true
+    
     var currentTab: LogTab? { openTabs.first { $0.id == selectedTabID } }
 
     var filterDisplayMode: FilterDisplayMode {
@@ -219,6 +225,7 @@ class LogViewModel: ObservableObject {
         }
         openTabs[index].markedIndices = marked
         updateDisplayedIndices(for: index)
+        generateTimelineData(for: tabID)
     }
 
     func clearAllMarks() {
@@ -227,6 +234,7 @@ class LogViewModel: ObservableObject {
 
         openTabs[index].markedIndices.removeAll()
         updateDisplayedIndices(for: index)
+        generateTimelineData(for: tabID)
     }
 
     /// Re-evaluates what is shown in the bottom pane for all tabs based on the active mode.
@@ -312,8 +320,6 @@ class LogViewModel: ObservableObject {
 
         isFiltering = true
         filterProgress = 0.0
-        openTabs[tabIndex].filteredIndices = []
-        openTabs[tabIndex].displayedIndices = []
         openTabs[tabIndex].filterMessage = nil
 
         guard let content = openTabs[tabIndex].content else {
@@ -351,6 +357,9 @@ class LogViewModel: ObservableObject {
                     if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
                         self.openTabs[freshIndex].filteredIndices = matches
                         self.updateDisplayedIndices(for: freshIndex)
+                        self.syncCurrentFilterPattern()
+                        // Regenerate timeline since matches might affect timeline dots
+                        self.generateTimelineData(for: tabID)
                     }
                 }
             }
@@ -393,10 +402,9 @@ class LogViewModel: ObservableObject {
             guard let rx = rule.compiledRegex else { return nil }
             return RuleCapture(regex: rx, color: rule.nsBackgroundColor.cgColor)
         }
-        let bgColor = NSColor.windowBackgroundColor.cgColor
 
+        let totalLines = content.count
         minimapTasks[tabID] = Task.detached(priority: .utility) { [weak self] in
-            let totalLines = content.count
             let imgWidth = 30, imgHeight = 1500
             let colorSpace = CGColorSpaceCreateDeviceRGB()
             guard let ctx = CGContext(
@@ -405,18 +413,20 @@ class LogViewModel: ObservableObject {
                 bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
             ) else { return }
 
-            ctx.setFillColor(bgColor)
-            ctx.fill(CGRect(x: 0, y: 0, width: imgWidth, height: imgHeight))
-
-            let linesPerBucket = max(1, totalLines / imgHeight)
-            let maxSamples = min(linesPerBucket, 30)
+            ctx.translateBy(x: 0, y: CGFloat(imgHeight))
+            ctx.scaleBy(x: 1.0, y: -1.0)
 
             for bucket in 0..<imgHeight {
                 if Task.isCancelled { return }
-                let bucketStart = bucket * linesPerBucket
-                guard bucketStart < totalLines else { break }
-                let bucketEnd = min(bucketStart + linesPerBucket, totalLines)
-                let step = max(1, (bucketEnd - bucketStart) / maxSamples)
+                let bucketStart = Int(Double(bucket) * Double(totalLines) / Double(imgHeight))
+                if bucketStart >= totalLines { break }
+                let bucketEnd = bucket == imgHeight - 1 ? totalLines : Int(Double(bucket + 1) * Double(totalLines) / Double(imgHeight))
+                
+                let linesInBucket = bucketEnd - bucketStart
+                if linesInBucket <= 0 { continue }
+                
+                let maxSamples = min(linesInBucket, 30)
+                let step = max(1, linesInBucket / maxSamples)
 
                 var matchCount = 0, totalSampled = 0
                 var matchColor: CGColor? = nil
@@ -459,6 +469,261 @@ class LogViewModel: ObservableObject {
 
     private func generateMinimapDataForAllTabs() {
         for tab in openTabs { generateMinimapData(for: tab.id) }
+    }
+
+    func generateTimelineData(for tabID: UUID) {
+        timelineTasks[tabID]?.cancel()
+        guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        
+        DispatchQueue.main.async { [weak self] in
+            self?.openTabs[index].isGeneratingTimeline = true
+        }
+        
+        let activeRules = highlightRules.filter { $0.compiledRegex != nil }
+        let isFiltered = !openTabs[index].filterPattern.isEmpty
+        let filteredIndices = openTabs[index].filteredIndices
+        let sortedMarks = Array(openTabs[index].markedIndices).sorted()
+        let hasMarks = !sortedMarks.isEmpty
+
+        let isDark = self.isSystemDark
+        let markCGColor = isDark ? CGColor(red: 1, green: 1, blue: 1, alpha: 1) : CGColor(red: 0, green: 0, blue: 0, alpha: 1)
+
+        let filterValid = !isFiltered || !filteredIndices.isEmpty
+        guard let content = openTabs[index].content, content.count > 0, (!activeRules.isEmpty || hasMarks), (filterValid || hasMarks) else {
+            DispatchQueue.main.async { [weak self] in
+                self?.openTabs[index].timelineImage = nil
+                self?.openTabs[index].isGeneratingTimeline = false
+            }
+            return
+        }
+
+        struct RuleCapture { let regex: NSRegularExpression; let color: CGColor }
+        let captures = activeRules.compactMap { rule -> RuleCapture? in
+            guard let rx = rule.compiledRegex else { return nil }
+            return RuleCapture(regex: rx, color: rule.nsBackgroundColor.cgColor)
+        }
+
+        let logTotalLines = content.count
+        timelineTasks[tabID] = Task.detached(priority: .utility) { [weak self] in
+            let colWidth = 40
+            let imgHeight = 6000
+
+            let bSearch: ([Int], Int) -> Int = { arr, el in
+                var low = 0
+                var high = arr.count
+                while low < high {
+                    let mid = low + (high - low) / 2
+                    if arr[mid] < el { low = mid + 1 } else { high = mid }
+                }
+                return low
+            }
+
+            var newTimelineMatches: [[Int]] = Array(repeating: [], count: captures.count)
+            var bucketMatchCounts = [[Int]](repeating: Array(repeating: 0, count: captures.count), count: imgHeight)
+            var bucketSampledCounts = [Int](repeating: 0, count: imgHeight)
+
+            for bucket in 0..<imgHeight {
+                if Task.isCancelled { return }
+                let bucketStart = Int(Double(bucket) * Double(logTotalLines) / Double(imgHeight))
+                if bucketStart >= logTotalLines { break }
+                let bucketEnd = bucket == imgHeight - 1 ? logTotalLines : Int(Double(bucket + 1) * Double(logTotalLines) / Double(imgHeight))
+                
+                var bucketIndices: [Int] = []
+                if isFiltered {
+                    let lower = bSearch(filteredIndices, bucketStart)
+                    let upper = bSearch(filteredIndices, bucketEnd)
+                    if lower < upper {
+                        bucketIndices = Array(filteredIndices[lower..<upper])
+                    }
+                }
+                
+                let countInBucket = isFiltered ? bucketIndices.count : (bucketEnd - bucketStart)
+                if countInBucket == 0 { continue }
+                
+                let maxSamples = min(countInBucket, 30)
+                let step = max(1, countInBucket / max(1, maxSamples))
+
+                var matchCounts = [Int](repeating: 0, count: captures.count)
+                var totalSampled = 0
+                
+                var idx = 0
+                while idx < maxSamples {
+                    let lineIdx: Int
+                    if isFiltered {
+                        guard idx * step < bucketIndices.count else { break }
+                        lineIdx = bucketIndices[idx * step]
+                    } else {
+                        lineIdx = bucketStart + idx * step
+                        if lineIdx >= bucketEnd { break }
+                    }
+                    
+                    let line = content.line(at: lineIdx)
+                    let range = NSRange(location: 0, length: line.utf16.count)
+                    for (i, capture) in captures.enumerated() {
+                        if capture.regex.firstMatch(in: line, options: [], range: range) != nil {
+                            matchCounts[i] += 1
+                            if matchCounts[i] == 1 {
+                                newTimelineMatches[i].append(lineIdx)
+                            }
+                        }
+                    }
+                    totalSampled += 1
+                    idx += 1
+                }
+                
+                bucketMatchCounts[bucket] = matchCounts
+                bucketSampledCounts[bucket] = totalSampled
+            }
+
+            if Task.isCancelled { return }
+
+            var displayedRuleIndices: [Int] = []
+            for i in 0..<captures.count {
+                if !newTimelineMatches[i].isEmpty {
+                    displayedRuleIndices.append(i)
+                }
+            }
+
+            let numColumns = displayedRuleIndices.count + (hasMarks ? 1 : 0)
+            let imgWidth = numColumns * colWidth
+
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            guard let ctx = CGContext(
+                data: nil, width: max(1, imgWidth), height: max(1, imgHeight),
+                bitsPerComponent: 8, bytesPerRow: max(1, imgWidth) * 4, space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+            ) else { return }
+
+            ctx.translateBy(x: 0, y: CGFloat(imgHeight))
+            ctx.scaleBy(x: 1.0, y: -1.0)
+            
+            var finalMatchesToSave: [[Int]] = []
+            if hasMarks {
+                finalMatchesToSave.append(sortedMarks)
+            }
+            for i in displayedRuleIndices {
+                finalMatchesToSave.append(newTimelineMatches[i])
+            }
+            
+            let activeRuleIDsThatMatched = displayedRuleIndices.map { activeRules[$0].id }
+            let ruleOffset = hasMarks ? 1 : 0
+
+            if hasMarks {
+                for bucket in 0..<imgHeight {
+                    let bucketStart = Int(Double(bucket) * Double(logTotalLines) / Double(imgHeight))
+                    if bucketStart >= logTotalLines { break }
+                    let bucketEnd = bucket == imgHeight - 1 ? logTotalLines : Int(Double(bucket + 1) * Double(logTotalLines) / Double(imgHeight))
+
+                    let mLower = bSearch(sortedMarks, bucketStart)
+                    let mUpper = bSearch(sortedMarks, bucketEnd)
+                    if mLower < mUpper {
+                        let dotWidth = CGFloat(colWidth) * 0.8
+                        let dotHeight = 4.0
+                        let rect = CGRect(x: (CGFloat(colWidth) - dotWidth) / 2, y: CGFloat(bucket), width: dotWidth, height: dotHeight)
+                        ctx.setFillColor(markCGColor)
+                        ctx.fillEllipse(in: rect)
+                    }
+                }
+            }
+
+            for bucket in 0..<imgHeight {
+                let totalSampled = bucketSampledCounts[bucket]
+                if totalSampled == 0 { continue }
+                
+                let counts = bucketMatchCounts[bucket]
+                for (dispIdx, originalIdx) in displayedRuleIndices.enumerated() {
+                    let count = counts[originalIdx]
+                    if count > 0 {
+                        let density = CGFloat(count) / CGFloat(totalSampled)
+                        let alpha = max(0.45, min(1.0, density * 1.6))
+                        if let scaledColor = captures[originalIdx].color.copy(alpha: alpha) {
+                            ctx.setFillColor(scaledColor)
+                            let colIdx = dispIdx + ruleOffset
+                            let xOffset = colIdx * colWidth
+                            let dotWidth = CGFloat(colWidth) * 0.8
+                            let dotHeight = 2.0
+                            ctx.fillEllipse(in: CGRect(x: CGFloat(xOffset) + (CGFloat(colWidth) - dotWidth) / 2,
+                                                       y: CGFloat(bucket),
+                                                       width: dotWidth,
+                                                       height: dotHeight))
+                        }
+                    }
+                }
+            }
+
+            guard !Task.isCancelled, let cgImage = ctx.makeImage() else { return }
+            let bitmap = NSImage(cgImage: cgImage, size: NSSize(width: max(1, imgWidth), height: imgHeight))
+            
+            let finalTimelineMatches = finalMatchesToSave
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
+                    self.openTabs[freshIndex].timelineImage = bitmap
+                    self.openTabs[freshIndex].timelineMatches = finalTimelineMatches
+                    self.openTabs[freshIndex].timelineActiveRuleIDs = activeRuleIDsThatMatched
+                    self.openTabs[freshIndex].isGeneratingTimeline = false
+                    self.objectWillChange.send()
+                }
+            }
+        }
+    }
+
+    private func generateTimelineDataForAllTabs() {
+        for tab in openTabs { generateTimelineData(for: tab.id) }
+    }
+
+    func jumpFromTimeline(fraction: CGFloat, ruleIndex: Int) {
+        guard let tabID = selectedTabID, let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        let totalCount = openTabs[index].lineCount
+        guard totalCount > 0 else { return }
+        guard openTabs[index].content != nil else { return }
+        
+        let exactLine = Int(fraction * CGFloat(totalCount - 1))
+        
+        let hasMarks = !openTabs[index].markedIndices.isEmpty
+        let mappedRuleIndex = ruleIndex == -1 ? 0 : (hasMarks ? ruleIndex + 1 : ruleIndex)
+        
+        let cachedMatches = openTabs[index].timelineMatches
+        guard mappedRuleIndex >= 0, mappedRuleIndex < cachedMatches.count, !cachedMatches[mappedRuleIndex].isEmpty else {
+            let finalFraction = max(0, min(1, CGFloat(exactLine) / CGFloat(totalCount - 1)))
+            openTabs[index].selectedFraction = finalFraction
+            NotificationCenter.default.post(name: topPaneDirectScrollNotification, object: exactLine)
+            return
+        }
+        
+        let ruleMatches = cachedMatches[mappedRuleIndex]
+        var closestVal = ruleMatches[0]
+        var minDiff = abs(ruleMatches[0] - exactLine)
+        
+        var left = 0
+        var right = ruleMatches.count
+        while left < right {
+            let mid = left + (right - left) / 2
+            if ruleMatches[mid] < exactLine { left = mid + 1 }
+            else { right = mid }
+        }
+        
+        if left < ruleMatches.count {
+            let diff = abs(ruleMatches[left] - exactLine)
+            if diff < minDiff {
+                minDiff = diff
+                closestVal = ruleMatches[left]
+            }
+        }
+        if left - 1 >= 0 {
+            let diff = abs(ruleMatches[left - 1] - exactLine)
+            if diff < minDiff {
+                closestVal = ruleMatches[left - 1]
+            }
+        }
+        
+        let finalFraction = max(0, min(1, CGFloat(closestVal) / CGFloat(totalCount - 1)))
+        
+        // We set scrubbing minimap to false because we want it to snap
+        isScrubbingMinimap = false
+        openTabs[index].selectedFraction = finalFraction
+        // Publish the scroll offset immediately.
+        NotificationCenter.default.post(name: topPaneDirectScrollNotification, object: closestVal)
     }
 
     func syncSelectionFromFilteredIndex(_ originalIndex: Int) {
@@ -813,6 +1078,13 @@ class LogViewModel: ObservableObject {
         activeTailSource?.cancel()
         activeTailSource = nil
         activeTailFileDescriptor = -1
+    }
+
+    func appearanceChanged(isDark: Bool) {
+        if self.isSystemDark != isDark {
+            self.isSystemDark = isDark
+            generateTimelineDataForAllTabs()
+        }
     }
 
     func appendFilterForLiveTail(with newLines: [String], startingAt originalStartIndex: Int) {
