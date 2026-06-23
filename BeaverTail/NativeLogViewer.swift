@@ -145,8 +145,61 @@ private final class LogRowView: NSTableRowView {
     override func drawSelection(in dirtyRect: NSRect) {
         guard isSelected else { return }
         // Faint translucent tint so any rule colour beneath still shows through
-        NSColor.selectedContentBackgroundColor.withAlphaComponent(0.22).setFill()
+        let selectionColor = NSColor.selectedContentBackgroundColor
+        selectionColor.withAlphaComponent(0.35).setFill()
         bounds.fill()
+        
+        NSColor.controlAccentColor.setStroke()
+        let path = NSBezierPath()
+        path.lineWidth = 2.0
+        
+        let minX = bounds.minX + 1.0
+        let maxX = bounds.maxX - 1.0
+        
+        let topY = !isPreviousRowSelected ? bounds.minY + 1.0 : bounds.minY
+        let bottomY = !isNextRowSelected ? bounds.maxY - 1.0 : bounds.maxY
+        
+        path.move(to: NSPoint(x: minX, y: bottomY))
+        path.line(to: NSPoint(x: minX, y: topY))
+        
+        if !isPreviousRowSelected {
+            path.line(to: NSPoint(x: maxX, y: topY))
+        } else {
+            path.move(to: NSPoint(x: maxX, y: topY))
+        }
+        
+        path.line(to: NSPoint(x: maxX, y: bottomY))
+        
+        if !isNextRowSelected {
+            path.line(to: NSPoint(x: minX, y: bottomY))
+        }
+        
+        path.stroke()
+    }
+
+    func shimmer() {
+        self.wantsLayer = true
+        let flashLayer = CALayer()
+        flashLayer.frame = self.bounds
+        flashLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        flashLayer.backgroundColor = NSColor.controlAccentColor.cgColor
+        flashLayer.opacity = 0.0
+        
+        self.layer?.addSublayer(flashLayer)
+        
+        let anim = CABasicAnimation(keyPath: "opacity")
+        anim.timingFunction = CAMediaTimingFunction(name: .linear)
+        anim.fromValue = 0.0
+        anim.toValue = 0.9
+        anim.duration = 1.6
+        anim.autoreverses = true
+        anim.repeatCount = 5
+        
+        flashLayer.add(anim, forKey: "shimmer")
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 16.0) {
+            flashLayer.removeFromSuperlayer()
+        }
     }
 }
 
@@ -347,15 +400,27 @@ struct NativeLogViewer: NSViewRepresentable {
                         tableView.selectRowIndexes(
                             IndexSet(integer: row), byExtendingSelection: false
                         )
-                        let rowRect = tableView.rect(ofRow: row)
-                        if let clipView = tableView.superview as? NSClipView {
-                            let clipHeight = clipView.bounds.height
-                            let targetY = rowRect.origin.y - (clipHeight / 2) + (rowRect.height / 2)
-                            let targetPoint = NSPoint(
-                                x: 0, y: max(0, min(targetY, tableView.frame.height - clipHeight))
-                            )
-                            clipView.scroll(targetPoint)
-                            scrollView.reflectScrolledClipView(clipView)
+                        // Natively ensure row loads in layout view
+                        tableView.scrollRowToVisible(row)
+                        
+                        DispatchQueue.main.async {
+                            let rowRect = tableView.rect(ofRow: row)
+                            if let clipView = tableView.superview as? NSClipView {
+                                let clipHeight = clipView.bounds.height
+                                // Center the jump perfectly in the middle of the pane
+                                let targetY = max(0, rowRect.origin.y - (clipHeight / 2.0) + (rowRect.height / 2.0))
+                                let targetPoint = NSPoint(
+                                    x: 0, y: min(targetY, max(0, tableView.frame.height - clipHeight))
+                                )
+                                // Smooth animated scroll snapping to the center
+                                clipView.animator().setBoundsOrigin(targetPoint)
+                            }
+                            
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                if let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) as? LogRowView {
+                                    rowView.shimmer()
+                                }
+                            }
                         }
                     }
                 }
@@ -646,10 +711,13 @@ struct NativeLogViewer: NSViewRepresentable {
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isProgrammaticallySelecting else { return }
             guard let tableView = notification.object as? NSTableView else { return }
-            let selectedRow = tableView.selectedRow
-
-            if selectedRow >= 0, selectedRow < provider.count {
-                onLineIndexSelected?(provider.originalIndex(at: selectedRow))
+            
+            // Only jump if exactly one row is selected. Avoids jumping around during multi-line selections.
+            if tableView.selectedRowIndexes.count == 1 {
+                let selectedRow = tableView.selectedRow
+                if selectedRow >= 0, selectedRow < provider.count {
+                    onLineIndexSelected?(provider.originalIndex(at: selectedRow))
+                }
             }
         }
     }
