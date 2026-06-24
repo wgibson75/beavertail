@@ -53,7 +53,7 @@ class LogViewModel: ObservableObject {
     @AppStorage("saved_highlight_rules") private var rulesData: String = ""
     @AppStorage("saved_show_minimap") var showMinimap: Bool = true
     @AppStorage("saved_show_line_numbers") var showLineNumbers: Bool = true
-    @AppStorage("saved_show_timeline") var showTimeline: Bool = false
+    @Published var showTimeline: Bool = false
     @AppStorage("saved_filter_history_v1") private var filterHistoryData: String = ""
     @AppStorage("saved_font_size") var fontSize: Double = 12
     @AppStorage("saved_recent_files_v1") private var recentFilesData: String = ""
