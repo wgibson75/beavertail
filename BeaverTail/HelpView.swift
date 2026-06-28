@@ -99,9 +99,10 @@ private let helpSections: [HelpSection] = [
         HelpItem(shortcut: nil,   description: "Use the Aa button in the filter bar to toggle case-sensitive filtering. Highlighted Aa means case-sensitive matching is enabled; unhighlighted means matching ignores case."),
     ]),
     HelpSection(title: "Highlight Filters", items: [
-        HelpItem(shortcut: nil,   description: "Open Highlight Filters (paintbrush icon, top-right) to define colour rules that highlight matching lines in both panes. The paintbrush icon is highlighted while the dialog is open."),
+        HelpItem(shortcut: nil,   description: "Open Highlight Filters (paintbrush icon, top-right) to define colour rules that highlight matching lines in both panes. The paintbrush icon is highlighted while the window is open."),
         HelpItem(shortcut: nil,   description: "Each rule takes a regex pattern, a text colour, a background colour, and an optional Aa (match-case) toggle."),
         HelpItem(shortcut: nil,   description: "Use the ▲▼ arrows or drag and drop rules to change priority order. Changes are reflected instantly without re-running the filter."),
+        HelpItem(shortcut: nil,   description: "The Highlight Filters window can be freely moved and resized. Its size and position are remembered between launches."),
     ]),
     HelpSection(title: "Marking Lines", items: [
         HelpItem(shortcut: nil,   description: "Right-click any line and select 'Toggle Mark' to mark or unmark it. You can select multiple lines to mark them simultaneously."),
@@ -126,7 +127,8 @@ private let helpSections: [HelpSection] = [
         HelpItem(shortcut: nil,   description: "Click any coloured dot or mark in the timeline to snap the upper pane directly to the corresponding log line. Selecting the same timeline entry again can horizontally scroll long selected lines."),
     ]),
     HelpSection(title: "Live Tailing", items: [
-        HelpItem(shortcut: nil,   description: "If a log file is actively being written to, BeaverTail automatically appends new lines and scrolls to the bottom as they arrive."),
+        HelpItem(shortcut: nil,   description: "If a log file is actively being written to, BeaverTail automatically appends new lines as they arrive."),
+        HelpItem(shortcut: nil,   description: "Use the Follow button in the filter bar to control auto-scrolling. When highlighted (the default), the view follows new lines to the bottom. Turn it off to keep your scroll position while new lines are still appended in the background."),
     ]),
     HelpSection(title: "Sessions", items: [
         HelpItem(shortcut: nil,   description: "BeaverTail remembers which logs were open and which tab was active when you quit. They are restored on next launch. If a file has been moved or deleted its tab is silently removed."),
