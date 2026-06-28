@@ -42,9 +42,15 @@ struct LogMinimapView: View {
                         let fraction = clickHeight / totalHeight
                         viewModel.jumpToFraction(fraction)
                     }
-                    // ADD THIS BLOCK: Releases the lock the instant the mouse button is lifted
-                    .onEnded { _ in
-                        viewModel.isScrubbingMinimap = false
+                    // On release/click, use the same direct jump path as bottom-pane
+                    // and timeline selections so the target line is selected,
+                    // highlighted and shimmered in the top pane.
+                    .onEnded { value in
+                        let clickHeight = value.location.y
+                        let totalHeight = geometry.size.height
+                        guard totalHeight > 0 else { return }
+
+                        viewModel.jumpFromMinimap(fraction: clickHeight / totalHeight)
                     }
             )
         }

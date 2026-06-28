@@ -10,6 +10,11 @@ import UniformTypeIdentifiers
 /// Direct notification channel descriptor driving top table viewport adjustments
 let topPaneDirectScrollNotification = Notification.Name("BeaverTailTopPaneDirectScroll")
 
+struct TopPaneDirectScrollRequest {
+    let lineIndex: Int
+    let allowsHorizontalScroll: Bool
+}
+
 // Distinct notification streams for targeting view scroll adjustments independently
 let topPaneScrollToBottomNotification = Notification.Name("BeaverTailTopPaneScrollToBottom")
 let bottomPaneScrollToBottomNotification = Notification.Name("BeaverTailBottomPaneScrollToBottom")
@@ -49,6 +54,9 @@ class LogViewModel: ObservableObject {
     @Published var isLoadingFile: Bool = false
     @Published var fileLoadProgress: Double = 0.0
     @Published var currentFilterPattern: String = ""
+    /// Tracks whether the standalone Highlight Filters window is open, so the
+    /// toolbar toggle can reflect (and drive) its state.
+    @Published var isHighlightWindowOpen: Bool = false
 
     @AppStorage("saved_highlight_rules") private var rulesData: String = ""
     @AppStorage("saved_show_minimap") var showMinimap: Bool = true
@@ -81,6 +89,7 @@ class LogViewModel: ObservableObject {
     private var activeTailSource: DispatchSourceFileSystemObject?
     private var activeTailFileDescriptor: Int32 = -1
     private var currentActiveFilterPattern: String = ""
+    private var lastMinimapSelectedLineByTab: [UUID: Int] = [:]
 
     @Published var isSystemDark: Bool = true
     
@@ -519,7 +528,7 @@ class LogViewModel: ObservableObject {
             }
 
             var newTimelineMatches: [[Int]] = Array(repeating: [], count: captures.count)
-            var bucketMatchCounts = [[Int]](repeating: Array(repeating: 0, count: captures.count), count: imgHeight)
+            var bucketMatchCounts = [[Int]](repeating: [Int](repeating: 0, count: captures.count), count: imgHeight)
             var bucketSampledCounts = [Int](repeating: 0, count: imgHeight)
 
             for bucket in 0..<imgHeight {
@@ -733,6 +742,32 @@ class LogViewModel: ObservableObject {
         let fraction = CGFloat(originalIndex) / CGFloat(totalCount - 1)
         openTabs[index].selectedFraction = max(0, min(1, fraction))
         NotificationCenter.default.post(name: topPaneDirectScrollNotification, object: originalIndex)
+    }
+
+    func jumpFromMinimap(fraction: CGFloat) {
+        guard let tabID = selectedTabID, let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        let totalCount = openTabs[index].lineCount
+        guard totalCount > 0 else { return }
+        let clampedFraction = max(0, min(1, fraction))
+        let exactLine = Int(clampedFraction * CGFloat(totalCount - 1))
+        // A one-pixel movement in the minimap can represent many log lines in
+        // large files, so treat the second click as repeated if it lands in the
+        // same approximate minimap bucket rather than requiring the exact same
+        // line number.
+        let repeatedSelectionTolerance = max(1, totalCount / 1500)
+        let isRepeatedMinimapSelection = lastMinimapSelectedLineByTab[tabID].map {
+            abs($0 - exactLine) <= repeatedSelectionTolerance
+        } ?? false
+        lastMinimapSelectedLineByTab[tabID] = exactLine
+        isScrubbingMinimap = false
+        openTabs[index].selectedFraction = clampedFraction
+        NotificationCenter.default.post(
+            name: topPaneDirectScrollNotification,
+            object: TopPaneDirectScrollRequest(
+                lineIndex: exactLine,
+                allowsHorizontalScroll: isRepeatedMinimapSelection
+            )
+        )
     }
 
     func jumpToFraction(_ fraction: CGFloat) {

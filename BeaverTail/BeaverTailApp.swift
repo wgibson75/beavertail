@@ -9,6 +9,9 @@ import SwiftUI
 let openFileMenuNotification = Notification.Name("BeaverTailOpenFileMenu")
 let showHelpNotification = Notification.Name("BeaverTailShowHelp")
 
+/// Identifier for the standalone, resizable/movable Highlight Filters window.
+let highlightFiltersWindowID = "highlight-filters"
+
 @main
 struct BeaverTailApp: App {
     @StateObject private var viewModel = LogViewModel()
@@ -50,5 +53,16 @@ struct BeaverTailApp: App {
                 .keyboardShortcut("?", modifiers: .command)
             }
         }
+
+        // Standalone Highlight Filters window. As a SwiftUI `Window` scene it is
+        // freely movable and resizable, and SwiftUI automatically persists its size
+        // and position across launches (keyed by the scene id).
+        Window("Highlight Filters", id: highlightFiltersWindowID) {
+            HighlightSettingsView(viewModel: viewModel)
+                .onAppear { viewModel.isHighlightWindowOpen = true }
+                .onDisappear { viewModel.isHighlightWindowOpen = false }
+        }
+        .defaultSize(width: 540, height: 460)
+        .windowResizability(.contentMinSize)
     }
 }

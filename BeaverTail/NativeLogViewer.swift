@@ -16,6 +16,159 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
     var onClearAllMarks: (() -> Void)?
     var hasMarks: Bool = false
 
+    // Display-synced horizontal scrolling state. Driven by a CADisplayLink obtained
+    // from the window (NSWindow.displayLink) so each position update is paced to the
+    // screen's refresh, removing the stutter a plain Timer causes (timer ticks aren't
+    // aligned to vsync). A window-based link is used rather than a view-based one
+    // because a scroll view's document view isn't reliably scheduled for display-link
+    // callbacks. Position is computed from the link's vsync-aligned timestamp.
+    private var horizontalScrollLink: CADisplayLink?
+    private var horizontalScrollRow: Int?
+    private var horizontalScrollTargetX: CGFloat?
+    private weak var horizontalScrollClipView: NSClipView?
+    private var horizontalScrollStartX: CGFloat = 0
+    private var horizontalScrollDistance: CGFloat = 0
+    private var horizontalScrollLastTimestamp: CFTimeInterval = 0
+    /// Baseline scroll speed (points/sec) used at the very start and end of a line.
+    /// The speed ramps smoothly up to 3x this at the line's midpoint and back down to
+    /// 1x at the end (see stepHorizontalScroll).
+    private let horizontalScrollBaseSpeed: CGFloat = 220
+    private var pausedHorizontalScrollTargetByRow: [Int: CGFloat] = [:]
+
+    /// Set when SwiftUI requests a reload while a horizontal scroll is in progress.
+    /// Reloading mid-scroll causes a one-time visible hitch, so the reload is held
+    /// until the scroll finishes (or is paused) and then flushed.
+    private var hasDeferredReload = false
+
+    /// Reloads the table while preserving (and restoring) the current selection,
+    /// suppressing the selection-change delegate callback during restoration.
+    func reloadPreservingSelection() {
+        let preserved = selectedRowIndexes
+        reloadData()
+        guard !preserved.isEmpty, preserved.allSatisfy({ $0 < numberOfRows }) else { return }
+        if let coordinator = delegate as? NativeLogViewer.Coordinator {
+            coordinator.isProgrammaticallySelecting = true
+            selectRowIndexes(preserved, byExtendingSelection: false)
+            coordinator.isProgrammaticallySelecting = false
+        } else {
+            selectRowIndexes(preserved, byExtendingSelection: false)
+        }
+    }
+
+    /// Reloads now, or defers the reload until horizontal scrolling finishes so the
+    /// scroll animation isn't interrupted by a mid-scroll redraw.
+    func reloadDeferringDuringHorizontalScroll() {
+        if isHorizontalScrollActive {
+            hasDeferredReload = true
+        } else {
+            reloadPreservingSelection()
+        }
+    }
+
+    func flushDeferredReloadIfNeeded() {
+        guard hasDeferredReload else { return }
+        hasDeferredReload = false
+        reloadPreservingSelection()
+    }
+
+    var isHorizontalScrollActive: Bool {
+        horizontalScrollLink != nil
+    }
+
+    func isHorizontallyScrolling(row: Int) -> Bool {
+        horizontalScrollLink != nil && horizontalScrollRow == row
+    }
+
+    func stopHorizontalScroll(preserveResumeTarget: Bool = true) {
+        if preserveResumeTarget,
+           let row = horizontalScrollRow,
+           let targetX = horizontalScrollTargetX {
+            pausedHorizontalScrollTargetByRow[row] = targetX
+        }
+        horizontalScrollLink?.invalidate()
+        horizontalScrollLink = nil
+        horizontalScrollRow = nil
+        horizontalScrollTargetX = nil
+        horizontalScrollClipView = nil
+        horizontalScrollLastTimestamp = 0
+    }
+
+    func horizontalScrollTarget(for row: Int, proposedTargetX: CGFloat) -> CGFloat {
+        pausedHorizontalScrollTargetByRow[row] ?? proposedTargetX
+    }
+
+    func startHorizontalScroll(row: Int, in clipView: NSClipView, to targetX: CGFloat) {
+        stopHorizontalScroll(preserveResumeTarget: false)
+
+        let startX = clipView.bounds.origin.x
+        let distance = targetX - startX
+        guard abs(distance) > 0.5 else { return }
+
+        pausedHorizontalScrollTargetByRow[row] = targetX
+        horizontalScrollRow = row
+        horizontalScrollTargetX = targetX
+        horizontalScrollClipView = clipView
+        horizontalScrollStartX = startX
+        horizontalScrollDistance = distance
+        horizontalScrollLastTimestamp = 0
+
+        // Prefer a window-based display link (more reliably scheduled than a scroll
+        // view's document-view link); fall back to the view-based one.
+        let link: CADisplayLink
+        if let window = self.window {
+            link = window.displayLink(target: self, selector: #selector(stepHorizontalScroll(_:)))
+        } else {
+            link = displayLink(target: self, selector: #selector(stepHorizontalScroll(_:)))
+        }
+        link.add(to: .main, forMode: .common)
+        horizontalScrollLink = link
+    }
+
+    @objc private func stepHorizontalScroll(_ link: CADisplayLink) {
+        guard let clipView = horizontalScrollClipView, horizontalScrollDistance != 0 else {
+            stopHorizontalScroll(preserveResumeTarget: false)
+            return
+        }
+
+        // First frame just establishes the time base; movement begins next frame.
+        if horizontalScrollLastTimestamp == 0 {
+            horizontalScrollLastTimestamp = link.targetTimestamp
+            return
+        }
+        // Per-frame delta time from the vsync-aligned timestamp (capped so a hiccup
+        // can't produce a large position jump).
+        let dt = min(link.targetTimestamp - horizontalScrollLastTimestamp, 1.0 / 30.0)
+        horizontalScrollLastTimestamp = link.targetTimestamp
+
+        let targetX = horizontalScrollStartX + horizontalScrollDistance
+        let direction: CGFloat = horizontalScrollDistance >= 0 ? 1 : -1
+        let currentX = clipView.bounds.origin.x
+
+        // Position along the line, 0 at the start … 1 at the end.
+        let posFraction = min(1.0, max(0.0, (currentX - horizontalScrollStartX) / horizontalScrollDistance))
+        // Velocity profile keyed to position: 1x at the ends, 3x at the midpoint.
+        let speedMultiplier = 1.0 + 2.0 * sin(Double.pi * Double(posFraction))
+        let speed = horizontalScrollBaseSpeed * CGFloat(speedMultiplier)
+
+        var nextX = currentX + direction * speed * CGFloat(dt)
+
+        // Stop cleanly once we reach (or pass) the target.
+        if (direction > 0 && nextX >= targetX) || (direction < 0 && nextX <= targetX) {
+            nextX = targetX
+            clipView.setBoundsOrigin(NSPoint(x: nextX, y: clipView.bounds.origin.y))
+            let finishedRow = horizontalScrollRow
+            stopHorizontalScroll(preserveResumeTarget: false)
+            if let finishedRow {
+                pausedHorizontalScrollTargetByRow.removeValue(forKey: finishedRow)
+            }
+            // Scroll finished — apply any reload that was held back during it.
+            flushDeferredReloadIfNeeded()
+            return
+        }
+
+        clipView.setBoundsOrigin(NSPoint(x: nextX, y: clipView.bounds.origin.y))
+    }
+
     // Right-click → context menu
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
@@ -211,6 +364,7 @@ private class LogTextField: NSTextField {
                 let point = tableView.convert(event.locationInWindow, from: nil)
                 let row = tableView.row(at: point)
                 if row >= 0 {
+                    let alreadySelected = tableView.selectedRowIndexes.contains(row)
                     if event.modifierFlags.contains(.command) {
                         var indexes = tableView.selectedRowIndexes
                         if indexes.contains(row) {
@@ -223,6 +377,11 @@ private class LogTextField: NSTextField {
                         tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: true)
                     } else {
                         tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                        if alreadySelected && tableView.selectedRowIndexes.count == 1 {
+                            if let coordinator = tableView.delegate as? NativeLogViewer.Coordinator {
+                                coordinator.onLineIndexSelected?(coordinator.provider.originalIndex(at: row))
+                            }
+                        }
                     }
                 }
                 break
@@ -395,8 +554,22 @@ struct NativeLogViewer: NSViewRepresentable {
                 object: nil,
                 queue: .main
             ) { notification in
-                if let row = notification.object as? Int, row >= 0 && row < tableView.numberOfRows {
+                let requestedRow: Int?
+                let explicitHorizontalScroll: Bool?
+                if let request = notification.object as? TopPaneDirectScrollRequest {
+                    requestedRow = request.lineIndex
+                    explicitHorizontalScroll = request.allowsHorizontalScroll
+                } else if let row = notification.object as? Int {
+                    requestedRow = row
+                    explicitHorizontalScroll = nil
+                } else {
+                    requestedRow = nil
+                    explicitHorizontalScroll = nil
+                }
+
+                if let row = requestedRow, row >= 0 && row < tableView.numberOfRows {
                     DispatchQueue.main.async {
+                        let isRepeatedClick = explicitHorizontalScroll ?? (tableView.selectedRow == row && tableView.selectedRowIndexes.count == 1)
                         tableView.selectRowIndexes(
                             IndexSet(integer: row), byExtendingSelection: false
                         )
@@ -407,16 +580,65 @@ struct NativeLogViewer: NSViewRepresentable {
                             let rowRect = tableView.rect(ofRow: row)
                             if let clipView = tableView.superview as? NSClipView {
                                 let clipHeight = clipView.bounds.height
+                                let clipWidth = clipView.bounds.width
                                 // Center the jump perfectly in the middle of the pane
                                 let targetY = max(0, rowRect.origin.y - (clipHeight / 2.0) + (rowRect.height / 2.0))
+                                
+                                var targetX: CGFloat = 0
+                                var isScrollingHorizontally = false
+                                
+                                if isRepeatedClick {
+                                    if let coordinator = tableView.delegate as? NativeLogViewer.Coordinator {
+                                        let lineText = coordinator.provider.line(at: row)
+                                        let font = NSFont.monospacedSystemFont(ofSize: coordinator.fontSize, weight: .regular)
+                                        let textWidth = (lineText as NSString).size(withAttributes: [.font: font]).width
+                                        
+                                        var totalWidth = textWidth + 8
+                                        if showLineNumbers {
+                                            totalWidth += 55
+                                        }
+                                        
+                                        if totalWidth > clipWidth {
+                                            let finalX = totalWidth - clipWidth + 40
+                                            if clipView.bounds.origin.x < finalX - 20 {
+                                                targetX = finalX
+                                                isScrollingHorizontally = true
+                                            } else {
+                                                targetX = 0
+                                                isScrollingHorizontally = true
+                                            }
+                                        }
+                                    }
+                                }
+                                
                                 let targetPoint = NSPoint(
-                                    x: 0, y: min(targetY, max(0, tableView.frame.height - clipHeight))
+                                    x: min(targetX, max(0, tableView.frame.width - clipWidth)),
+                                    y: min(targetY, max(0, tableView.frame.height - clipHeight))
                                 )
-                                // Smooth animated scroll snapping to the center
-                                clipView.animator().setBoundsOrigin(targetPoint)
+                                
+                                if isScrollingHorizontally {
+                                    if tableView.isHorizontallyScrolling(row: row) {
+                                        tableView.stopHorizontalScroll()
+                                        // Paused — apply any reload held back during scrolling.
+                                        tableView.flushDeferredReloadIfNeeded()
+                                    } else {
+                                        let resumedTargetX = tableView.horizontalScrollTarget(for: row, proposedTargetX: targetPoint.x)
+                                        tableView.startHorizontalScroll(row: row, in: clipView, to: resumedTargetX)
+                                    }
+                                } else {
+                                    tableView.stopHorizontalScroll(preserveResumeTarget: false)
+                                    tableView.flushDeferredReloadIfNeeded()
+                                    clipView.animator().setBoundsOrigin(NSPoint(x: 0, y: targetPoint.y))
+                                }
                             }
                             
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                // Only shimmer on a genuine first jump to a line. On a
+                                // repeated click (which starts/reverses horizontal
+                                // scrolling) the shimmer's CALayer animation causes a
+                                // one-time redraw hitch shortly after scrolling begins,
+                                // so skip it to keep the scroll perfectly smooth.
+                                guard !isRepeatedClick else { return }
                                 if let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) as? LogRowView {
                                     rowView.shimmer()
                                 }
@@ -468,16 +690,10 @@ struct NativeLogViewer: NSViewRepresentable {
         context.coordinator.configureColumns(in: tableView, showLineNumbers: showLineNumbers)
 
         // Preserve the current selection across reloadData (which otherwise drops
-        // the visual highlight). Restore it afterwards, suppressing the delegate
-        // callback so we don't trigger a selection-change feedback loop.
-        let preservedSelection = tableView.selectedRowIndexes
-        tableView.reloadData()
-        if !preservedSelection.isEmpty,
-           preservedSelection.allSatisfy({ $0 < tableView.numberOfRows }) {
-            context.coordinator.isProgrammaticallySelecting = true
-            tableView.selectRowIndexes(preservedSelection, byExtendingSelection: false)
-            context.coordinator.isProgrammaticallySelecting = false
-        }
+        // the visual highlight). If a horizontal scroll is in progress, the reload is
+        // deferred until it finishes so the scroll animation isn't interrupted by a
+        // mid-scroll redraw (which appears as a single jerk).
+        tableView.reloadDeferringDuringHorizontalScroll()
 
         // FIXED MINIMAP SCRUBBING JUMP CONDITIONS:
         // Only auto-scroll the top pane if the user is actively dragging their cursor across the minimap bar!

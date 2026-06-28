@@ -9,7 +9,8 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject private var viewModel: LogViewModel
     @Environment(\.colorScheme) private var colorScheme
-    @State private var showHighlightManager = false
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
     @State private var showHelp = false
     @State private var showFilterDropdown = false
     @State private var draggingTabID: UUID? = nil
@@ -175,69 +176,10 @@ struct ContentView: View {
         }
         .frame(minWidth: 800, minHeight: 500)
         .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                HStack(spacing: 3) {
-                    Button {
-                        viewModel.fontSize = max(8, viewModel.fontSize - 1)
-                    } label: {
-                        Image(systemName: "textformat.size.smaller")
-                            .font(.system(size: 15))
-                    }
-                    .buttonStyle(.plain)
-                    .help("Decrease text size")
-                    .disabled(viewModel.fontSize <= 8)
-                    .opacity(viewModel.fontSize <= 8 ? 0.4 : 1)
-
-                    Text("\(Int(viewModel.fontSize))pt")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                        .fixedSize()
-
-                    Button {
-                        viewModel.fontSize = min(24, viewModel.fontSize + 1)
-                    } label: {
-                        Image(systemName: "textformat.size.larger")
-                            .font(.system(size: 15))
-                    }
-                    .buttonStyle(.plain)
-                    .help("Increase text size")
-                    .disabled(viewModel.fontSize >= 24)
-                    .opacity(viewModel.fontSize >= 24 ? 0.4 : 1)
-                }
-                .padding(.leading, 8)
-
-                Button {
-                    showHighlightManager = true
-                } label: {
-                    Label("Highlight Rules", systemImage: "paintbrush")
-                }
-                .help("Set highlight filters")
-
-                Toggle(isOn: $viewModel.showLineNumbers) {
-                    Label("Line #", systemImage: "list.number")
-                }
-                .toggleStyle(.button)
-                .help("Show line numbers")
-
-                Toggle(isOn: $viewModel.showMinimap) {
-                    Label("Minimap", systemImage: "sidebar.right")
-                }
-                .toggleStyle(.button)
-                .help("Show minimap")
-
-                Toggle(isOn: $viewModel.showTimeline) {
-                    Label("Timeline", systemImage: "clock")
-                }
-                .toggleStyle(.button)
-                .help("Show highlight timeline")
-            }
+            mainToolbarContent
         }
         .animation(.easeInOut(duration: 0.2), value: viewModel.showMinimap)
         .animation(.easeInOut(duration: 0.15), value: viewModel.openTabs.count)
-        .sheet(isPresented: $showHighlightManager) {
-            HighlightSettingsView(viewModel: viewModel)
-        }
         .sheet(isPresented: $showHelp) {
             HelpView()
         }
@@ -294,6 +236,76 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: openFileMenuNotification)) { _ in
             viewModel.openFile()
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var mainToolbarContent: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            HStack(spacing: 3) {
+                Button {
+                    viewModel.fontSize = max(8, viewModel.fontSize - 1)
+                } label: {
+                    Image(systemName: "textformat.size.smaller")
+                        .font(.system(size: 15))
+                }
+                .buttonStyle(.plain)
+                .help("Decrease text size")
+                .disabled(viewModel.fontSize <= 8)
+                .opacity(viewModel.fontSize <= 8 ? 0.4 : 1)
+
+                Text("\(Int(viewModel.fontSize))pt")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .fixedSize()
+
+                Button {
+                    viewModel.fontSize = min(24, viewModel.fontSize + 1)
+                } label: {
+                    Image(systemName: "textformat.size.larger")
+                        .font(.system(size: 15))
+                }
+                .buttonStyle(.plain)
+                .help("Increase text size")
+                .disabled(viewModel.fontSize >= 24)
+                .opacity(viewModel.fontSize >= 24 ? 0.4 : 1)
+            }
+            .padding(.leading, 8)
+
+            Toggle(isOn: Binding(
+                get: { viewModel.isHighlightWindowOpen },
+                set: { open in
+                    viewModel.isHighlightWindowOpen = open
+                    if open {
+                        openWindow(id: highlightFiltersWindowID)
+                    } else {
+                        dismissWindow(id: highlightFiltersWindowID)
+                    }
+                }
+            )) {
+                Label("Highlight Rules", systemImage: "paintbrush")
+            }
+            .toggleStyle(.button)
+            .help("Set highlight filters")
+
+            Toggle(isOn: $viewModel.showLineNumbers) {
+                Label("Line #", systemImage: "list.number")
+            }
+            .toggleStyle(.button)
+            .help("Show line numbers")
+
+            Toggle(isOn: $viewModel.showMinimap) {
+                Label("Minimap", systemImage: "sidebar.right")
+            }
+            .toggleStyle(.button)
+            .help("Show minimap")
+
+            Toggle(isOn: $viewModel.showTimeline) {
+                Label("Timeline", systemImage: "clock")
+            }
+            .toggleStyle(.button)
+            .help("Show highlight timeline")
         }
     }
 }
@@ -555,17 +567,19 @@ private struct FilterBarView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Text("Filter")
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 32, alignment: .trailing)
-            Picker("", selection: $viewModel.filterDisplayMode) {
-                ForEach(FilterDisplayMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
+            HStack(spacing: 4) {
+                Text("Filter")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                Picker("", selection: $viewModel.filterDisplayMode) {
+                    ForEach(FilterDisplayMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
                 }
+                .pickerStyle(.menu)
+                .frame(width: 155)
+                .help("Choose what to display in the bottom pane")
             }
-            .pickerStyle(.menu)
-            .frame(width: 155)
             
             RegexTextField(
                 text: $viewModel.currentFilterPattern,

@@ -92,11 +92,6 @@ struct HighlightSettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // ── Title bar ──
-            Text("Highlight Filters")
-                .font(.headline)
-                .padding(.top, 16)
-                .padding(.bottom, 4)
             // ── Form area ──
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
@@ -266,7 +261,8 @@ struct HighlightSettingsView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
         }
-        .frame(width: 540, height: 460)
+        .frame(minWidth: 460, idealWidth: 540, maxWidth: .infinity,
+               minHeight: 360, idealHeight: 460, maxHeight: .infinity)
         .onAppear {
             mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
                 // If the click is outside the colour panel, close it

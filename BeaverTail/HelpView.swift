@@ -95,11 +95,11 @@ private let helpSections: [HelpSection] = [
     HelpSection(title: "Filtering", items: [
         HelpItem(shortcut: "↵",   description: "Type a regular expression into the Filter field and press Return to filter log lines. Results appear in the lower pane."),
         HelpItem(shortcut: nil,   description: "Click the Filter field to see a history of previously used patterns and select one to reuse it."),
-        HelpItem(shortcut: nil,   description: "Use the dropdown next to the filter field to choose whether to display 'Marks and matches', 'Marks' only, or 'Matches' only in the lower pane."),
-        HelpItem(shortcut: nil,   description: "Ignore Case — when checked, the filter matches regardless of letter case."),
+        HelpItem(shortcut: nil,   description: "Use the Marks & matches dropdown next to the filter field to choose whether the lower pane shows marks and matches, marks only, or matches only."),
+        HelpItem(shortcut: nil,   description: "Use the Aa button in the filter bar to toggle case-sensitive filtering. Highlighted Aa means case-sensitive matching is enabled; unhighlighted means matching ignores case."),
     ]),
     HelpSection(title: "Highlight Filters", items: [
-        HelpItem(shortcut: nil,   description: "Open Highlight Filters (paintbrush icon, top-right) to define colour rules that highlight matching lines in both panes."),
+        HelpItem(shortcut: nil,   description: "Open Highlight Filters (paintbrush icon, top-right) to define colour rules that highlight matching lines in both panes. The paintbrush icon is highlighted while the dialog is open."),
         HelpItem(shortcut: nil,   description: "Each rule takes a regex pattern, a text colour, a background colour, and an optional Aa (match-case) toggle."),
         HelpItem(shortcut: nil,   description: "Use the ▲▼ arrows or drag and drop rules to change priority order. Changes are reflected instantly without re-running the filter."),
     ]),
@@ -109,18 +109,21 @@ private let helpSections: [HelpSection] = [
         HelpItem(shortcut: nil,   description: "Right-click and select 'Clear All Marks' to remove all marks from the current log. Marks are remembered between launches."),
     ]),
     HelpSection(title: "Navigation", items: [
-        HelpItem(shortcut: "⌘C",  description: "Right-click selected lines or press ⌘C to Copy them."),
-        HelpItem(shortcut: nil,   description: "Click any line in the lower (filtered) pane to jump to that line in the upper (full log) pane."),
-        HelpItem(shortcut: nil,   description: "Use the minimap on the right edge to scrub quickly through large files. Coloured bands show where highlight rules match."),
-        HelpItem(shortcut: nil,   description: "Toggle Line Numbers and Minimap visibility using the checkboxes in the toolbar."),
+        HelpItem(shortcut: "⌘C",  description: "Right-click selected lines or press ⌘C to copy selected text or selected rows."),
+        HelpItem(shortcut: nil,   description: "Click a single line in the lower pane to jump to the corresponding line in the upper pane. Multi-selecting lines for copying does not move the upper pane."),
+        HelpItem(shortcut: nil,   description: "Jumped-to lines in the upper pane are selected, outlined and shimmer briefly so they are easier to find."),
+        HelpItem(shortcut: nil,   description: "If the selected upper-pane line is wider than the window, select the same lower-pane, timeline or minimap entry again to slowly scroll the line horizontally. Select it again while scrolling to pause; select it again to continue in the same direction."),
+        HelpItem(shortcut: nil,   description: "Use the minimap on the right edge to scrub quickly through large files. Coloured bands show where highlight rules match. A second selection of the same minimap entry enables horizontal scrolling for long selected lines."),
+        HelpItem(shortcut: nil,   description: "Toggle Line Numbers, Minimap and Timeline visibility using the highlighted/unhighlighted toolbar icons."),
     ]),
     HelpSection(title: "Text Size", items: [
         HelpItem(shortcut: nil,   description: "Use the A / A buttons in the toolbar to increase or decrease log text size. The setting is remembered between launches."),
     ]),
     HelpSection(title: "Timeline", items: [
-        HelpItem(shortcut: nil,   description: "Toggle the Timeline view (clock icon, top-right) to replace the lower pane with a visual representation of all highlight matches and marks across the entire log."),
-        HelpItem(shortcut: nil,   description: "Hover over timeline column headers to view full regex patterns. Marks and rules are positioned from highest priority (left) to lowest (right)."),
-        HelpItem(shortcut: nil,   description: "Click any coloured dot or mark in the timeline to snap the upper pane directly to the exact corresponding log line."),
+        HelpItem(shortcut: nil,   description: "Toggle the Timeline view (clock icon, top-right) to replace the lower pane with a visual representation of highlight matches and marks."),
+        HelpItem(shortcut: nil,   description: "The timeline respects the current filter pattern: highlight columns only appear when that rule matches at least one currently filtered log line. Marks appear in their own far-left column when present."),
+        HelpItem(shortcut: nil,   description: "Hover over timeline column headers to view full regex patterns. Highlight rule columns are positioned from highest priority (left) to lowest (right)."),
+        HelpItem(shortcut: nil,   description: "Click any coloured dot or mark in the timeline to snap the upper pane directly to the corresponding log line. Selecting the same timeline entry again can horizontally scroll long selected lines."),
     ]),
     HelpSection(title: "Live Tailing", items: [
         HelpItem(shortcut: nil,   description: "If a log file is actively being written to, BeaverTail automatically appends new lines and scrolls to the bottom as they arrive."),
