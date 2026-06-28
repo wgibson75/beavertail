@@ -169,6 +169,29 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
         clipView.setBoundsOrigin(NSPoint(x: nextX, y: clipView.bounds.origin.y))
     }
 
+    // Detect a plain click on the row that is already the sole selection.
+    // The log cell text fields are non-selectable and let clicks fall through
+    // to the table view, so this is the single, reliable place to detect a
+    // "click again" and trigger repeated-selection behaviour (e.g. horizontal
+    // auto-scroll of a long selected line in the top pane).
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let clickedRow = row(at: point)
+        let isPlainClick = !event.modifierFlags.contains(.command)
+            && !event.modifierFlags.contains(.shift)
+        let wasRepeatSelection = isPlainClick
+            && clickedRow >= 0
+            && selectedRowIndexes.count == 1
+            && selectedRow == clickedRow
+
+        super.mouseDown(with: event)
+
+        if wasRepeatSelection,
+           let coordinator = delegate as? NativeLogViewer.Coordinator {
+            coordinator.onLineIndexSelected?(coordinator.provider.originalIndex(at: clickedRow))
+        }
+    }
+
     // Right-click → context menu
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
@@ -358,33 +381,15 @@ private final class LogRowView: NSTableRowView {
 
 private class LogTextField: NSTextField {
     override func mouseDown(with event: NSEvent) {
+        // Cells are non-selectable. If a click is ever delivered here, forward
+        // it to the enclosing table view, which owns row selection and the
+        // repeated-click detection (a single source of truth avoids double
+        // handling / double-firing of the repeated-selection callback).
         var responder: NSResponder? = self.nextResponder
         while responder != nil {
             if let tableView = responder as? NSTableView {
-                let point = tableView.convert(event.locationInWindow, from: nil)
-                let row = tableView.row(at: point)
-                if row >= 0 {
-                    let alreadySelected = tableView.selectedRowIndexes.contains(row)
-                    if event.modifierFlags.contains(.command) {
-                        var indexes = tableView.selectedRowIndexes
-                        if indexes.contains(row) {
-                            indexes.remove(row)
-                        } else {
-                            indexes.insert(row)
-                        }
-                        tableView.selectRowIndexes(indexes, byExtendingSelection: false)
-                    } else if event.modifierFlags.contains(.shift) {
-                        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: true)
-                    } else {
-                        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-                        if alreadySelected && tableView.selectedRowIndexes.count == 1 {
-                            if let coordinator = tableView.delegate as? NativeLogViewer.Coordinator {
-                                coordinator.onLineIndexSelected?(coordinator.provider.originalIndex(at: row))
-                            }
-                        }
-                    }
-                }
-                break
+                tableView.mouseDown(with: event)
+                return
             }
             responder = responder?.nextResponder
         }
@@ -408,31 +413,17 @@ private class LogTextField: NSTextField {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        let menu = super.menu(for: event) ?? NSMenu()
+        // Always present the enclosing table view's custom context menu
+        // (Copy / Toggle Mark / Clear All Marks) rather than the standard
+        // NSTextField text-editing menu.
         var responder: NSResponder? = self.nextResponder
-        var foundTableView: NSTableView?
         while responder != nil {
             if let tableView = responder as? NSTableView {
-                foundTableView = tableView
-                break
+                return tableView.menu(for: event)
             }
             responder = responder?.nextResponder
         }
-        
-        if let tableView = foundTableView, let tvMenu = tableView.menu(for: event) {
-            if !menu.items.isEmpty {
-                menu.addItem(NSMenuItem.separator())
-            }
-            for item in tvMenu.items {
-                if let copyItem = item.copy() as? NSMenuItem {
-                    if copyItem.title == "Copy" {
-                        copyItem.title = "Copy Row(s)"
-                    }
-                    menu.addItem(copyItem)
-                }
-            }
-        }
-        return menu
+        return super.menu(for: event)
     }
 }
 
@@ -890,7 +881,11 @@ struct NativeLogViewer: NSViewRepresentable {
 
                 let text = LogTextField()
                 text.isEditable = false
-                text.isSelectable = true
+                // Selection is handled at the row level. A selectable NSTextField
+                // installs a field editor that hijacks right-clicks and shows the
+                // standard system text menu instead of our custom context menu, so
+                // selection is disabled to guarantee the app's menu is shown.
+                text.isSelectable = false
                 text.delegate = self
                 text.isBordered = false
                 text.backgroundColor = .clear
