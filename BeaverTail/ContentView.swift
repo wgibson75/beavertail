@@ -599,11 +599,22 @@ private struct FilterBarView: View {
                     NSApp.keyWindow?.makeFirstResponder(nil)
                 }
             )
-            Toggle("Ignore Case", isOn: $viewModel.isCaseInsensitive)
-                .toggleStyle(.checkbox)
-                .onChange(of: viewModel.isCaseInsensitive) { _, _ in
+            Toggle("Aa", isOn: Binding(
+                get: { !viewModel.isCaseInsensitive },
+                set: { caseSensitive in
+                    viewModel.isCaseInsensitive = !caseSensitive
                     viewModel.applyFilter(with: viewModel.currentFilterPattern)
                 }
+            ))
+            .toggleStyle(.button)
+            .help("Match Case: when active, the filter matches case-sensitively")
+            .font(.system(size: 11, weight: .semibold))
+
+            Toggle(isOn: $viewModel.followTail) {
+                Label("Follow", systemImage: "arrow.down.to.line")
+            }
+            .toggleStyle(.button)
+            .help("Follow Tail: when active, the view automatically scrolls to show new log lines as they are appended")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

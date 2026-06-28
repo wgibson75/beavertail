@@ -54,6 +54,9 @@ class LogViewModel: ObservableObject {
     @Published var isLoadingFile: Bool = false
     @Published var fileLoadProgress: Double = 0.0
     @Published var currentFilterPattern: String = ""
+    /// When true, the view automatically scrolls to follow new lines appended to
+    /// the log being viewed (live tailing). Defaults to true.
+    @Published var followTail: Bool = true
     /// Tracks whether the standalone Highlight Filters window is open, so the
     /// toolbar toggle can reflect (and drive) its state.
     @Published var isHighlightWindowOpen: Bool = false
@@ -1095,8 +1098,10 @@ class LogViewModel: ObservableObject {
                             self.generateMinimapData(for: tabID)
                             self.appendFilterForLiveTail(with: linesArray, startingAt: baseOffset)
                             self.objectWillChange.send()
-                            DispatchQueue.main.async {
-                                NotificationCenter.default.post(name: topPaneScrollToBottomNotification, object: nil)
+                            if self.followTail {
+                                DispatchQueue.main.async {
+                                    NotificationCenter.default.post(name: topPaneScrollToBottomNotification, object: nil)
+                                }
                             }
                         }
                     }
