@@ -49,14 +49,30 @@ class LogViewModel: ObservableObject {
 
     @Published var isFiltering: Bool = false
     @Published var filterProgress: Double = 0.0
-    @Published var isCaseInsensitive: Bool = true
+    @Published var isCaseInsensitive: Bool = true {
+        didSet {
+            guard !isSyncingTabState else { return }
+            if let i = openTabs.firstIndex(where: { $0.id == selectedTabID }) {
+                openTabs[i].isCaseInsensitive = isCaseInsensitive
+                saveLoadedTabsSession()
+            }
+        }
+    }
     @Published var isScrubbingMinimap: Bool = false
     @Published var isLoadingFile: Bool = false
     @Published var fileLoadProgress: Double = 0.0
     @Published var currentFilterPattern: String = ""
     /// When true, the view automatically scrolls to follow new lines appended to
     /// the log being viewed (live tailing). Defaults to true.
-    @Published var followTail: Bool = true
+    @Published var followTail: Bool = true {
+        didSet {
+            guard !isSyncingTabState else { return }
+            if let i = openTabs.firstIndex(where: { $0.id == selectedTabID }) {
+                openTabs[i].followTail = followTail
+                saveLoadedTabsSession()
+            }
+        }
+    }
     /// Tracks whether the standalone Highlight Filters window is open, so the
     /// toolbar toggle can reflect (and drive) its state.
     @Published var isHighlightWindowOpen: Bool = false
@@ -93,6 +109,9 @@ class LogViewModel: ObservableObject {
     private var activeTailFileDescriptor: Int32 = -1
     private var currentActiveFilterPattern: String = ""
     private var lastMinimapSelectedLineByTab: [UUID: Int] = [:]
+    /// Guards the Aa/Follow published vars from writing back into the tab while
+    /// they are being mirrored *from* the newly-selected tab.
+    private var isSyncingTabState: Bool = false
 
     @Published var isSystemDark: Bool = true
     
@@ -152,7 +171,8 @@ class LogViewModel: ObservableObject {
             filteredIndices: [],
             selectedFraction: nil,
             minimapImage: nil,
-            isCurrentlyStreaming: true
+            isCurrentlyStreaming: true,
+            followTail: false
         )
 
         openTabs.append(placeholderTab)
@@ -297,6 +317,12 @@ class LogViewModel: ObservableObject {
     /// Keeps currentFilterPattern in sync with the selected tab's saved pattern.
     private func syncCurrentFilterPattern() {
         currentFilterPattern = currentTab?.filterPattern ?? ""
+        // Mirror the per-tab Aa / Follow options into the bound published vars
+        // without triggering their write-back into the tab.
+        isSyncingTabState = true
+        isCaseInsensitive = currentTab?.isCaseInsensitive ?? true
+        followTail = currentTab?.followTail ?? true
+        isSyncingTabState = false
     }
 
     func applyFilter(with pattern: String) {
@@ -787,6 +813,26 @@ class LogViewModel: ObservableObject {
         openTabs[tabIdx].selectedFraction = max(0, min(1, fraction))
     }
 
+    /// Called when the user plain-clicks a row in the top pane that is already
+    /// the sole selection (second click, no text drag). Posts a direct-scroll
+    /// notification with allowsHorizontalScroll: true so the viewer starts the
+    /// smooth horizontal auto-scroll for lines wider than the visible pane.
+    func triggerTopPaneRepeatedSelection(_ lineIndex: Int) {
+        guard let tabID = selectedTabID,
+              let tabIdx = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        let totalCount = openTabs[tabIdx].lineCount
+        guard totalCount > 0 else { return }
+        let fraction = CGFloat(lineIndex) / CGFloat(max(1, totalCount - 1))
+        openTabs[tabIdx].selectedFraction = max(0, min(1, fraction))
+        NotificationCenter.default.post(
+            name: topPaneDirectScrollNotification,
+            object: TopPaneDirectScrollRequest(
+                lineIndex: lineIndex,
+                allowsHorizontalScroll: true
+            )
+        )
+    }
+
     // MARK: - Session Persistence
 
     private func saveLoadedTabsSession() {
@@ -804,6 +850,8 @@ class LogViewModel: ObservableObject {
             let filterPattern: String
             let isSelected: Bool
             let markedIndices: [Int]?
+            let isCaseInsensitive: Bool?
+            let followTail: Bool?
         }
         var serializedMetadata: [SavedTabMetadata] = []
         for tab in openTabs {
@@ -819,7 +867,9 @@ class LogViewModel: ObservableObject {
                     bookmarkBase64: bm.base64EncodedString(),
                     filterPattern: tab.filterPattern,
                     isSelected: tab.id == selectedTabID,
-                    markedIndices: Array(tab.markedIndices)
+                    markedIndices: Array(tab.markedIndices),
+                    isCaseInsensitive: tab.isCaseInsensitive,
+                    followTail: tab.followTail
                 ))
             } catch { print("Failed to save bookmark for \(tab.name): \(error)") }
         }
@@ -838,6 +888,8 @@ class LogViewModel: ObservableObject {
             let filterPattern: String
             let isSelected: Bool?   // nil for entries saved before this field existed
             let markedIndices: [Int]?
+            let isCaseInsensitive: Bool?
+            let followTail: Bool?
         }
         guard !sessionBookmarksData.isEmpty,
               let data = sessionBookmarksData.data(using: .utf8),
@@ -879,7 +931,9 @@ class LogViewModel: ObservableObject {
                     selectedFraction: nil,
                     minimapImage: nil,
                     isCurrentlyStreaming: false,
-                    filterPattern: metadata.filterPattern
+                    filterPattern: metadata.filterPattern,
+                    isCaseInsensitive: metadata.isCaseInsensitive ?? true,
+                    followTail: metadata.followTail ?? true
                 )
                 openTabs.append(lazyTab)
 

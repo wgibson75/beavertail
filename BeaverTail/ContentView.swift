@@ -343,6 +343,7 @@ private struct TopPaneView: View {
                 markedIndices: viewModel.currentTab?.markedIndices ?? [],
                 isMinimapActiveDrive: viewModel.isScrubbingMinimap,
                 onLineIndexSelected: { viewModel.updateMinimapFromLineIndex($0) },
+                onRepeatedPlainClick: { viewModel.triggerTopPaneRepeatedSelection($0) },
                 onToggleMark: { viewModel.toggleMarks($0) },
                 onClearAllMarks: { viewModel.clearAllMarks() }
             ).id(viewModel.selectedTabID?.uuidString ?? "top")
@@ -533,6 +534,7 @@ private struct BottomPaneView: View {
                             fontSize: viewModel.fontSize,
                             markedIndices: viewModel.currentTab?.markedIndices ?? [],
                             onLineIndexSelected: { viewModel.syncSelectionFromFilteredIndex($0) },
+                            onRepeatedPlainClick: { viewModel.syncSelectionFromFilteredIndex($0) },
                             onToggleMark: { viewModel.toggleMarks($0) },
                             onClearAllMarks: { viewModel.clearAllMarks() }
                         )

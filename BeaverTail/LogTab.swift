@@ -27,6 +27,10 @@ struct LogTab: Identifiable, Equatable, Codable {
 
     var selectedFraction: CGFloat?
     var filterPattern: String = ""
+    /// Per-tab filter case-insensitivity (Aa toggle). Default: case-insensitive.
+    var isCaseInsensitive: Bool = true
+    /// Per-tab auto-follow of new log lines (Follow toggle). Default: on.
+    var followTail: Bool = true
 
     var minimapImage: NSImage?
     var timelineImage: NSImage?
@@ -79,7 +83,9 @@ struct LogTab: Identifiable, Equatable, Codable {
         timelineActiveRuleIDs: [UUID] = [],
         isGeneratingTimeline: Bool = false,
         isCurrentlyStreaming: Bool = false,
-        filterPattern: String = ""
+        filterPattern: String = "",
+        isCaseInsensitive: Bool = true,
+        followTail: Bool = true
     ) {
         self.id = id
         self.name = name
@@ -98,10 +104,12 @@ struct LogTab: Identifiable, Equatable, Codable {
         self.isGeneratingTimeline = isGeneratingTimeline
         self.isCurrentlyStreaming = isCurrentlyStreaming
         self.filterPattern = filterPattern
+        self.isCaseInsensitive = isCaseInsensitive
+        self.followTail = followTail
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, fileURL, filterPattern, markedIndices
+        case id, name, fileURL, filterPattern, markedIndices, isCaseInsensitive, followTail
     }
 
     init(from decoder: Decoder) throws {
@@ -111,6 +119,8 @@ struct LogTab: Identifiable, Equatable, Codable {
         fileURL = try container.decode(URL.self, forKey: .fileURL)
         filterPattern = try container.decode(String.self, forKey: .filterPattern)
         markedIndices = (try? container.decode(Set<Int>.self, forKey: .markedIndices)) ?? []
+        isCaseInsensitive = (try? container.decode(Bool.self, forKey: .isCaseInsensitive)) ?? true
+        followTail = (try? container.decode(Bool.self, forKey: .followTail)) ?? true
         content = nil
         statusLines = []
         filteredIndices = []
@@ -132,6 +142,8 @@ struct LogTab: Identifiable, Equatable, Codable {
         try container.encode(fileURL, forKey: .fileURL)
         try container.encode(filterPattern, forKey: .filterPattern)
         try container.encode(markedIndices, forKey: .markedIndices)
+        try container.encode(isCaseInsensitive, forKey: .isCaseInsensitive)
+        try container.encode(followTail, forKey: .followTail)
     }
 
     static func == (lhs: LogTab, rhs: LogTab) -> Bool {

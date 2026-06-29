@@ -169,27 +169,27 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
         clipView.setBoundsOrigin(NSPoint(x: nextX, y: clipView.bounds.origin.y))
     }
 
-    // Detect a plain click on the row that is already the sole selection.
-    // The log cell text fields are non-selectable and let clicks fall through
-    // to the table view, so this is the single, reliable place to detect a
-    // "click again" and trigger repeated-selection behaviour (e.g. horizontal
-    // auto-scroll of a long selected line in the top pane).
+    // Detect a plain repeated click for the bottom pane (whose cells forward
+    // mouseDown here). Top-pane repeated-click detection lives in LogTextField
+    // because selectable text fields consume the event before it reaches here.
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         let clickedRow = row(at: point)
-        let isPlainClick = !event.modifierFlags.contains(.command)
-            && !event.modifierFlags.contains(.shift)
-        let wasRepeatSelection = isPlainClick
+        let isPlainClick = event.modifierFlags
+            .intersection([.command, .shift, .option, .control]).isEmpty
+        let wasAlreadySoleSelection = isPlainClick
             && clickedRow >= 0
             && selectedRowIndexes.count == 1
             && selectedRow == clickedRow
 
         super.mouseDown(with: event)
 
-        if wasRepeatSelection,
-           let coordinator = delegate as? NativeLogViewer.Coordinator {
-            coordinator.onLineIndexSelected?(coordinator.provider.originalIndex(at: clickedRow))
-        }
+        guard wasAlreadySoleSelection
+            && selectedRowIndexes.count == 1
+            && selectedRow == clickedRow,
+            let coordinator = delegate as? NativeLogViewer.Coordinator else { return }
+
+        coordinator.onRepeatedPlainClick?(coordinator.provider.originalIndex(at: clickedRow))
     }
 
     // Right-click → context menu
@@ -380,50 +380,137 @@ private final class LogRowView: NSTableRowView {
 }
 
 private class LogTextField: NSTextField {
-    override func mouseDown(with event: NSEvent) {
-        // Cells are non-selectable. If a click is ever delivered here, forward
-        // it to the enclosing table view, which owns row selection and the
-        // repeated-click detection (a single source of truth avoids double
-        // handling / double-firing of the repeated-selection callback).
-        var responder: NSResponder? = self.nextResponder
-        while responder != nil {
-            if let tableView = responder as? NSTableView {
-                tableView.mouseDown(with: event)
-                return
-            }
-            responder = responder?.nextResponder
+    /// When true (top pane only) this cell supports in-line text selection so
+    /// the user can drag to highlight a portion of the line and copy it.
+    /// When false (bottom pane) all clicks are forwarded to the table view for
+    /// row-level selection / jump behaviour.
+    var allowsTextSelection: Bool = false
+
+    private func enclosingTableView() -> NSTableView? {
+        var r: NSResponder? = nextResponder
+        while let current = r {
+            if let tv = current as? NSTableView { return tv }
+            r = current.nextResponder
         }
-        super.mouseDown(with: event)
+        return nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if allowsTextSelection {
+            // ── Pre-super check: pause an active scroll immediately ──────────
+            // If the row is currently scrolling, intercept the click BEFORE
+            // calling super. NSTextField.mouseDown places a cursor which triggers
+            // scrollRangeToVisible on the enclosing scroll view, resetting the
+            // horizontal position and preventing the pause from working cleanly.
+            if let logTV = enclosingTableView() as? LogTableView {
+                let pt = logTV.convert(event.locationInWindow, from: nil)
+                let clickedRow = logTV.row(at: pt)
+                let isPlainClick = event.modifierFlags
+                    .intersection([.command, .shift, .option, .control]).isEmpty
+                let isSoleSelection = isPlainClick
+                    && clickedRow >= 0
+                    && logTV.selectedRowIndexes.count == 1
+                    && logTV.selectedRow == clickedRow
+                if isSoleSelection && logTV.isHorizontallyScrolling(row: clickedRow) {
+                    // Pause: stop the scroll without calling super so the cursor
+                    // and scroll position are not disturbed.
+                    logTV.stopHorizontalScroll()
+                    logTV.flushDeferredReloadIfNeeded()
+                    return
+                }
+            }
+
+            // ── Normal path: detect repeated plain click for resume/start ────
+            var wasRepeatedClick = false
+            var clickedRow = -1
+            if let tv = enclosingTableView() {
+                let pt = tv.convert(event.locationInWindow, from: nil)
+                clickedRow = tv.row(at: pt)
+                let isPlainClick = event.modifierFlags
+                    .intersection([.command, .shift, .option, .control]).isEmpty
+                wasRepeatedClick = isPlainClick
+                    && clickedRow >= 0
+                    && tv.selectedRowIndexes.count == 1
+                    && tv.selectedRow == clickedRow
+            }
+
+            // Let NSTextField handle the event (installs field editor, tracks
+            // drag-to-select). This call blocks until mouseUp.
+            super.mouseDown(with: event)
+
+            // After super returns the full interaction is done. If this was a
+            // repeated click, check whether the user dragged to select text.
+            // Only fire onRepeatedPlainClick when no text was selected (plain click).
+            if wasRepeatedClick,
+               let logTV = enclosingTableView() as? LogTableView,
+               let coordinator = logTV.delegate as? NativeLogViewer.Coordinator {
+                let userDraggedText = (currentEditor() as? NSTextView)
+                    .map { $0.selectedRange().length > 0 } ?? false
+                if !userDraggedText, clickedRow >= 0 {
+                    coordinator.onRepeatedPlainClick?(
+                        coordinator.provider.originalIndex(at: clickedRow)
+                    )
+                }
+            }
+        } else {
+            // Bottom pane: forward to the table so row selection / repeated-click
+            // detection (horizontal auto-scroll) works reliably.
+            if let tv = enclosingTableView() {
+                tv.mouseDown(with: event)
+            } else {
+                super.mouseDown(with: event)
+            }
+        }
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        var responder: NSResponder? = self.nextResponder
-        while responder != nil {
-            if let tableView = responder as? NSTableView {
-                let point = tableView.convert(event.locationInWindow, from: nil)
-                let row = tableView.row(at: point)
-                if row >= 0 && !tableView.selectedRowIndexes.contains(row) {
-                    tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-                }
-                break
+        // For both panes: ensure the right-clicked row is selected before the
+        // context menu is built.
+        if let tv = enclosingTableView() {
+            let point = tv.convert(event.locationInWindow, from: nil)
+            let row = tv.row(at: point)
+            if row >= 0 && !tv.selectedRowIndexes.contains(row) {
+                tv.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
             }
-            responder = responder?.nextResponder
         }
-        super.rightMouseDown(with: event)
+        // Explicitly pop up our own menu rather than calling super, which would
+        // route through the field editor and show the system text menu instead.
+        if let menu = self.menu(for: event) {
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+        } else {
+            super.rightMouseDown(with: event)
+        }
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        // Always present the enclosing table view's custom context menu
-        // (Copy / Toggle Mark / Clear All Marks) rather than the standard
-        // NSTextField text-editing menu.
-        var responder: NSResponder? = self.nextResponder
-        while responder != nil {
-            if let tableView = responder as? NSTableView {
-                return tableView.menu(for: event)
+        guard let tv = enclosingTableView() else { return super.menu(for: event) }
+        let tableMenu = tv.menu(for: event)
+
+        if allowsTextSelection,
+           let editor = currentEditor() as? NSTextView,
+           editor.selectedRange().length > 0 {
+            // Text is selected — offer "Copy" for the selection first, then
+            // the row-level items (Toggle Mark, Clear All Marks) below.
+            let menu = NSMenu()
+            let copySelItem = NSMenuItem(
+                title: "Copy Selection",
+                action: #selector(NSText.copy(_:)),
+                keyEquivalent: ""
+            )
+            menu.addItem(copySelItem)
+            if let tableMenu {
+                menu.addItem(NSMenuItem.separator())
+                for item in tableMenu.items {
+                    if let copy = item.copy() as? NSMenuItem {
+                        menu.addItem(copy)
+                    }
+                }
             }
-            responder = responder?.nextResponder
+            return menu
         }
-        return super.menu(for: event)
+
+        // No text selection (or bottom pane) — show the row-level table menu.
+        return tableMenu ?? super.menu(for: event)
     }
 }
 
@@ -446,6 +533,7 @@ struct NativeLogViewer: NSViewRepresentable {
     // THE CURE: Flag that ensures the minimap fraction ONLY overrides scroll positioning during active click-scrubbing
     let isMinimapActiveDrive: Bool
     var onLineIndexSelected: ((Int) -> Void)?
+    var onRepeatedPlainClick: ((Int) -> Void)?
 
     /// Initializer for the Top Pane (Full Unfiltered Log View)
     init(
@@ -455,6 +543,7 @@ struct NativeLogViewer: NSViewRepresentable {
         fontSize: CGFloat = 12,
         markedIndices: Set<Int> = [],
         isMinimapActiveDrive: Bool, onLineIndexSelected: @escaping (Int) -> Void,
+        onRepeatedPlainClick: ((Int) -> Void)? = nil,
         onToggleMark: ((Set<Int>) -> Void)? = nil,
         onClearAllMarks: (() -> Void)? = nil
     ) {
@@ -470,6 +559,7 @@ struct NativeLogViewer: NSViewRepresentable {
         self.markedIndices = markedIndices
         self.isMinimapActiveDrive = isMinimapActiveDrive
         self.onLineIndexSelected = onLineIndexSelected
+        self.onRepeatedPlainClick = onRepeatedPlainClick
         self.onToggleMark = onToggleMark
         self.onClearAllMarks = onClearAllMarks
     }
@@ -481,6 +571,7 @@ struct NativeLogViewer: NSViewRepresentable {
         showLineNumbers: Bool, fontSize: CGFloat = 12,
         markedIndices: Set<Int> = [],
         onLineIndexSelected: @escaping (Int) -> Void,
+        onRepeatedPlainClick: ((Int) -> Void)? = nil,
         onToggleMark: ((Set<Int>) -> Void)? = nil,
         onClearAllMarks: (() -> Void)? = nil
     ) {
@@ -496,6 +587,7 @@ struct NativeLogViewer: NSViewRepresentable {
         self.markedIndices = markedIndices
         isMinimapActiveDrive = false // Bottom pane is never driven by minimap scrubbing
         self.onLineIndexSelected = onLineIndexSelected
+        self.onRepeatedPlainClick = onRepeatedPlainClick
         self.onToggleMark = onToggleMark
         self.onClearAllMarks = onClearAllMarks
     }
@@ -559,6 +651,24 @@ struct NativeLogViewer: NSViewRepresentable {
                 }
 
                 if let row = requestedRow, row >= 0 && row < tableView.numberOfRows {
+
+                    // ── Fast path: pure scroll pause/resume toggle ──────────────
+                    // When an explicit horizontal-scroll request arrives for a row
+                    // that is already actively scrolling, just toggle the scroll
+                    // state without doing any select / scrollRowToVisible work.
+                    // scrollRowToVisible resets the clip view's x origin to 0,
+                    // which would visibly jump the line back to the start and
+                    // prevent the pause from working correctly.
+                    if explicitHorizontalScroll == true {
+                        if tableView.isHorizontallyScrolling(row: row) {
+                            // Third click (or any odd click after scroll started) → pause
+                            tableView.stopHorizontalScroll()
+                            tableView.flushDeferredReloadIfNeeded()
+                            return
+                        }
+                        // Even click after a pause → fall through to resume path below
+                    }
+
                     DispatchQueue.main.async {
                         let isRepeatedClick = explicitHorizontalScroll ?? (tableView.selectedRow == row && tableView.selectedRowIndexes.count == 1)
                         tableView.selectRowIndexes(
@@ -669,6 +779,7 @@ struct NativeLogViewer: NSViewRepresentable {
         context.coordinator.fontSize = fontSize
         context.coordinator.markedIndices = markedIndices
         context.coordinator.onLineIndexSelected = onLineIndexSelected
+        context.coordinator.onRepeatedPlainClick = onRepeatedPlainClick
         context.coordinator.onToggleMark = onToggleMark
         context.coordinator.onClearAllMarks = onClearAllMarks
 
@@ -716,6 +827,10 @@ struct NativeLogViewer: NSViewRepresentable {
         var fontSize: CGFloat = 12
         var markedIndices: Set<Int> = []
         var onLineIndexSelected: ((Int) -> Void)?
+        /// Fires only on a plain second click with no text drag — used to trigger
+        /// horizontal auto-scroll of long lines (top pane) or jump re-selection
+        /// (bottom pane) without interfering with text-selection drags.
+        var onRepeatedPlainClick: ((Int) -> Void)?
         var onToggleMark: ((Set<Int>) -> Void)?
         var onClearAllMarks: (() -> Void)?
 
@@ -881,11 +996,13 @@ struct NativeLogViewer: NSViewRepresentable {
 
                 let text = LogTextField()
                 text.isEditable = false
-                // Selection is handled at the row level. A selectable NSTextField
-                // installs a field editor that hijacks right-clicks and shows the
-                // standard system text menu instead of our custom context menu, so
-                // selection is disabled to guarantee the app's menu is shown.
-                text.isSelectable = false
+                // Top-pane cells allow text selection so the user can drag to
+                // highlight a portion of a line and copy it (⌘C or right-click
+                // "Copy Selection"). Bottom-pane cells keep selection disabled so
+                // all clicks reach the table view for row-level jump behaviour.
+                let topPane = !isFiltered
+                text.isSelectable = topPane
+                text.allowsTextSelection = topPane
                 text.delegate = self
                 text.isBordered = false
                 text.backgroundColor = .clear
@@ -896,6 +1013,10 @@ struct NativeLogViewer: NSViewRepresentable {
                 textField = text
             } else {
                 textField = containerCell?.subviews.first as? LogTextField
+                // Keep selectable flag in sync on recycled cells
+                let topPane = !isFiltered
+                textField?.isSelectable = topPane
+                textField?.allowsTextSelection = topPane
             }
 
             // Refresh font and frame so size changes apply to recycled cells
