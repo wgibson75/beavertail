@@ -1147,8 +1147,10 @@ class LogViewModel: ObservableObject {
         if !incrementalMatches.isEmpty {
             openTabs[tabIndex].filteredIndices.append(contentsOf: incrementalMatches)
             updateDisplayedIndices(for: tabIndex)
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
+            if followTail {
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
+                }
             }
         }
     }
