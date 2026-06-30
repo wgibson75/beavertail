@@ -4,4 +4,4 @@
 
 ![Screenshot](screenshot2.png)
 
-Download the latest [Installer Disk Image](https://github.com/wgibson75/beavertail/releases/download/v1.2.4/BeaverTail.dmg) for Apple Silicon.
+Download the latest [Installer Disk Image](https://github.com/wgibson75/beavertail/releases/download/v1.2.5/BeaverTail.dmg) for Apple Silicon.
