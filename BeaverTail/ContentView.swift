@@ -573,14 +573,31 @@ private struct FilterBarView: View {
                 Text("Filter")
                     .font(.body)
                     .foregroundStyle(.secondary)
-                Picker("", selection: $viewModel.filterDisplayMode) {
-                    ForEach(FilterDisplayMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
+                if viewModel.currentTabHasMarks {
+                    Picker("", selection: $viewModel.filterDisplayMode) {
+                        ForEach(FilterDisplayMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
                     }
+                    .pickerStyle(.menu)
+                    .frame(width: 155)
+                    .help("Choose what to display in the bottom pane")
+                    .transition(
+                        .asymmetric(
+                            insertion: .move(edge: .leading).combined(with: .opacity),
+                            removal:   .move(edge: .leading).combined(with: .opacity)
+                        )
+                    )
                 }
-                .pickerStyle(.menu)
-                .frame(width: 155)
-                .help("Choose what to display in the bottom pane")
+            }
+            .clipped()
+            .animation(.spring(response: 0.35, dampingFraction: 0.72), value: viewModel.currentTabHasMarks)
+            .onChange(of: viewModel.currentTabHasMarks) { _, hasMarks in
+                if hasMarks {
+                    viewModel.filterDisplayMode = .marksAndMatches
+                } else if viewModel.filterDisplayMode == .marks || viewModel.filterDisplayMode == .marksAndMatches {
+                    viewModel.filterDisplayMode = .matches
+                }
             }
             
             RegexTextField(

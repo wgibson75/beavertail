@@ -19,7 +19,7 @@ struct HelpView: View {
             Divider()
 
             // ── Content ──
-            ScrollView {
+            ScrollView { 
                 VStack(alignment: .leading, spacing: 20) {
                     ForEach(helpSections) { section in
                         VStack(alignment: .leading, spacing: 8) {

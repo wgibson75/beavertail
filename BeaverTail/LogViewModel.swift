@@ -116,6 +116,7 @@ class LogViewModel: ObservableObject {
     @Published var isSystemDark: Bool = true
     
     var currentTab: LogTab? { openTabs.first { $0.id == selectedTabID } }
+    var currentTabHasMarks: Bool { (currentTab?.markedIndices.isEmpty == false) }
 
     var filterDisplayMode: FilterDisplayMode {
         get { FilterDisplayMode(rawValue: filterDisplayModeRaw) ?? .marksAndMatches }
