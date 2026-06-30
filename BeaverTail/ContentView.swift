@@ -13,7 +13,7 @@ struct ContentView: View {
     @Environment(\.dismissWindow) private var dismissWindow
     @State private var showHelp = false
     @State private var showFilterDropdown = false
-    @State private var draggingTabID: UUID? = nil
+    @State private var draggingTabID: UUID?
     @State private var isFileDropTargeted = false
 
     var body: some View {
@@ -361,13 +361,13 @@ private struct TimelinePaneView: View {
         VStack(spacing: 0) {
             FilterBarView(viewModel: viewModel, showFilterDropdown: $showFilterDropdown)
             Divider()
-            
+
             ZStack(alignment: .topLeading) {
                 VStack(spacing: 0) {
                     let allActiveRules = viewModel.highlightRules.filter { $0.compiledRegex != nil }
                     let displayedRuleIDs = viewModel.currentTab?.timelineActiveRuleIDs ?? []
                     let activeRules = allActiveRules.filter { displayedRuleIDs.contains($0.id) }
-                    
+
                     let hasMarks = !(viewModel.currentTab?.markedIndices.isEmpty ?? true)
                     if !activeRules.isEmpty || hasMarks {
                         HStack(spacing: 0) {
@@ -403,7 +403,7 @@ private struct TimelinePaneView: View {
                                         .frame(height: max(geometry.size.height, image.size.height))
                                         .opacity(viewModel.currentTab?.isGeneratingTimeline == true ? 0.3 : 1.0)
                                         .overlay {
-                                            GeometryReader { overlayGeom in
+                                            GeometryReader { _ in
                                                 HStack(spacing: 0) {
                                                     if hasMarks {
                                                         Color.clear
@@ -413,11 +413,14 @@ private struct TimelinePaneView: View {
                                                             .gesture(
                                                                 DragGesture(minimumDistance: 0, coordinateSpace: .local)
                                                                     .onEnded { value in
-                                                                        viewModel.jumpFromTimeline(fraction: value.location.y / max(geometry.size.height, image.size.height), ruleIndex: -1)
+                                                                        let fraction = value.location.y
+                                                                            / max(geometry.size.height, image.size.height)
+                                                                        viewModel.jumpFromTimeline(
+                                                                            fraction: fraction, ruleIndex: -1)
                                                                     }
                                                             )
                                                     }
-                                                    ForEach(Array(activeRules.enumerated()), id: \.element.id) { index, rule in
+                    ForEach(Array(activeRules.enumerated()), id: \.element.id) { index, rule in
                                                         Color.clear
                                                             .frame(maxWidth: .infinity)
                                                             .contentShape(Rectangle())
@@ -425,7 +428,10 @@ private struct TimelinePaneView: View {
                                                             .gesture(
                                                                 DragGesture(minimumDistance: 0, coordinateSpace: .local)
                                                                     .onEnded { value in
-                                                                        viewModel.jumpFromTimeline(fraction: value.location.y / max(geometry.size.height, image.size.height), ruleIndex: index)
+                                                                        let fraction = value.location.y
+                                                                            / max(geometry.size.height, image.size.height)
+                                                                        viewModel.jumpFromTimeline(
+                                                                            fraction: fraction, ruleIndex: index)
                                                                     }
                                                             )
                                                     }
@@ -472,7 +478,7 @@ private struct TimelinePaneView: View {
                         }
                     }
                 }
-                
+
                 if showFilterDropdown && !viewModel.filterHistory.isEmpty {
                     FilterHistoryDropdown(
                         history: viewModel.filterHistory,
@@ -513,7 +519,9 @@ private struct BottomPaneView: View {
                             .padding(.vertical, 2)
                     }
                     Divider()
-                    if viewModel.filteredCount == 0 && !viewModel.isFiltering && viewModel.currentFilterPattern.isEmpty {
+                    if viewModel.filteredCount == 0
+                        && !viewModel.isFiltering
+                        && viewModel.currentFilterPattern.isEmpty {
                         VStack(spacing: 8) {
                             Image(systemName: "magnifyingglass")
                                 .font(.system(size: 28))
@@ -569,11 +577,14 @@ private struct FilterBarView: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            // "Filter" label + marks dropdown + nav buttons — all in one animated row
             HStack(spacing: 4) {
                 Text("Filter")
                     .font(.body)
                     .foregroundStyle(.secondary)
+
                 if viewModel.currentTabHasMarks {
+                    // Picker: slides in from the left on appearance; pops+fades on removal
                     Picker("", selection: $viewModel.filterDisplayMode) {
                         ForEach(FilterDisplayMode.allCases) { mode in
                             Text(mode.rawValue).tag(mode)
@@ -585,11 +596,11 @@ private struct FilterBarView: View {
                     .transition(
                         .asymmetric(
                             insertion: .move(edge: .leading).combined(with: .opacity),
-                            removal:   .move(edge: .leading).combined(with: .opacity)
+                            removal: .scale(scale: 1.25).combined(with: .opacity)
                         )
                     )
 
-                    // Previous / Next mark-block navigation — only when marks are visible
+                    // Previous / Next mark-block navigation
                     if viewModel.filterDisplayMode != .matches {
                         HStack(spacing: 2) {
                             Button(action: { viewModel.navigateToPreviousMarkBlock() }) {
@@ -609,13 +620,13 @@ private struct FilterBarView: View {
                         .transition(
                             .asymmetric(
                                 insertion: .move(edge: .leading).combined(with: .opacity),
-                                removal:   .move(edge: .leading).combined(with: .opacity)
+                                removal: .scale(scale: 1.25).combined(with: .opacity)
                             )
                         )
                     }
                 }
             }
-            .clipped()
+            // Do NOT clip — clipping prevents the scale-up pop from being visible
             .animation(.spring(response: 0.35, dampingFraction: 0.72), value: viewModel.currentTabHasMarks)
             .animation(.spring(response: 0.35, dampingFraction: 0.72), value: viewModel.filterDisplayMode)
             .onChange(of: viewModel.currentTabHasMarks) { _, hasMarks in
@@ -625,7 +636,9 @@ private struct FilterBarView: View {
                     viewModel.filterDisplayMode = .matches
                 }
             }
-            
+
+            // Regex field — animated so it slides left to fill the gap when the
+            // dropdown vanishes, and slides right when the dropdown appears.
             RegexTextField(
                 text: $viewModel.currentFilterPattern,
                 placeholder: "Regex pattern…",
@@ -644,6 +657,9 @@ private struct FilterBarView: View {
                     NSApp.keyWindow?.makeFirstResponder(nil)
                 }
             )
+            // Animate the field's position so it slides left to fill the space
+            // freed by the vanishing dropdown, and slides right when it reappears.
+            .animation(.spring(response: 0.42, dampingFraction: 0.78), value: viewModel.currentTabHasMarks)
             Toggle("Aa", isOn: Binding(
                 get: { !viewModel.isCaseInsensitive },
                 set: { caseSensitive in

@@ -116,7 +116,7 @@ class LogViewModel: ObservableObject {
     private var isSyncingTabState: Bool = false
 
     @Published var isSystemDark: Bool = true
-    
+
     var currentTab: LogTab? { openTabs.first { $0.id == selectedTabID } }
     var currentTabHasMarks: Bool { (currentTab?.markedIndices.isEmpty == false) }
 
@@ -155,9 +155,7 @@ class LogViewModel: ObservableObject {
         while lo <= hi {
             let mid = (lo + hi) / 2
             let v = tab.displayedIndices[mid]
-            if v == origIdx { return mid }
-            else if v < origIdx { lo = mid + 1 }
-            else { hi = mid - 1 }
+            if v == origIdx { return mid } else if v < origIdx { lo = mid + 1 } else { hi = mid - 1 }
         }
         return nil
     }
@@ -196,7 +194,7 @@ class LogViewModel: ObservableObject {
 
     /// Tracks the original file line index last navigated to so next/previous can
     /// advance correctly.
-    private var _lastPostedOriginalIndex: Int? = nil
+    private var _lastPostedOriginalIndex: Int?
 
     var filterDisplayMode: FilterDisplayMode {
         get { FilterDisplayMode(rawValue: filterDisplayModeRaw) ?? .marksAndMatches }
@@ -267,7 +265,7 @@ class LogViewModel: ObservableObject {
         let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
         let totalSize = (attr?[.size] as? Int) ?? 1
         let progress = ScanProgress(total: totalSize)
-        
+
         fileLoadTimer?.invalidate()
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             guard let self = self else { return }
@@ -368,11 +366,11 @@ class LogViewModel: ObservableObject {
         case .marksAndMatches:
             let sortedMarks = Array(tab.markedIndices).sorted()
             let filtered = tab.filteredIndices
-            
+
             // filteredIndices is already sorted. Merge it with sortedMarks in O(N) without Set allocations.
             var merged = [Int]()
             merged.reserveCapacity(filtered.count + sortedMarks.count)
-            
+
             var i = 0
             var j = 0
             while i < filtered.count && j < sortedMarks.count {
@@ -390,7 +388,7 @@ class LogViewModel: ObservableObject {
             }
             while i < filtered.count { merged.append(filtered[i]); i += 1 }
             while j < sortedMarks.count { merged.append(sortedMarks[j]); j += 1 }
-            
+
             openTabs[tabIndex].displayedIndices = merged
         }
     }
@@ -482,7 +480,7 @@ class LogViewModel: ObservableObject {
                     }
                 }
             }
-            
+
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000
             let modeDesc: String
             switch matcher {
@@ -490,10 +488,14 @@ class LogViewModel: ObservableObject {
             case .literalInsensitiveASCII: modeDesc = "literal (case-insensitive byte scan)"
             case .multiLiteralSensitive: modeDesc = "multi-literal (case-sensitive byte scan)"
             case .multiLiteralInsensitiveASCII: modeDesc = "multi-literal (case-insensitive byte scan)"
-            case .regex(_, let pfs, _): modeDesc = pfs.isEmpty ? "REGEX (no pre-filter — full engine on every line)" : "regex + pre-filter [\(pfs.map { String(decoding: $0, as: UTF8.self) }.joined(separator: ", "))]"
+            case .regex(_, let pfs, _):
+                let prefilterDesc = pfs.isEmpty
+                    ? "REGEX (no pre-filter — full engine on every line)"
+                    : "regex + pre-filter [\(pfs.map { String(decoding: $0, as: UTF8.self) }.joined(separator: ", "))]"
+                modeDesc = prefilterDesc
             }
             print("BeaverTail filter: \(modeDesc) — \(content.count) lines in \(String(format: "%.0f", ms)) ms, \(finalCount) matches")
-            
+
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard gen == self.filterGeneration else { return }
@@ -540,15 +542,15 @@ class LogViewModel: ObservableObject {
                 let bucketStart = Int(Double(bucket) * Double(totalLines) / Double(imgHeight))
                 if bucketStart >= totalLines { break }
                 let bucketEnd = bucket == imgHeight - 1 ? totalLines : Int(Double(bucket + 1) * Double(totalLines) / Double(imgHeight))
-                
+
                 let linesInBucket = bucketEnd - bucketStart
                 if linesInBucket <= 0 { continue }
-                
+
                 let maxSamples = min(linesInBucket, 30)
                 let step = max(1, linesInBucket / maxSamples)
 
                 var matchCount = 0, totalSampled = 0
-                var matchColor: CGColor? = nil
+                var matchColor: CGColor?
 
                 var lineIdx = bucketStart
                 while lineIdx < bucketEnd {
@@ -593,11 +595,11 @@ class LogViewModel: ObservableObject {
     func generateTimelineData(for tabID: UUID) {
         timelineTasks[tabID]?.cancel()
         guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-        
+
         DispatchQueue.main.async { [weak self] in
             self?.openTabs[index].isGeneratingTimeline = true
         }
-        
+
         let activeRules = highlightRules.filter { $0.compiledRegex != nil }
         let isFiltered = !openTabs[index].filterPattern.isEmpty
         let filteredIndices = openTabs[index].filteredIndices
@@ -608,7 +610,7 @@ class LogViewModel: ObservableObject {
         let markCGColor = isDark ? CGColor(red: 1, green: 1, blue: 1, alpha: 1) : CGColor(red: 0, green: 0, blue: 0, alpha: 1)
 
         let filterValid = !isFiltered || !filteredIndices.isEmpty
-        guard let content = openTabs[index].content, content.count > 0, (!activeRules.isEmpty || hasMarks), (filterValid || hasMarks) else {
+        guard let content = openTabs[index].content, content.count > 0, !activeRules.isEmpty || hasMarks, filterValid || hasMarks else {
             DispatchQueue.main.async { [weak self] in
                 self?.openTabs[index].timelineImage = nil
                 self?.openTabs[index].isGeneratingTimeline = false
@@ -646,7 +648,7 @@ class LogViewModel: ObservableObject {
                 let bucketStart = Int(Double(bucket) * Double(logTotalLines) / Double(imgHeight))
                 if bucketStart >= logTotalLines { break }
                 let bucketEnd = bucket == imgHeight - 1 ? logTotalLines : Int(Double(bucket + 1) * Double(logTotalLines) / Double(imgHeight))
-                
+
                 var bucketIndices: [Int] = []
                 if isFiltered {
                     let lower = bSearch(filteredIndices, bucketStart)
@@ -655,16 +657,16 @@ class LogViewModel: ObservableObject {
                         bucketIndices = Array(filteredIndices[lower..<upper])
                     }
                 }
-                
+
                 let countInBucket = isFiltered ? bucketIndices.count : (bucketEnd - bucketStart)
                 if countInBucket == 0 { continue }
-                
+
                 let maxSamples = min(countInBucket, 30)
                 let step = max(1, countInBucket / max(1, maxSamples))
 
                 var matchCounts = [Int](repeating: 0, count: captures.count)
                 var totalSampled = 0
-                
+
                 var idx = 0
                 while idx < maxSamples {
                     let lineIdx: Int
@@ -675,7 +677,7 @@ class LogViewModel: ObservableObject {
                         lineIdx = bucketStart + idx * step
                         if lineIdx >= bucketEnd { break }
                     }
-                    
+
                     let line = content.line(at: lineIdx)
                     let range = NSRange(location: 0, length: line.utf16.count)
                     for (i, capture) in captures.enumerated() {
@@ -689,7 +691,7 @@ class LogViewModel: ObservableObject {
                     totalSampled += 1
                     idx += 1
                 }
-                
+
                 bucketMatchCounts[bucket] = matchCounts
                 bucketSampledCounts[bucket] = totalSampled
             }
@@ -715,7 +717,7 @@ class LogViewModel: ObservableObject {
 
             ctx.translateBy(x: 0, y: CGFloat(imgHeight))
             ctx.scaleBy(x: 1.0, y: -1.0)
-            
+
             var finalMatchesToSave: [[Int]] = []
             if hasMarks {
                 finalMatchesToSave.append(sortedMarks)
@@ -723,7 +725,7 @@ class LogViewModel: ObservableObject {
             for i in displayedRuleIndices {
                 finalMatchesToSave.append(newTimelineMatches[i])
             }
-            
+
             let activeRuleIDsThatMatched = displayedRuleIndices.map { activeRules[$0].id }
             let ruleOffset = hasMarks ? 1 : 0
 
@@ -748,7 +750,7 @@ class LogViewModel: ObservableObject {
             for bucket in 0..<imgHeight {
                 let totalSampled = bucketSampledCounts[bucket]
                 if totalSampled == 0 { continue }
-                
+
                 let counts = bucketMatchCounts[bucket]
                 for (dispIdx, originalIdx) in displayedRuleIndices.enumerated() {
                     let count = counts[originalIdx]
@@ -772,7 +774,7 @@ class LogViewModel: ObservableObject {
 
             guard !Task.isCancelled, let cgImage = ctx.makeImage() else { return }
             let bitmap = NSImage(cgImage: cgImage, size: NSSize(width: max(1, imgWidth), height: imgHeight))
-            
+
             let finalTimelineMatches = finalMatchesToSave
             await MainActor.run { [weak self] in
                 guard let self else { return }
@@ -796,12 +798,12 @@ class LogViewModel: ObservableObject {
         let totalCount = openTabs[index].lineCount
         guard totalCount > 0 else { return }
         guard openTabs[index].content != nil else { return }
-        
+
         let exactLine = Int(fraction * CGFloat(totalCount - 1))
-        
+
         let hasMarks = !openTabs[index].markedIndices.isEmpty
         let mappedRuleIndex = ruleIndex == -1 ? 0 : (hasMarks ? ruleIndex + 1 : ruleIndex)
-        
+
         let cachedMatches = openTabs[index].timelineMatches
         guard mappedRuleIndex >= 0, mappedRuleIndex < cachedMatches.count, !cachedMatches[mappedRuleIndex].isEmpty else {
             let finalFraction = max(0, min(1, CGFloat(exactLine) / CGFloat(totalCount - 1)))
@@ -809,19 +811,18 @@ class LogViewModel: ObservableObject {
             NotificationCenter.default.post(name: topPaneDirectScrollNotification, object: exactLine)
             return
         }
-        
+
         let ruleMatches = cachedMatches[mappedRuleIndex]
         var closestVal = ruleMatches[0]
         var minDiff = abs(ruleMatches[0] - exactLine)
-        
+
         var left = 0
         var right = ruleMatches.count
         while left < right {
             let mid = left + (right - left) / 2
-            if ruleMatches[mid] < exactLine { left = mid + 1 }
-            else { right = mid }
+            if ruleMatches[mid] < exactLine { left = mid + 1 } else { right = mid }
         }
-        
+
         if left < ruleMatches.count {
             let diff = abs(ruleMatches[left] - exactLine)
             if diff < minDiff {
@@ -835,9 +836,9 @@ class LogViewModel: ObservableObject {
                 closestVal = ruleMatches[left - 1]
             }
         }
-        
+
         let finalFraction = max(0, min(1, CGFloat(closestVal) / CGFloat(totalCount - 1)))
-        
+
         // We set scrubbing minimap to false because we want it to snap
         isScrubbingMinimap = false
         openTabs[index].selectedFraction = finalFraction
@@ -977,7 +978,7 @@ class LogViewModel: ObservableObject {
               let metadataArray = try? JSONDecoder().decode([SavedTabMetadata].self, from: data)
         else { return }
 
-        var restoredSelectedID: UUID? = nil
+        var restoredSelectedID: UUID?
 
         for metadata in metadataArray {
             guard let bookmarkData = Data(base64Encoded: metadata.bookmarkBase64) else { continue }
@@ -1047,7 +1048,7 @@ class LogViewModel: ObservableObject {
         let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
         let totalSize = (attr?[.size] as? Int) ?? 1
         let progress = ScanProgress(total: totalSize)
-        
+
         fileLoadTimer?.invalidate()
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             guard let self = self else { return }
@@ -1141,13 +1142,13 @@ class LogViewModel: ObservableObject {
         do {
             var isStale = false
             let url = try URL(resolvingBookmarkData: bookmarkData, options: [], relativeTo: nil, bookmarkDataIsStale: &isStale)
-            
+
             guard FileManager.default.fileExists(atPath: url.path) else {
                 recentFiles.removeAll { $0.bookmarkBase64 == recent.bookmarkBase64 }
                 saveRecentFiles()
                 return
             }
-            
+
             loadNewTab(from: url, isRecent: true)
         } catch {
             recentFiles.removeAll { $0.bookmarkBase64 == recent.bookmarkBase64 }

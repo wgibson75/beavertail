@@ -176,7 +176,7 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
         let point = convert(event.locationInWindow, from: nil)
         let clickedRow = row(at: point)
         let isPlainClick = event.modifierFlags
-            .intersection([.command, .shift, .option, .control]).isEmpty
+            .isDisjoint(with: [.command, .shift, .option, .control])
         let wasAlreadySoleSelection = isPlainClick
             && clickedRow >= 0
             && selectedRowIndexes.count == 1
@@ -209,23 +209,23 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
 
         let title = "Copy"
         let markTitle = rowsToAction.count == 1 ? "Toggle Mark" : "Toggle Mark for \(rowsToAction.count) Lines"
-        
+
         let menu = NSMenu()
         let copyItem = NSMenuItem(title: title, action: #selector(copyMenuAction(_:)), keyEquivalent: "")
         copyItem.target = self
         copyItem.representedObject = rowsToAction
         menu.addItem(copyItem)
-        
+
         let markItem = NSMenuItem(title: markTitle, action: #selector(markMenuAction(_:)), keyEquivalent: "")
         markItem.target = self
         markItem.representedObject = rowsToAction
         menu.addItem(markItem)
-        
+
         let clearAllMarksItem = NSMenuItem(title: "Clear All Marks", action: #selector(clearAllMarksMenuAction(_:)), keyEquivalent: "")
         clearAllMarksItem.target = self
         clearAllMarksItem.isEnabled = hasMarks
         menu.addItem(clearAllMarksItem)
-        
+
         return menu
     }
 
@@ -308,11 +308,11 @@ private final class LogRowView: NSTableRowView {
             let diameter: CGFloat = 6.0
             let circleRect = NSRect(x: 4.0, y: (bounds.height - diameter) / 2.0, width: diameter, height: diameter)
             let path = NSBezierPath(ovalIn: circleRect)
-            
+
             NSColor.systemYellow.setStroke()
             path.lineWidth = 1.5
             path.stroke()
-            
+
             NSColor(red: 0.0, green: 0.2, blue: 0.7, alpha: 1.0).setFill()
             path.fill()
         }
@@ -324,32 +324,32 @@ private final class LogRowView: NSTableRowView {
         let selectionColor = NSColor.selectedContentBackgroundColor
         selectionColor.withAlphaComponent(0.35).setFill()
         bounds.fill()
-        
+
         NSColor.controlAccentColor.setStroke()
         let path = NSBezierPath()
         path.lineWidth = 2.0
-        
+
         let minX = bounds.minX + 1.0
         let maxX = bounds.maxX - 1.0
-        
+
         let topY = !isPreviousRowSelected ? bounds.minY + 1.0 : bounds.minY
         let bottomY = !isNextRowSelected ? bounds.maxY - 1.0 : bounds.maxY
-        
+
         path.move(to: NSPoint(x: minX, y: bottomY))
         path.line(to: NSPoint(x: minX, y: topY))
-        
+
         if !isPreviousRowSelected {
             path.line(to: NSPoint(x: maxX, y: topY))
         } else {
             path.move(to: NSPoint(x: maxX, y: topY))
         }
-        
+
         path.line(to: NSPoint(x: maxX, y: bottomY))
-        
+
         if !isNextRowSelected {
             path.line(to: NSPoint(x: minX, y: bottomY))
         }
-        
+
         path.stroke()
     }
 
@@ -360,9 +360,9 @@ private final class LogRowView: NSTableRowView {
         flashLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         flashLayer.backgroundColor = NSColor.controlAccentColor.cgColor
         flashLayer.opacity = 0.0
-        
+
         self.layer?.addSublayer(flashLayer)
-        
+
         let anim = CABasicAnimation(keyPath: "opacity")
         anim.timingFunction = CAMediaTimingFunction(name: .linear)
         anim.fromValue = 0.0
@@ -370,9 +370,9 @@ private final class LogRowView: NSTableRowView {
         anim.duration = 1.6
         anim.autoreverses = true
         anim.repeatCount = 5
-        
+
         flashLayer.add(anim, forKey: "shimmer")
-        
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 16.0) {
             flashLayer.removeFromSuperlayer()
         }
@@ -406,7 +406,7 @@ private class LogTextField: NSTextField {
                 let pt = logTV.convert(event.locationInWindow, from: nil)
                 let clickedRow = logTV.row(at: pt)
                 let isPlainClick = event.modifierFlags
-                    .intersection([.command, .shift, .option, .control]).isEmpty
+                    .isDisjoint(with: [.command, .shift, .option, .control])
                 let isSoleSelection = isPlainClick
                     && clickedRow >= 0
                     && logTV.selectedRowIndexes.count == 1
@@ -427,7 +427,7 @@ private class LogTextField: NSTextField {
                 let pt = tv.convert(event.locationInWindow, from: nil)
                 clickedRow = tv.row(at: pt)
                 let isPlainClick = event.modifierFlags
-                    .intersection([.command, .shift, .option, .control]).isEmpty
+                    .isDisjoint(with: [.command, .shift, .option, .control])
                 wasRepeatedClick = isPlainClick
                     && clickedRow >= 0
                     && tv.selectedRowIndexes.count == 1
@@ -436,7 +436,18 @@ private class LogTextField: NSTextField {
 
             // Let NSTextField handle the event (installs field editor, tracks
             // drag-to-select). This call blocks until mouseUp.
+            // Save and restore the TABLE's scroll view vertical position so that
+            // NSTextField's internal scrollRangeToVisible / cursor-placement cannot
+            // cause a vertical jump. Note: self.enclosingScrollView is the cell-level
+            // text scroll view, NOT the table scroll view — we must walk up to the
+            // NSTableView's enclosingScrollView explicitly.
+            let tableSV = enclosingTableView()?.enclosingScrollView
+            let savedOrigin = tableSV?.contentView.bounds.origin
             super.mouseDown(with: event)
+            if let tableSV, let origin = savedOrigin {
+                tableSV.contentView.setBoundsOrigin(origin)
+                tableSV.reflectScrolledClipView(tableSV.contentView)
+            }
 
             // After super returns the full interaction is done. If this was a
             // repeated click, check whether the user dragged to select text.
@@ -470,7 +481,15 @@ private class LogTextField: NSTextField {
             let point = tv.convert(event.locationInWindow, from: nil)
             let row = tv.row(at: point)
             if row >= 0 && !tv.selectedRowIndexes.contains(row) {
+                // Save and restore the clip view origin so AppKit's internal
+                // "scroll selected row to visible" inside selectRowIndexes
+                // cannot move the view vertically.
+                let sv = tv.enclosingScrollView
+                let savedOrigin = sv?.contentView.bounds.origin
                 tv.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                if let sv, let origin = savedOrigin {
+                    sv.contentView.setBoundsOrigin(origin)
+                }
             }
         }
         // Explicitly pop up our own menu rather than calling super, which would
@@ -674,9 +693,11 @@ struct NativeLogViewer: NSViewRepresentable {
                         tableView.selectRowIndexes(
                             IndexSet(integer: row), byExtendingSelection: false
                         )
-                        // Natively ensure row loads in layout view
-                        tableView.scrollRowToVisible(row)
-                        
+                        // Do NOT call scrollRowToVisible here — it unconditionally
+                        // moves the clip view vertically even for rows already on
+                        // screen, causing the slight jump on short lines. The inner
+                        // async block handles all scrolling with a rowIsFullyVisible
+                        // guard so only off-screen rows are scrolled into view.
                         DispatchQueue.main.async {
                             let rowRect = tableView.rect(ofRow: row)
                             if let clipView = tableView.superview as? NSClipView {
@@ -684,21 +705,21 @@ struct NativeLogViewer: NSViewRepresentable {
                                 let clipWidth = clipView.bounds.width
                                 // Center the jump perfectly in the middle of the pane
                                 let targetY = max(0, rowRect.origin.y - (clipHeight / 2.0) + (rowRect.height / 2.0))
-                                
+
                                 var targetX: CGFloat = 0
                                 var isScrollingHorizontally = false
-                                
+
                                 if isRepeatedClick {
                                     if let coordinator = tableView.delegate as? NativeLogViewer.Coordinator {
                                         let lineText = coordinator.provider.line(at: row)
                                         let font = NSFont.monospacedSystemFont(ofSize: coordinator.fontSize, weight: .regular)
                                         let textWidth = (lineText as NSString).size(withAttributes: [.font: font]).width
-                                        
+
                                         var totalWidth = textWidth + 8
                                         if showLineNumbers {
                                             totalWidth += 55
                                         }
-                                        
+
                                         if totalWidth > clipWidth {
                                             let finalX = totalWidth - clipWidth + 40
                                             if clipView.bounds.origin.x < finalX - 20 {
@@ -711,12 +732,12 @@ struct NativeLogViewer: NSViewRepresentable {
                                         }
                                     }
                                 }
-                                
+
                                 let targetPoint = NSPoint(
                                     x: min(targetX, max(0, tableView.frame.width - clipWidth)),
                                     y: min(targetY, max(0, tableView.frame.height - clipHeight))
                                 )
-                                
+
                                 if isScrollingHorizontally {
                                     if tableView.isHorizontallyScrolling(row: row) {
                                         tableView.stopHorizontalScroll()
@@ -729,10 +750,21 @@ struct NativeLogViewer: NSViewRepresentable {
                                 } else {
                                     tableView.stopHorizontalScroll(preserveResumeTarget: false)
                                     tableView.flushDeferredReloadIfNeeded()
-                                    clipView.animator().setBoundsOrigin(NSPoint(x: 0, y: targetPoint.y))
+                                    // A repeated click means the user is clicking a line
+                                    // they can already see — never scroll vertically.
+                                    // Only scroll vertically for genuine first-click jumps
+                                    // (isRepeatedClick == false).
+                                    if !isRepeatedClick {
+                                        let rowIsFullyVisible = tableView.visibleRect.contains(rowRect)
+                                        if !rowIsFullyVisible {
+                                            clipView.animator().setBoundsOrigin(
+                                                NSPoint(x: 0, y: targetPoint.y)
+                                            )
+                                        }
+                                    }
                                 }
                             }
-                            
+
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                                 // Only shimmer on a genuine first jump to a line. On a
                                 // repeated click (which starts/reverses horizontal
@@ -764,7 +796,7 @@ struct NativeLogViewer: NSViewRepresentable {
             }
         }
 
-        // MARK BLOCK NAVIGATION – bottom pane only
+        // MARK: BLOCK NAVIGATION – bottom pane only
         if isFiltered {
             NotificationCenter.default.addObserver(
                 forName: bottomPaneScrollToRowNotification,
@@ -889,7 +921,7 @@ struct NativeLogViewer: NSViewRepresentable {
                 }
                 responder = responder?.nextResponder
             }
-            
+
             if let tableView = foundTableView, let tvMenu = tableView.menu(for: event) {
                 if !menu.items.isEmpty {
                     menu.addItem(NSMenuItem.separator())
@@ -975,10 +1007,10 @@ struct NativeLogViewer: NSViewRepresentable {
                 }
             }
             rowView?.ruleBackgroundColor = bgColor
-            
+
             let actualIndex = provider.originalIndex(at: row)
             rowView?.isMarked = markedIndices.contains(actualIndex)
-            
+
             return rowView
         }
 
@@ -1070,7 +1102,7 @@ struct NativeLogViewer: NSViewRepresentable {
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !isProgrammaticallySelecting else { return }
             guard let tableView = notification.object as? NSTableView else { return }
-            
+
             // Only jump if exactly one row is selected. Avoids jumping around during multi-line selections.
             if tableView.selectedRowIndexes.count == 1 {
                 let selectedRow = tableView.selectedRow

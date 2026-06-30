@@ -70,7 +70,7 @@ enum LineMatcher {
                 return caseInsensitive ? bytes.map { asciiLowered($0) } : bytes
             }
         }
-        
+
         // If we extracted pre-filters but didn't identify it as a pure literal alternation,
         // we can still skip the regex entirely if the original pattern is exactly equivalent
         // to joining the extracted pre-filters with '|'.
@@ -84,7 +84,7 @@ enum LineMatcher {
                 }
             }
         }
-        
+
         return .regex(rx, prefilters: prefilters, caseInsensitive: caseInsensitive)
     }
 
@@ -212,8 +212,7 @@ private func asciiInsensitiveContainsPtr(_ hay: UnsafePointer<UInt8>, _ len: Int
     guard let needle, len >= nlen else { return false }
     let cFirst = needle[0]
     var cFirstAlt = cFirst
-    if cFirst >= 97 && cFirst <= 122 { cFirstAlt = cFirst - 32 }
-    else if cFirst >= 65 && cFirst <= 90 { cFirstAlt = cFirst + 32 }
+    if cFirst >= 97 && cFirst <= 122 { cFirstAlt = cFirst - 32 } else if cFirst >= 65 && cFirst <= 90 { cFirstAlt = cFirst + 32 }
 
     let last = len - nlen
     var i = 0
@@ -404,10 +403,10 @@ final class LogContent: LineProvider, @unchecked Sendable {
                     let (cs, ce) = ranges[i]
                     var local: [Int] = []
                     local.reserveCapacity((ce - cs) / 40)
-                    
+
                     var ptr: UnsafeRawPointer = UnsafeRawPointer(base + cs)
                     let endPtr: UnsafeRawPointer = UnsafeRawPointer(base + ce)
-                    
+
                     var sinceReport = 0
                     let reportChunk = min((ce - cs) / 200, 100_000)
 
@@ -424,7 +423,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
                             sinceReport = 0
                         }
                     }
-                    
+
                     out[i] = local
                     let left = ptr.distance(to: endPtr)
                     if left > 0 { sinceReport += left }
@@ -448,241 +447,257 @@ final class LogContent: LineProvider, @unchecked Sendable {
         return LogContent(data: data, lineStarts: lineStarts, totalBytes: total)
     }
 
-    // MARK: - Fast parallel filter
+    // MARK: - Filter scan helpers
 
-    /// Scans all lines against `matcher` in parallel, returning the indices of
-    /// matching lines in original file order. For literal patterns this never
-    /// allocates a String — it searches the raw memory-mapped bytes directly.
-    /// Progress is reported into `progress` (a cheap shared counter polled by the
-    /// UI), not via per-update closures.
-    func filterMatches(matcher: LineMatcher, progress: ScanProgress, onUpdate: @escaping ([Int]) -> Void) {
-        let indexed = lineStarts.count
-        guard indexed > 0 || !appended.isEmpty else {
-            onUpdate([])
-            return
-        }
+    /// Scan mode used by ScanParams.
+    private enum ScanMode {
+        case litSensitive, litInsensitive
+        case multiLitSensitive, multiLitInsensitive
+        case regexOnly, regexPreSensitive, regexPreInsensitive
+    }
 
-        let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
-        // Use enough chunks to stream results smoothly to the UI while still allowing
-        // prefetchers to operate on large enough blocks.
-        let targetChunks = min(coreCount * 8, 128)
-        let chunkSize = max(1, (indexed + targetChunks - 1) / targetChunks)
+    /// Decoded scan parameters built once before the parallel scan.
+    private struct ScanParams {
+        let mode: ScanMode
+        let regex: NSRegularExpression?
+        let blob: [UInt8]
+        let offsets: [Int]
+        let lengths: [Int]
+        let firstByteTable: [Bool]   // 256-entry acceptance table
+    }
 
-        var ranges: [(start: Int, end: Int)] = []
-        var s = 0
-        while s < indexed {
-            let e = min(s + chunkSize, indexed)
-            ranges.append((s, e))
-            s = e
-        }
-
-        let chunkCount = ranges.count
-        var partials = [[Int]](repeating: [], count: max(chunkCount, 1))
-        _ = 65_536   // lines between progress bumps per worker
-
-        // Decode the matcher into a fast dispatch mode plus a flattened "blob" of
-        // all search needles (literal needle, or the per-branch regex pre-filters)
-        // with their offsets/lengths, so the inner loop uses a single hoisted
-        // pointer and integer indexing — no per-line array bridging.
-        enum Mode { case litSensitive, litInsensitive, multiLitSensitive, multiLitInsensitive, regexOnly, regexPreSensitive, regexPreInsensitive }
-        let mode: Mode
-        let theRegex: NSRegularExpression?
+    private static func buildScanParams(from matcher: LineMatcher) -> ScanParams {
         var blob: [UInt8] = []
         var offs: [Int] = []
         var lens: [Int] = []
-        func addNeedle(_ n: [UInt8]) { offs.append(blob.count); lens.append(n.count); blob.append(contentsOf: n) }
-
+        func addNeedle(_ needle: [UInt8]) {
+            offs.append(blob.count); lens.append(needle.count); blob.append(contentsOf: needle)
+        }
+        let mode: ScanMode
+        let theRegex: NSRegularExpression?
         switch matcher {
-        case .literalSensitive(let n):
-            mode = .litSensitive; addNeedle(n); theRegex = nil
-        case .literalInsensitiveASCII(let n):
-            mode = .litInsensitive; addNeedle(n); theRegex = nil
-        case .multiLiteralSensitive(let ns):
-            mode = .multiLitSensitive; for n in ns { addNeedle(n) }; theRegex = nil
-        case .multiLiteralInsensitiveASCII(let ns):
-            mode = .multiLitInsensitive; for n in ns { addNeedle(n) }; theRegex = nil
-        case .regex(let rx, let pfs, let ci):
-            theRegex = rx
-            for p in pfs { addNeedle(p) }
-            mode = pfs.isEmpty ? .regexOnly : (ci ? .regexPreInsensitive : .regexPreSensitive)
+        case .literalSensitive(let needle):
+            mode = .litSensitive; addNeedle(needle); theRegex = nil
+        case .literalInsensitiveASCII(let needle):
+            mode = .litInsensitive; addNeedle(needle); theRegex = nil
+        case .multiLiteralSensitive(let needles):
+            mode = .multiLitSensitive; for needle in needles { addNeedle(needle) }; theRegex = nil
+        case .multiLiteralInsensitiveASCII(let needles):
+            mode = .multiLitInsensitive; for needle in needles { addNeedle(needle) }; theRegex = nil
+        case .regex(let regex, let preFilters, let caseInsensitive):
+            theRegex = regex
+            for preFilter in preFilters { addNeedle(preFilter) }
+            mode = preFilters.isEmpty ? .regexOnly
+                : (caseInsensitive ? .regexPreInsensitive : .regexPreSensitive)
         }
         let needleCount = offs.count
-        let offsLet = offs
-        let lensLet = lens
-
-        var fb = [Bool](repeating: false, count: 256)
-        let isCi = (mode == .litInsensitive || mode == .multiLitInsensitive || mode == .regexPreInsensitive)
-        for k in 0 ..< needleCount where lensLet[k] > 0 {
-            let b = blob[offsLet[k]]
-            fb[Int(b)] = true
-            if isCi {
-                if b >= 97 && b <= 122 { fb[Int(b - 32)] = true }
-                if b >= 65 && b <= 90 { fb[Int(b + 32)] = true }
+        let isCaseInsensitive = (mode == .litInsensitive
+            || mode == .multiLitInsensitive
+            || mode == .regexPreInsensitive)
+        var firstByteTable = [Bool](repeating: false, count: 256)
+        for idx in 0 ..< needleCount where lens[idx] > 0 {
+            let byte = blob[offs[idx]]
+            firstByteTable[Int(byte)] = true
+            if isCaseInsensitive {
+                if byte >= 97 && byte <= 122 { firstByteTable[Int(byte - 32)] = true }
+                if byte >= 65 && byte <= 90 { firstByteTable[Int(byte + 32)] = true }
             }
         }
+        return ScanParams(
+            mode: mode, regex: theRegex,
+            blob: blob, offsets: offs, lengths: lens,
+            firstByteTable: firstByteTable
+        )
+    }
 
+    // swiftlint:disable:next function_parameter_count
+    private static func lineMatchesScan(
+        base: UnsafePointer<UInt8>,
+        start: Int, len: Int,
+        params: ScanParams,
+        fbBase: UnsafePointer<Bool>,
+        blobBase: UnsafePointer<UInt8>?
+    ) -> Bool {
+        let needleCount = params.offsets.count
+        let offsLet = params.offsets
+        let lensLet = params.lengths
+        switch params.mode {
+        case .litSensitive:
+            let nl = lensLet[0]
+            return nl <= len && memmem(base + start, len, blobBase, nl) != nil
+        case .litInsensitive:
+            return asciiInsensitiveContainsPtr(base + start, len, blobBase, lensLet[0])
+        case .multiLitSensitive:
+            var pos = 0
+            while pos < len {
+                if fbBase[Int(base[start + pos])] {
+                    var ki = 0
+                    while ki < needleCount {
+                        let nl = lensLet[ki]
+                        if nl <= len - pos {
+                            let no = offsLet[ki]
+                            var ji = 0
+                            while ji < nl {
+                                if base[start + pos + ji] != blobBase![no + ji] { break }
+                                ji += 1
+                            }
+                            if ji == nl { return true }
+                        }
+                        ki += 1
+                    }
+                }
+                pos += 1
+            }
+            return false
+        case .multiLitInsensitive:
+            var pos = 0
+            while pos < len {
+                if fbBase[Int(base[start + pos])] {
+                    var ki = 0
+                    while ki < needleCount {
+                        let nl = lensLet[ki]
+                        if nl <= len - pos {
+                            let no = offsLet[ki]
+                            var ji = 0
+                            while ji < nl {
+                                var ch = base[start + pos + ji]
+                                if ch >= 65 && ch <= 90 { ch += 32 }
+                                if ch != blobBase![no + ji] { break }
+                                ji += 1
+                            }
+                            if ji == nl { return true }
+                        }
+                        ki += 1
+                    }
+                }
+                pos += 1
+            }
+            return false
+        case .regexOnly:
+            let lineStr = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
+            let range = NSRange(location: 0, length: lineStr.utf16.count)
+            return params.regex!.firstMatch(in: lineStr, options: [], range: range) != nil
+        case .regexPreSensitive:
+            var hit = false
+            var ki = 0
+            while ki < needleCount {
+                let nl = lensLet[ki]
+                if nl <= len, memmem(base + start, len, blobBase! + offsLet[ki], nl) != nil { hit = true; break }
+                ki += 1
+            }
+            guard hit else { return false }
+            let lineStr = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
+            let range = NSRange(location: 0, length: lineStr.utf16.count)
+            return params.regex!.firstMatch(in: lineStr, options: [], range: range) != nil
+        case .regexPreInsensitive:
+            var hit = false
+            var ki = 0
+            while ki < needleCount {
+                if asciiInsensitiveContainsPtr(base + start, len, blobBase! + offsLet[ki], lensLet[ki]) {
+                    hit = true; break
+                }
+                ki += 1
+            }
+            guard hit else { return false }
+            let lineStr = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
+            let range = NSRange(location: 0, length: lineStr.utf16.count)
+            return params.regex!.firstMatch(in: lineStr, options: [], range: range) != nil
+        }
+    }
+
+    /// Parallel scan returning indices of lines that match `matcher`.
+    /// Does not allocate a String per line — searches raw memory-mapped bytes.
+    /// Progress is reported into `progress` (polled by the UI timer).
+    func filterMatches(matcher: LineMatcher, progress: ScanProgress, onUpdate: @escaping ([Int]) -> Void) {
+        let indexed = lineStarts.count
+        guard indexed > 0 || !appended.isEmpty else { onUpdate([]); return }
+
+        let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
+        let targetChunks = min(coreCount * 8, 128)
+        let chunkSize = max(1, (indexed + targetChunks - 1) / targetChunks)
+        var ranges: [(start: Int, end: Int)] = []
+        var rangeStart = 0
+        while rangeStart < indexed {
+            let rangeEnd = min(rangeStart + chunkSize, indexed)
+            ranges.append((rangeStart, rangeEnd))
+            rangeStart = rangeEnd
+        }
+        let chunkCount = ranges.count
+        var partials = [[Int]](repeating: [], count: max(chunkCount, 1))
+        let params = Self.buildScanParams(from: matcher)
         let outLock = NSLock()
         var nextChunkToEmit = 0
         var emittedSoFar: [Int] = []
         var completeChunks: [Int: [Int]] = [:]
 
         if chunkCount > 0 {
-            fb.withUnsafeBufferPointer { fbPtr in
+            params.firstByteTable.withUnsafeBufferPointer { fbPtr in
                 let fbBase = fbPtr.baseAddress!
-                blob.withUnsafeBufferPointer { blobPtr in
+                params.blob.withUnsafeBufferPointer { blobPtr in
                     let blobBase = blobPtr.baseAddress
                     data.withUnsafeBytes { rawBuffer in
-                        nonisolated(unsafe) let base = UnsafePointer(rawBuffer.bindMemory(to: UInt8.self).baseAddress!)
+                        nonisolated(unsafe) let base = UnsafePointer(
+                            rawBuffer.bindMemory(to: UInt8.self).baseAddress!
+                        )
                         let starts = lineStarts
                         let total = totalBytes
                         nonisolated(unsafe) let nBlob = blobBase
-                        let rx = theRegex
+                        let scanParams = params
                         partials.withUnsafeMutableBufferPointer { outParam in
                             nonisolated(unsafe) let out = outParam
-                            DispatchQueue.concurrentPerform(iterations: chunkCount) { c in
-                                let (cs, ce) = ranges[c]
+                            DispatchQueue.concurrentPerform(iterations: chunkCount) { chunkIdx in
+                                let (cs, ce) = ranges[chunkIdx]
                                 var matches: [Int] = []
-                                
                                 var startIdx = cs
                                 while startIdx < ce {
                                     autoreleasepool {
                                         let endIdx = min(startIdx + 2048, ce)
                                         var sinceReport = 0
-                                        
-                                        for i in startIdx ..< endIdx {
-                                            let start = starts[i]
-                                        let rawEnd = (i + 1 < indexed) ? starts[i + 1] - 1 : total
-                                        var e = max(start, rawEnd)
-                                        if e > start, base[e - 1] == 0x0D { e -= 1 }
-                                        let len = e - start
-
-                                        var isMatch = false
-                                        switch mode {
-                                        case .litSensitive:
-                                            let nl = lensLet[0]
-                                            if nl <= len { isMatch = memmem(base + start, len, nBlob, nl) != nil }
-                                        case .litInsensitive:
-                                            isMatch = asciiInsensitiveContainsPtr(base + start, len, nBlob, lensLet[0])
-                                        case .multiLitSensitive:
-                                            var p = 0
-                                            while p < len {
-                                                if fbBase[Int(base[start + p])] {
-                                                    var k = 0
-                                                    while k < needleCount {
-                                                        let nl = lensLet[k]
-                                                        if nl <= len - p {
-                                                            let no = offsLet[k]
-                                                            var j = 0
-                                                            while j < nl {
-                                                                if base[start + p + j] != nBlob![no + j] { break }
-                                                                j += 1
-                                                            }
-                                                            if j == nl { isMatch = true; break }
-                                                        }
-                                                        k += 1
-                                                    }
-                                                    if isMatch { break }
-                                                }
-                                                p += 1
-                                            }
-                                        case .multiLitInsensitive:
-                                            var p = 0
-                                            while p < len {
-                                                if fbBase[Int(base[start + p])] {
-                                                    var k = 0
-                                                    while k < needleCount {
-                                                        let nl = lensLet[k]
-                                                        if nl <= len - p {
-                                                            let no = offsLet[k]
-                                                            var j = 0
-                                                            while j < nl {
-                                                                var cc = base[start + p + j]
-                                                                if cc >= 65 && cc <= 90 { cc += 32 }
-                                                                if cc != nBlob![no + j] { break }
-                                                                j += 1
-                                                            }
-                                                            if j == nl { isMatch = true; break }
-                                                        }
-                                                        k += 1
-                                                    }
-                                                    if isMatch { break }
-                                                }
-                                                p += 1
-                                            }
-                                        case .regexOnly:
-                                            let line = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
-                                            let range = NSRange(location: 0, length: line.utf16.count)
-                                            isMatch = rx!.firstMatch(in: line, options: [], range: range) != nil
-                                        case .regexPreSensitive:
-                                            var hit = false
-                                            var k = 0
-                                            while k < needleCount {
-                                                let nl = lensLet[k]
-                                                if nl <= len, memmem(base + start, len, nBlob! + offsLet[k], nl) != nil { hit = true; break }
-                                                k += 1
-                                            }
-                                            if hit {
-                                                let line = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
-                                                let range = NSRange(location: 0, length: line.utf16.count)
-                                                isMatch = rx!.firstMatch(in: line, options: [], range: range) != nil
-                                            }
-                                        case .regexPreInsensitive:
-                                            var hit = false
-                                            var k = 0
-                                            while k < needleCount {
-                                                if asciiInsensitiveContainsPtr(base + start, len, nBlob! + offsLet[k], lensLet[k]) { hit = true; break }
-                                                k += 1
-                                            }
-                                            if hit {
-                                                let line = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
-                                                let range = NSRange(location: 0, length: line.utf16.count)
-                                                isMatch = rx!.firstMatch(in: line, options: [], range: range) != nil
-                                            }
+                                        for lineIdx in startIdx ..< endIdx {
+                                            let lineStart = starts[lineIdx]
+                                            let rawEnd = (lineIdx + 1 < indexed)
+                                                ? starts[lineIdx + 1] - 1 : total
+                                            var lineEnd = max(lineStart, rawEnd)
+                                            if lineEnd > lineStart, base[lineEnd - 1] == 0x0D { lineEnd -= 1 }
+                                            let lineLen = lineEnd - lineStart
+                                            if Self.lineMatchesScan(
+                                                base: base, start: lineStart, len: lineLen,
+                                                params: scanParams, fbBase: fbBase, blobBase: nBlob
+                                            ) { matches.append(lineIdx) }
+                                            sinceReport += 1
                                         }
-
-                                        if isMatch { matches.append(i) }
-                                        sinceReport += 1
+                                        if sinceReport > 0 { progress.add(sinceReport) }
+                                        startIdx = endIdx
                                     }
-                                    
-                                    if sinceReport > 0 { progress.add(sinceReport) }
-                                    startIdx = endIdx
                                 }
-                            }
-                            
-                            out[c] = matches
-                            
-                            outLock.lock()
-                            completeChunks[c] = matches
-                            var didEmit = false
-                            while let ready = completeChunks.removeValue(forKey: nextChunkToEmit) {
-                                emittedSoFar.append(contentsOf: ready)
-                                nextChunkToEmit += 1
-                                didEmit = true
-                            }
-                            let snapshot = emittedSoFar
-                            outLock.unlock()
-                            
-                            if didEmit {
-                                onUpdate(snapshot)
+                                out[chunkIdx] = matches
+                                outLock.lock()
+                                completeChunks[chunkIdx] = matches
+                                var didEmit = false
+                                while let ready = completeChunks.removeValue(forKey: nextChunkToEmit) {
+                                    emittedSoFar.append(contentsOf: ready)
+                                    nextChunkToEmit += 1
+                                    didEmit = true
+                                }
+                                let snapshot = emittedSoFar
+                                outLock.unlock()
+                                if didEmit { onUpdate(snapshot) }
                             }
                         }
                     }
                 }
             }
         }
-        }
 
-        // Catch the remaining live-tail lines
         outLock.lock()
         var finalMatches: [Int] = emittedSoFar
         outLock.unlock()
-
         if !appended.isEmpty {
-            for (offset, line) in appended.enumerated() {
-                if lineMatches(line, matcher: matcher) { finalMatches.append(indexed + offset) }
+            for (offset, line) in appended.enumerated()
+            where lineMatches(line, matcher: matcher) {
+                finalMatches.append(indexed + offset)
             }
         }
-
         onUpdate(finalMatches)
     }
 
