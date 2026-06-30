@@ -764,6 +764,33 @@ struct NativeLogViewer: NSViewRepresentable {
             }
         }
 
+        // MARK BLOCK NAVIGATION – bottom pane only
+        if isFiltered {
+            NotificationCenter.default.addObserver(
+                forName: bottomPaneScrollToRowNotification,
+                object: nil,
+                queue: .main
+            ) { notification in
+                guard let row = notification.object as? Int else { return }
+                DispatchQueue.main.async {
+                    let clamped = max(0, min(row, tableView.numberOfRows - 1))
+                    // Scroll so the target row sits at the TOP of the visible area
+                    let rowRect = tableView.rect(ofRow: clamped)
+                    if let clipView = tableView.enclosingScrollView?.contentView {
+                        let topY = max(0, rowRect.minY)
+                        clipView.setBoundsOrigin(NSPoint(x: clipView.bounds.origin.x, y: topY))
+                        tableView.enclosingScrollView?.reflectScrolledClipView(clipView)
+                    }
+                    // Select the row so the highlight is visible
+                    if let coord = tableView.delegate as? NativeLogViewer.Coordinator {
+                        coord.isProgrammaticallySelecting = true
+                        tableView.selectRowIndexes(IndexSet(integer: clamped), byExtendingSelection: false)
+                        coord.isProgrammaticallySelecting = false
+                    }
+                }
+            }
+        }
+
         return scrollView
     }
 

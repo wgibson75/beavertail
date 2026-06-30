@@ -16,8 +16,10 @@ struct TopPaneDirectScrollRequest {
 }
 
 // Distinct notification streams for targeting view scroll adjustments independently
-let topPaneScrollToBottomNotification = Notification.Name("BeaverTailTopPaneScrollToBottom")
+let topPaneScrollToBottomNotification    = Notification.Name("BeaverTailTopPaneScrollToBottom")
 let bottomPaneScrollToBottomNotification = Notification.Name("BeaverTailBottomPaneScrollToBottom")
+/// Posted to scroll the bottom pane to a specific row index (Int payload via `object:`).
+let bottomPaneScrollToRowNotification    = Notification.Name("BeaverTailBottomPaneScrollToRow")
 
 enum FilterDisplayMode: String, CaseIterable, Identifiable {
     case marksAndMatches = "Marks & matches"
@@ -117,6 +119,84 @@ class LogViewModel: ObservableObject {
     
     var currentTab: LogTab? { openTabs.first { $0.id == selectedTabID } }
     var currentTabHasMarks: Bool { (currentTab?.markedIndices.isEmpty == false) }
+
+    // MARK: - Mark Block Navigation
+
+    /// Computes contiguous blocks of marked lines based on adjacency in the **original
+    /// file** (top-pane line numbers). Returns an array of `(firstOriginalIndex,
+    /// lastOriginalIndex)` pairs, sorted by file position.
+    private func markBlocksInOriginalFile() -> [(first: Int, last: Int)] {
+        guard let tab = currentTab else { return [] }
+        let sorted = tab.markedIndices.sorted()
+        guard !sorted.isEmpty else { return [] }
+
+        var blocks: [(first: Int, last: Int)] = []
+        var blockStart = sorted[0]
+        var blockEnd   = sorted[0]
+        for i in 1 ..< sorted.count {
+            if sorted[i] == blockEnd + 1 {
+                blockEnd = sorted[i]
+            } else {
+                blocks.append((blockStart, blockEnd))
+                blockStart = sorted[i]
+                blockEnd   = sorted[i]
+            }
+        }
+        blocks.append((blockStart, blockEnd))
+        return blocks
+    }
+
+    /// Returns the bottom-pane row index for a given original file line index,
+    /// or nil if that line is not currently displayed.
+    private func bottomPaneRow(forOriginalIndex origIdx: Int) -> Int? {
+        guard let tab = currentTab else { return nil }
+        // displayedIndices is sorted; binary search for origIdx
+        var lo = 0, hi = tab.displayedIndices.count - 1
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            let v = tab.displayedIndices[mid]
+            if v == origIdx { return mid }
+            else if v < origIdx { lo = mid + 1 }
+            else { hi = mid - 1 }
+        }
+        return nil
+    }
+
+    /// Scrolls the bottom pane to the next block of marked lines relative to the
+    /// current visible centre of the bottom pane, wrapping around.
+    func navigateToNextMarkBlock() {
+        let blocks = markBlocksInOriginalFile()
+        guard !blocks.isEmpty else { return }
+        let ref = _lastPostedOriginalIndex ?? -1
+        let target = blocks.first(where: { $0.first > ref }) ?? blocks[0]
+        _lastPostedOriginalIndex = target.first
+        jumpToMarkBlock(originalIndex: target.first)
+    }
+
+    /// Scrolls the bottom pane to the previous block of marked lines, wrapping around.
+    func navigateToPreviousMarkBlock() {
+        let blocks = markBlocksInOriginalFile()
+        guard !blocks.isEmpty else { return }
+        let ref = _lastPostedOriginalIndex ?? blocks[0].first + 1
+        let target = blocks.last(where: { $0.first < ref }) ?? blocks[blocks.count - 1]
+        _lastPostedOriginalIndex = target.first
+        jumpToMarkBlock(originalIndex: target.first)
+    }
+
+    /// Posts the bottom-pane scroll notification (if the line is visible there) and
+    /// syncs the top pane to the original file line index.
+    private func jumpToMarkBlock(originalIndex: Int) {
+        // Jump top pane
+        syncSelectionFromFilteredIndex(originalIndex)
+        // Scroll bottom pane to the corresponding row if it is currently displayed
+        if let row = bottomPaneRow(forOriginalIndex: originalIndex) {
+            NotificationCenter.default.post(name: bottomPaneScrollToRowNotification, object: row)
+        }
+    }
+
+    /// Tracks the original file line index last navigated to so next/previous can
+    /// advance correctly.
+    private var _lastPostedOriginalIndex: Int? = nil
 
     var filterDisplayMode: FilterDisplayMode {
         get { FilterDisplayMode(rawValue: filterDisplayModeRaw) ?? .marksAndMatches }

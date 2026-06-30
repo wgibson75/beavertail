@@ -588,10 +588,36 @@ private struct FilterBarView: View {
                             removal:   .move(edge: .leading).combined(with: .opacity)
                         )
                     )
+
+                    // Previous / Next mark-block navigation — only when marks are visible
+                    if viewModel.filterDisplayMode != .matches {
+                        HStack(spacing: 2) {
+                            Button(action: { viewModel.navigateToPreviousMarkBlock() }) {
+                                Image(systemName: "chevron.up")
+                                    .font(.system(size: 11, weight: .semibold))
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Previous mark")
+
+                            Button(action: { viewModel.navigateToNextMarkBlock() }) {
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 11, weight: .semibold))
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Next mark")
+                        }
+                        .transition(
+                            .asymmetric(
+                                insertion: .move(edge: .leading).combined(with: .opacity),
+                                removal:   .move(edge: .leading).combined(with: .opacity)
+                            )
+                        )
+                    }
                 }
             }
             .clipped()
             .animation(.spring(response: 0.35, dampingFraction: 0.72), value: viewModel.currentTabHasMarks)
+            .animation(.spring(response: 0.35, dampingFraction: 0.72), value: viewModel.filterDisplayMode)
             .onChange(of: viewModel.currentTabHasMarks) { _, hasMarks in
                 if hasMarks {
                     viewModel.filterDisplayMode = .marksAndMatches
