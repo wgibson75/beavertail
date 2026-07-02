@@ -72,6 +72,12 @@ class LogViewModel: ObservableObject {
             if let i = openTabs.firstIndex(where: { $0.id == selectedTabID }) {
                 openTabs[i].followTail = followTail
                 saveLoadedTabsSession()
+                if followTail {
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(name: topPaneScrollToBottomNotification, object: nil)
+                        NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
+                    }
+                }
             }
         }
     }
@@ -468,7 +474,7 @@ class LogViewModel: ObservableObject {
             content.filterMatches(matcher: matcher, progress: progress) { matches in
                 finalCount = matches.count
                 DispatchQueue.main.async {
-                    guard let self else { return }
+                    guard let self = self else { return }
                     // Ignore results from a filter that has since been superseded.
                     guard gen == self.filterGeneration else { return }
                     if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
@@ -497,7 +503,7 @@ class LogViewModel: ObservableObject {
             print("BeaverTail filter: \(modeDesc) — \(content.count) lines in \(String(format: "%.0f", ms)) ms, \(finalCount) matches")
 
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self = self else { return }
                 guard gen == self.filterGeneration else { return }
                 self.filterTimer?.invalidate()
                 self.filterTimer = nil
@@ -1181,60 +1187,88 @@ class LogViewModel: ObservableObject {
         stopLiveTailing()
         guard let tab = currentTab, tab.content != nil else { return }
         let fileURL = tab.fileURL
-        let fileHandle = open(fileURL.path, O_RDONLY)
-        guard fileHandle >= 0 else { return }
-        activeTailFileDescriptor = fileHandle
+        let tabID = tab.id
 
-        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fileHandle, eventMask: .write, queue: DispatchQueue.global(qos: .utility))
+        let tailTask = Task.detached(priority: .utility) { [weak self] in
+            var lastKnownSize: UInt64 = 0
+            if let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path) {
+                lastKnownSize = (attributes[.size] as? UInt64) ?? 0
+            }
+            var remainderData = Data()
 
-        var lastKnownSize: UInt64 = 0
-        if let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path) {
-            lastKnownSize = (attributes[.size] as? UInt64) ?? 0
-        }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                if Task.isCancelled { break }
 
-        source.setEventHandler { [weak self] in
-            guard let self = self else { return }
-            guard let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
-                  let currentSize = attributes[.size] as? UInt64,
-                  currentSize > lastKnownSize else { return }
+                guard let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+                      let currentSize = attributes[.size] as? UInt64 else { continue }
 
-            let fh = FileHandle(fileDescriptor: fileHandle, closeOnDealloc: false)
-            do {
-                try fh.seek(toOffset: lastKnownSize)
-                if let newData = try fh.read(upToCount: Int(currentSize - lastKnownSize)),
-                   let appendedText = String(data: newData, encoding: .utf8) {
-                    lastKnownSize = currentSize
-                    var linesArray = appendedText.components(separatedBy: .newlines).map { $0.replacingOccurrences(of: "\r", with: "") }
-                    if linesArray.last?.isEmpty == true { linesArray.removeLast() }
-                    guard !linesArray.isEmpty else { return }
-                    Task { @MainActor in
-                        if let tabID = self.selectedTabID, let index = self.openTabs.firstIndex(where: { $0.id == tabID }),
-                           let content = self.openTabs[index].content {
-                            let baseOffset = content.count
-                            content.appendLines(linesArray)
-                            self.generateMinimapData(for: tabID)
-                            self.appendFilterForLiveTail(with: linesArray, startingAt: baseOffset)
-                            self.objectWillChange.send()
-                            if self.followTail {
-                                DispatchQueue.main.async {
-                                    NotificationCenter.default.post(name: topPaneScrollToBottomNotification, object: nil)
+                if currentSize < lastKnownSize {
+                    // Log rotated or truncated
+                    lastKnownSize = 0
+                    remainderData = Data()
+                    continue
+                }
+
+                if currentSize > lastKnownSize {
+                    guard let fileHandle = try? FileHandle(forReadingFrom: fileURL) else { continue }
+                    do {
+                        try fileHandle.seek(toOffset: lastKnownSize)
+                        let bytesToRead = currentSize - lastKnownSize
+                        let readCount = min(bytesToRead, 50 * 1024 * 1024)
+                        if let newData = try fileHandle.read(upToCount: Int(readCount)), !newData.isEmpty {
+                            lastKnownSize += UInt64(newData.count)
+
+                            var dataToProcess = remainderData
+                            dataToProcess.append(newData)
+
+                            if let lastNewline = dataToProcess.lastIndex(of: 0x0A) {
+                                let completeData = dataToProcess.prefix(upTo: lastNewline + 1)
+                                remainderData = Data(dataToProcess.suffix(from: lastNewline + 1))
+
+                                let text = String(decoding: completeData, as: UTF8.self)
+                                var linesArray = text.components(separatedBy: .newlines).map { $0.replacingOccurrences(of: "\r", with: "") }
+                                if linesArray.last?.isEmpty == true { linesArray.removeLast() }
+
+                                guard !linesArray.isEmpty else { continue }
+
+                                await MainActor.run {
+                                    guard let self = self else { return }
+                                    if let idx = self.openTabs.firstIndex(where: { $0.id == tabID }),
+                                       let content = self.openTabs[idx].content {
+                                        let baseOffset = content.count
+                                        content.appendLines(linesArray)
+                                        self.generateMinimapData(for: tabID)
+                                        self.appendFilterForLiveTail(with: linesArray, startingAt: baseOffset)
+                                        self.objectWillChange.send()
+                                        if self.followTail {
+                                            DispatchQueue.main.async {
+                                                NotificationCenter.default.post(name: topPaneScrollToBottomNotification, object: nil)
+                                                // Note: we already post bottom pane notification in appendFilterForLiveTail
+                                            }
+                                        }
+                                    }
                                 }
+                            } else {
+                                remainderData = dataToProcess
                             }
                         }
+                    } catch {
+                        print("Live tail read error: \(error)")
                     }
+                    try? fileHandle.close()
                 }
-            } catch { print("Live tail error: \(error)") }
+            }
         }
-
-        source.setCancelHandler { close(fileHandle) }
-        activeTailSource = source
-        source.resume()
+        liveTailTasks[tabID] = tailTask
     }
 
     func stopLiveTailing() {
-        activeTailSource?.cancel()
-        activeTailSource = nil
-        activeTailFileDescriptor = -1
+        // Cancel all existing tail tasks
+        for task in liveTailTasks.values {
+            task.cancel()
+        }
+        liveTailTasks.removeAll()
     }
 
     func appearanceChanged(isDark: Bool) {
