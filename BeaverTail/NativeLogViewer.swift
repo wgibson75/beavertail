@@ -397,71 +397,18 @@ private class LogTextField: NSTextField {
 
     override func mouseDown(with event: NSEvent) {
         if allowsTextSelection {
-            // ── Pre-super check: pause an active scroll immediately ──────────
-            // If the row is currently scrolling, intercept the click BEFORE
-            // calling super. NSTextField.mouseDown places a cursor which triggers
-            // scrollRangeToVisible on the enclosing scroll view, resetting the
-            // horizontal position and preventing the pause from working cleanly.
-            if let logTV = enclosingTableView() as? LogTableView {
-                let pt = logTV.convert(event.locationInWindow, from: nil)
-                let clickedRow = logTV.row(at: pt)
-                let isPlainClick = event.modifierFlags
-                    .isDisjoint(with: [.command, .shift, .option, .control])
-                let isSoleSelection = isPlainClick
-                    && clickedRow >= 0
-                    && logTV.selectedRowIndexes.count == 1
-                    && logTV.selectedRow == clickedRow
-                if isSoleSelection && logTV.isHorizontallyScrolling(row: clickedRow) {
-                    // Pause: stop the scroll without calling super so the cursor
-                    // and scroll position are not disturbed.
-                    logTV.stopHorizontalScroll()
-                    logTV.flushDeferredReloadIfNeeded()
-                    return
-                }
-            }
-
-            // ── Normal path: detect repeated plain click for resume/start ────
-            var wasRepeatedClick = false
-            var clickedRow = -1
-            if let tv = enclosingTableView() {
-                let pt = tv.convert(event.locationInWindow, from: nil)
-                clickedRow = tv.row(at: pt)
-                let isPlainClick = event.modifierFlags
-                    .isDisjoint(with: [.command, .shift, .option, .control])
-                wasRepeatedClick = isPlainClick
-                    && clickedRow >= 0
-                    && tv.selectedRowIndexes.count == 1
-                    && tv.selectedRow == clickedRow
-            }
-
-            // Let NSTextField handle the event (installs field editor, tracks
-            // drag-to-select). This call blocks until mouseUp.
-            // Save and restore the TABLE's scroll view vertical position so that
-            // NSTextField's internal scrollRangeToVisible / cursor-placement cannot
-            // cause a vertical jump. Note: self.enclosingScrollView is the cell-level
-            // text scroll view, NOT the table scroll view — we must walk up to the
-            // NSTableView's enclosingScrollView explicitly.
+            // Top pane: let NSTextField handle the event natively (installs field
+            // editor, tracks drag-to-select text). Save and restore the TABLE's
+            // scroll view vertical position so NSTextField's internal
+            // scrollRangeToVisible / cursor-placement cannot cause a vertical jump.
+            // Note: self.enclosingScrollView is the cell-level text scroll view,
+            // NOT the table scroll view — we must walk up explicitly.
             let tableSV = enclosingTableView()?.enclosingScrollView
             let savedOrigin = tableSV?.contentView.bounds.origin
             super.mouseDown(with: event)
             if let tableSV, let origin = savedOrigin {
                 tableSV.contentView.setBoundsOrigin(origin)
                 tableSV.reflectScrolledClipView(tableSV.contentView)
-            }
-
-            // After super returns the full interaction is done. If this was a
-            // repeated click, check whether the user dragged to select text.
-            // Only fire onRepeatedPlainClick when no text was selected (plain click).
-            if wasRepeatedClick,
-               let logTV = enclosingTableView() as? LogTableView,
-               let coordinator = logTV.delegate as? NativeLogViewer.Coordinator {
-                let userDraggedText = (currentEditor() as? NSTextView)
-                    .map { $0.selectedRange().length > 0 } ?? false
-                if !userDraggedText, clickedRow >= 0 {
-                    coordinator.onRepeatedPlainClick?(
-                        coordinator.provider.originalIndex(at: clickedRow)
-                    )
-                }
             }
         } else {
             // Bottom pane: forward to the table so row selection / repeated-click

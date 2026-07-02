@@ -896,25 +896,6 @@ class LogViewModel: ObservableObject {
     }
 
     /// Called when the user plain-clicks a row in the top pane that is already
-    /// the sole selection (second click, no text drag). Posts a direct-scroll
-    /// notification with allowsHorizontalScroll: true so the viewer starts the
-    /// smooth horizontal auto-scroll for lines wider than the visible pane.
-    func triggerTopPaneRepeatedSelection(_ lineIndex: Int) {
-        guard let tabID = selectedTabID,
-              let tabIdx = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-        let totalCount = openTabs[tabIdx].lineCount
-        guard totalCount > 0 else { return }
-        let fraction = CGFloat(lineIndex) / CGFloat(max(1, totalCount - 1))
-        openTabs[tabIdx].selectedFraction = max(0, min(1, fraction))
-        NotificationCenter.default.post(
-            name: topPaneDirectScrollNotification,
-            object: TopPaneDirectScrollRequest(
-                lineIndex: lineIndex,
-                allowsHorizontalScroll: true
-            )
-        )
-    }
-
     // MARK: - Session Persistence
 
     private func saveLoadedTabsSession() {
