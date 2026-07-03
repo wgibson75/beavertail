@@ -5,6 +5,7 @@
 
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - Custom colour well that always opens the wheel picker
 
@@ -253,6 +254,8 @@ struct HighlightSettingsView: View {
 
             // ── Footer ──
             HStack {
+                Button("Import...") { importRules() }
+                Button("Export...") { exportRules() }
                 Spacer()
                 Button("Done") { dismiss() }
                     .buttonStyle(.borderedProminent)
@@ -291,6 +294,53 @@ struct HighlightSettingsView: View {
         fgColor = Color(red: 1, green: 1, blue: 1)
         bgColor = Color(red: 1, green: 0.84, blue: 0)
         isCaseSensitive = false
+    }
+
+    private func exportRules() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "HighlightFilters.json"
+        
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = .prettyPrinted
+                let data = try encoder.encode(viewModel.highlightRules)
+                try data.write(to: url)
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Export Failed"
+                alert.informativeText = error.localizedDescription
+                alert.alertStyle = .critical
+                alert.runModal()
+            }
+        }
+    }
+
+    private func importRules() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let data = try Data(contentsOf: url)
+                let decoder = JSONDecoder()
+                var rules = try decoder.decode([HighlightRule].self, from: data)
+                for i in rules.indices {
+                    rules[i].updateCachedObjects()
+                }
+                viewModel.highlightRules = rules
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Import Failed"
+                alert.informativeText = "Could not read highlight rules. \(error.localizedDescription)"
+                alert.alertStyle = .critical
+                alert.runModal()
+            }
+        }
     }
 }
 

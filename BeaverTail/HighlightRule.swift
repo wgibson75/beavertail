@@ -28,7 +28,7 @@ struct HighlightRule: Identifiable, Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, pattern, foregroundColorHex, backgroundColorHex, isCaseSensitive
+        case pattern, foregroundColorHex, backgroundColorHex, isCaseSensitive
     }
 
     init(id: UUID = UUID(), pattern: String, foregroundColorHex: String, backgroundColorHex: String, isCaseSensitive: Bool = false) {
@@ -42,7 +42,8 @@ struct HighlightRule: Identifiable, Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(UUID.self, forKey: .id)
+        // Auto-generate a new ID upon decoding
+        id = UUID()
         pattern = try container.decode(String.self, forKey: .pattern)
         foregroundColorHex = try container.decode(String.self, forKey: .foregroundColorHex)
         backgroundColorHex = try container.decode(String.self, forKey: .backgroundColorHex)
