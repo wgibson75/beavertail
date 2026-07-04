@@ -487,6 +487,8 @@ struct NativeLogViewer: NSViewRepresentable {
     let isFiltered: Bool
     let textColor: NSColor
     let rules: [HighlightRule]
+    let highlightMatches: [[Int]]
+    let activeRuleIDs: [UUID]
     let selectedFraction: CGFloat?
     let directScrollNotificationName: Notification.Name?
     let tailScrollNotificationName: Notification.Name
@@ -503,7 +505,7 @@ struct NativeLogViewer: NSViewRepresentable {
 
     /// Initializer for the Top Pane (Full Unfiltered Log View)
     init(
-        provider: LineProvider, textColor: NSColor, rules: [HighlightRule], selectedFraction: CGFloat?,
+        provider: LineProvider, textColor: NSColor, rules: [HighlightRule], highlightMatches: [[Int]], activeRuleIDs: [UUID], selectedFraction: CGFloat?,
         directScrollNotificationName: Notification.Name?,
         tailScrollNotificationName: Notification.Name, showLineNumbers: Bool,
         fontSize: CGFloat = 12,
@@ -517,6 +519,8 @@ struct NativeLogViewer: NSViewRepresentable {
         isFiltered = false
         self.textColor = textColor
         self.rules = rules
+        self.highlightMatches = highlightMatches
+        self.activeRuleIDs = activeRuleIDs
         self.selectedFraction = selectedFraction
         self.directScrollNotificationName = directScrollNotificationName
         self.tailScrollNotificationName = tailScrollNotificationName
@@ -532,7 +536,7 @@ struct NativeLogViewer: NSViewRepresentable {
 
     /// Initializer for the Bottom Pane (Filtered Log View)
     init(
-        filteredProvider: LineProvider, textColor: NSColor, rules: [HighlightRule],
+        filteredProvider: LineProvider, textColor: NSColor, rules: [HighlightRule], highlightMatches: [[Int]], activeRuleIDs: [UUID],
         selectedFraction: CGFloat?, tailScrollNotificationName: Notification.Name,
         showLineNumbers: Bool, fontSize: CGFloat = 12,
         markedIndices: Set<Int> = [],
@@ -545,6 +549,8 @@ struct NativeLogViewer: NSViewRepresentable {
         isFiltered = true
         self.textColor = textColor
         self.rules = rules
+        self.highlightMatches = highlightMatches
+        self.activeRuleIDs = activeRuleIDs
         self.selectedFraction = selectedFraction
         directScrollNotificationName = nil
         self.tailScrollNotificationName = tailScrollNotificationName
@@ -782,6 +788,8 @@ struct NativeLogViewer: NSViewRepresentable {
         context.coordinator.isFiltered = isFiltered
         context.coordinator.defaultTextColor = textColor
         context.coordinator.rules = rules
+        context.coordinator.highlightMatches = highlightMatches
+        context.coordinator.activeRuleIDs = activeRuleIDs
         context.coordinator.fontSize = fontSize
         context.coordinator.markedIndices = markedIndices
         context.coordinator.onLineIndexSelected = onLineIndexSelected
@@ -830,6 +838,8 @@ struct NativeLogViewer: NSViewRepresentable {
         var isFiltered: Bool = false
         var defaultTextColor: NSColor = .labelColor
         var rules: [HighlightRule] = []
+        var highlightMatches: [[Int]] = []
+        var activeRuleIDs: [UUID] = []
         var fontSize: CGFloat = 12
         var markedIndices: Set<Int> = []
         var onLineIndexSelected: ((Int) -> Void)?
@@ -943,19 +953,34 @@ struct NativeLogViewer: NSViewRepresentable {
             }
 
             // Resolve this row's highlight-rule background colour (if any)
-            let lineText = provider.line(at: row)
             var bgColor = NSColor.clear
-            let range = NSRange(location: 0, length: lineText.utf16.count)
+            let actualIndex = provider.originalIndex(at: row)
+            
             for rule in rules {
-                if let regex = rule.compiledRegex,
-                   regex.firstMatch(in: lineText, options: [], range: range) != nil {
-                    bgColor = rule.nsBackgroundColor
-                    break
+                if let idx = activeRuleIDs.firstIndex(of: rule.id), idx < highlightMatches.count {
+                    let matches = highlightMatches[idx]
+                    var left = 0
+                    var right = matches.count
+                    var found = false
+                    while left < right {
+                        let mid = left + (right - left) / 2
+                        if matches[mid] == actualIndex {
+                            found = true
+                            break
+                        } else if matches[mid] < actualIndex {
+                            left = mid + 1
+                        } else {
+                            right = mid
+                        }
+                    }
+                    if found {
+                        bgColor = rule.nsBackgroundColor
+                        break
+                    }
                 }
             }
             rowView?.ruleBackgroundColor = bgColor
 
-            let actualIndex = provider.originalIndex(at: row)
             rowView?.isMarked = markedIndices.contains(actualIndex)
 
             return rowView
@@ -1033,12 +1058,28 @@ struct NativeLogViewer: NSViewRepresentable {
             textField?.stringValue = lineText
 
             var cellFgColor = defaultTextColor
-            let range = NSRange(location: 0, length: lineText.utf16.count)
+            let actualIndex = provider.originalIndex(at: row)
             for rule in rules {
-                if let regex = rule.compiledRegex,
-                   regex.firstMatch(in: lineText, options: [], range: range) != nil {
-                    cellFgColor = rule.nsForegroundColor
-                    break
+                if let idx = activeRuleIDs.firstIndex(of: rule.id), idx < highlightMatches.count {
+                    let matches = highlightMatches[idx]
+                    var left = 0
+                    var right = matches.count
+                    var found = false
+                    while left < right {
+                        let mid = left + (right - left) / 2
+                        if matches[mid] == actualIndex {
+                            found = true
+                            break
+                        } else if matches[mid] < actualIndex {
+                            left = mid + 1
+                        } else {
+                            right = mid
+                        }
+                    }
+                    if found {
+                        cellFgColor = rule.nsForegroundColor
+                        break
+                    }
                 }
             }
             textField?.textColor = cellFgColor

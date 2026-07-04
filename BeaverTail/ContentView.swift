@@ -335,6 +335,8 @@ private struct TopPaneView: View {
                 provider: viewModel.lineProvider,
                 textColor: .labelColor,
                 rules: viewModel.highlightRules,
+                highlightMatches: viewModel.currentTab?.highlightMatches ?? [],
+                activeRuleIDs: viewModel.currentTab?.activeRuleIDs ?? [],
                 selectedFraction: viewModel.selectedFraction,
                 directScrollNotificationName: topPaneDirectScrollNotification,
                 tailScrollNotificationName: topPaneScrollToBottomNotification,
@@ -364,7 +366,7 @@ private struct TimelinePaneView: View {
             ZStack(alignment: .topLeading) {
                 VStack(spacing: 0) {
                     let allActiveRules = viewModel.highlightRules.filter { $0.compiledRegex != nil }
-                    let displayedRuleIDs = viewModel.currentTab?.timelineActiveRuleIDs ?? []
+                    let displayedRuleIDs = viewModel.currentTab?.activeRuleIDs ?? []
                     let activeRules = allActiveRules.filter { displayedRuleIDs.contains($0.id) }
 
                     let hasMarks = !(viewModel.currentTab?.markedIndices.isEmpty ?? true)
@@ -535,6 +537,8 @@ private struct BottomPaneView: View {
                             filteredProvider: viewModel.filteredProvider,
                             textColor: .secondaryLabelColor,
                             rules: viewModel.highlightRules,
+                            highlightMatches: viewModel.currentTab?.highlightMatches ?? [],
+                            activeRuleIDs: viewModel.currentTab?.activeRuleIDs ?? [],
                             selectedFraction: viewModel.selectedFraction,
                             tailScrollNotificationName: bottomPaneScrollToBottomNotification,
                             showLineNumbers: viewModel.showLineNumbers,

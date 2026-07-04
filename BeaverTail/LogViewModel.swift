@@ -98,8 +98,7 @@ class LogViewModel: ObservableObject {
     @Published var highlightRules: [HighlightRule] = [] {
         didSet {
             saveRules()
-            generateMinimapDataForAllTabs()
-            generateTimelineDataForAllTabs()
+            generateHighlightDataForAllTabs()
         }
     }
 
@@ -295,7 +294,7 @@ class LogViewModel: ObservableObject {
                         self.fileLoadTimer = nil
                         self.fileLoadProgress = 1.0
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
-                        self.generateMinimapData(for: targetTabID)
+                        self.generateHighlightData(for: targetTabID)
                         if self.selectedTabID == targetTabID { self.startLiveTailingForActiveTab() }
                     }
                 }
@@ -514,21 +513,50 @@ class LogViewModel: ObservableObject {
         }
     }
 
+    func generateHighlightData(for tabID: UUID) {
+        guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        let activeRules = highlightRules.filter { $0.compiledRegex != nil }
+        guard let content = openTabs[index].content, content.count > 0, !activeRules.isEmpty else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if let i = self.openTabs.firstIndex(where: { $0.id == tabID }) {
+                    self.openTabs[i].highlightMatches = []
+                    self.openTabs[i].activeRuleIDs = []
+                    self.generateMinimapData(for: tabID)
+                    self.generateTimelineData(for: tabID)
+                }
+            }
+            return
+        }
+
+        let ruleIDs = activeRules.map { $0.id }
+        let matchers = activeRules.compactMap { LineMatcher.make(pattern: $0.pattern, caseInsensitive: !$0.isCaseSensitive) }
+
+        Task.detached(priority: .utility) { [weak self] in
+            content.extractAllMatches(matchers: matchers) { matches in
+                DispatchQueue.main.async {
+                    guard let self = self, let i = self.openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+                    self.openTabs[i].highlightMatches = matches
+                    self.openTabs[i].activeRuleIDs = ruleIDs
+                    self.generateMinimapData(for: tabID)
+                    self.generateTimelineData(for: tabID)
+                }
+            }
+        }
+    }
+
     func generateMinimapData(for tabID: UUID) {
         minimapTasks[tabID]?.cancel()
         guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
         let activeRules = highlightRules.filter { $0.compiledRegex != nil }
 
-        guard let content = openTabs[index].content, content.count > 0, !activeRules.isEmpty else {
+        guard let content = openTabs[index].content, content.count > 0, !activeRules.isEmpty, openTabs[index].highlightMatches.count == activeRules.count else {
             openTabs[index].minimapImage = nil
             return
         }
 
-        struct RuleCapture { let regex: NSRegularExpression; let color: CGColor }
-        let captures = activeRules.compactMap { rule -> RuleCapture? in
-            guard let rx = rule.compiledRegex else { return nil }
-            return RuleCapture(regex: rx, color: rule.nsBackgroundColor.cgColor)
-        }
+        let cache = openTabs[index].highlightMatches
+        let colors = activeRules.map { $0.nsBackgroundColor.cgColor }
 
         let totalLines = content.count
         minimapTasks[tabID] = Task.detached(priority: .utility) { [weak self] in
@@ -543,75 +571,55 @@ class LogViewModel: ObservableObject {
             ctx.translateBy(x: 0, y: CGFloat(imgHeight))
             ctx.scaleBy(x: 1.0, y: -1.0)
 
-            var extractedMatches: [Int] = []
+            let bSearch: ([Int], Int) -> Int = { arr, el in
+                var low = 0
+                var high = arr.count
+                while low < high {
+                    let mid = low + (high - low) / 2
+                    if arr[mid] < el { low = mid + 1 } else { high = mid }
+                }
+                return low
+            }
 
             for bucket in 0..<imgHeight {
                 if Task.isCancelled { return }
                 let bucketStart = Int(Double(bucket) * Double(totalLines) / Double(imgHeight))
                 if bucketStart >= totalLines { break }
                 
-                let bucketEnd: Int
-                if bucket == imgHeight - 1 {
-                    bucketEnd = totalLines
-                } else {
-                    let fraction = Double(bucket + 1) / Double(imgHeight)
-                    bucketEnd = Int(fraction * Double(totalLines))
-                }
-
+                let bucketEnd = bucket == imgHeight - 1 ? totalLines : Int(Double(bucket + 1) * Double(totalLines) / Double(imgHeight))
                 let linesInBucket = bucketEnd - bucketStart
                 if linesInBucket <= 0 { continue }
 
-                var matchCount = 0, totalSampled = 0
+                var matchCount = 0
                 var matchColor: CGColor?
 
-                // Sample every N-th line in the bucket to reduce work
-                let step = max(1, linesInBucket / 100)
-                var lineIdx = bucketStart
-                while lineIdx < bucketEnd {
-                    let line = content.line(at: lineIdx)
-                    let range = NSRange(location: 0, length: line.utf16.count)
-                    for capture in captures {
-                        if capture.regex.firstMatch(in: line, options: [], range: range) != nil {
-                            matchCount += 1
-                            if matchColor == nil { matchColor = capture.color }
-                            extractedMatches.append(lineIdx)
-                            break
-                        }
+                for mIdx in 0..<cache.count {
+                    let matches = cache[mIdx]
+                    let lower = bSearch(matches, bucketStart)
+                    let upper = bSearch(matches, bucketEnd)
+                    let count = upper - lower
+                    if count > 0 {
+                        matchCount += count
+                        if matchColor == nil { matchColor = colors[mIdx] }
                     }
-                    totalSampled += 1
-                    lineIdx += step
                 }
 
                 guard matchCount > 0, let color = matchColor else { continue }
-                let density = CGFloat(matchCount) / CGFloat(totalSampled)
-                let alpha = max(0.45, min(1.0, density * 1.6))
+                let density = CGFloat(matchCount) / CGFloat(linesInBucket) // Note: total sampled is now actual lines
+                let alpha = max(0.45, min(1.0, density * 5.0)) // scaled to accommodate
                 if let scaledColor = color.copy(alpha: alpha) {
                     ctx.setFillColor(scaledColor)
                     ctx.fill(CGRect(x: 0, y: bucket, width: imgWidth, height: 1))
                 }
-
-                // Yield partial updates periodically
-                if bucket > 0 && bucket % 50 == 0 {
-                    if let interimCGImage = ctx.makeImage() {
-                        let interimBitmap = NSImage(cgImage: interimCGImage, size: NSSize(width: imgWidth, height: imgHeight))
-                        Task { @MainActor [weak self] in
-                            guard let self else { return }
-                            if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                                self.openTabs[freshIndex].minimapImage = interimBitmap
-                            }
-                        }
-                    }
-                }
             }
 
-            guard !Task.isCancelled, let cgImage = ctx.makeImage() else { return }
-            let bitmap = NSImage(cgImage: cgImage, size: NSSize(width: imgWidth, height: imgHeight))
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                    self.openTabs[freshIndex].minimapImage = bitmap
-                    self.openTabs[freshIndex].minimapMatches = extractedMatches
-                    self.objectWillChange.send()
+            if let finalCGImage = ctx.makeImage() {
+                let finalBitmap = NSImage(cgImage: finalCGImage, size: NSSize(width: imgWidth, height: imgHeight))
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
+                        self.openTabs[freshIndex].minimapImage = finalBitmap
+                    }
                 }
             }
         }
@@ -619,6 +627,10 @@ class LogViewModel: ObservableObject {
 
     private func generateMinimapDataForAllTabs() {
         for tab in openTabs { generateMinimapData(for: tab.id) }
+    }
+
+    private func generateHighlightDataForAllTabs() {
+        for tab in openTabs { generateHighlightData(for: tab.id) }
     }
 
     func generateTimelineData(for tabID: UUID) {
@@ -635,11 +647,15 @@ class LogViewModel: ObservableObject {
         let sortedMarks = Array(openTabs[index].markedIndices).sorted()
         let hasMarks = !sortedMarks.isEmpty
 
+        let cache = openTabs[index].highlightMatches
+        let activeRuleIDsCache = openTabs[index].activeRuleIDs
+        let ruleColors = activeRules.map { $0.nsBackgroundColor.cgColor }
+
         let isDark = self.isSystemDark
         let markCGColor = isDark ? CGColor(red: 1, green: 1, blue: 1, alpha: 1) : CGColor(red: 0, green: 0, blue: 0, alpha: 1)
 
         let filterValid = !isFiltered || !filteredIndices.isEmpty
-        guard let content = openTabs[index].content, content.count > 0, !activeRules.isEmpty || hasMarks, filterValid || hasMarks else {
+        guard let content = openTabs[index].content, content.count > 0, !activeRules.isEmpty || hasMarks, filterValid || hasMarks, cache.count == activeRuleIDsCache.count else {
             DispatchQueue.main.async { [weak self] in
                 self?.openTabs[index].timelineImage = nil
                 self?.openTabs[index].isGeneratingTimeline = false
@@ -647,10 +663,9 @@ class LogViewModel: ObservableObject {
             return
         }
 
-        struct RuleCapture { let regex: NSRegularExpression; let color: CGColor }
-        let captures = activeRules.compactMap { rule -> RuleCapture? in
-            guard let rx = rule.compiledRegex else { return nil }
-            return RuleCapture(regex: rx, color: rule.nsBackgroundColor.cgColor)
+        // Map activeRules to the cached indices
+        let mappedCacheIndices = activeRules.compactMap { rule -> Int? in
+            activeRuleIDsCache.firstIndex(of: rule.id)
         }
 
         let logTotalLines = content.count
@@ -668,58 +683,68 @@ class LogViewModel: ObservableObject {
                 return low
             }
 
-            var newTimelineMatches: [[Int]] = Array(repeating: [], count: captures.count)
-            var bucketMatchCounts = [[Int]](repeating: [Int](repeating: 0, count: captures.count), count: imgHeight)
+            var newTimelineMatches: [[Int]] = Array(repeating: [], count: activeRules.count)
+            var bucketMatchCounts = [[Int]](repeating: [Int](repeating: 0, count: activeRules.count), count: imgHeight)
             var bucketSampledCounts = [Int](repeating: 0, count: imgHeight)
 
             for bucket in 0..<imgHeight {
                 if Task.isCancelled { return }
                 let bucketStart = Int(Double(bucket) * Double(logTotalLines) / Double(imgHeight))
                 if bucketStart >= logTotalLines { break }
-                let bucketEnd = bucket == imgHeight - 1 ? logTotalLines : Int(Double(bucket + 1) * Double(logTotalLines) / Double(imgHeight))
+                let bucketEnd: Int; if bucket == imgHeight - 1 { bucketEnd = logTotalLines } else { let _bd = Double(bucket + 1); let _ld = Double(logTotalLines); let _hd = Double(imgHeight); bucketEnd = Int(_bd * _ld / _hd) }
 
-                var bucketIndices: [Int] = []
                 if isFiltered {
-                    let lower = bSearch(filteredIndices, bucketStart)
-                    let upper = bSearch(filteredIndices, bucketEnd)
-                    if lower < upper {
-                        bucketIndices = Array(filteredIndices[lower..<upper])
-                    }
-                }
-
-                let countInBucket = isFiltered ? bucketIndices.count : (bucketEnd - bucketStart)
-                if countInBucket == 0 { continue }
-
-                var matchCounts = [Int](repeating: 0, count: captures.count)
-
-                for idx in 0..<countInBucket {
-                    let lineIdx: Int
-                    if isFiltered {
-                        lineIdx = bucketIndices[idx]
-                    } else {
-                        lineIdx = bucketStart + idx
-                    }
-
-                    let line = content.line(at: lineIdx)
-                    let range = NSRange(location: 0, length: line.utf16.count)
-                    for (i, capture) in captures.enumerated() {
-                        if capture.regex.firstMatch(in: line, options: [], range: range) != nil {
-                            matchCounts[i] += 1
-                            if matchCounts[i] == 1 {
-                                newTimelineMatches[i].append(lineIdx)
+                    let fLower = bSearch(filteredIndices, bucketStart)
+                    let fUpper = bSearch(filteredIndices, bucketEnd)
+                    let countInBucket = fUpper - fLower
+                    if countInBucket == 0 { continue }
+                    
+                    var matchCounts = [Int](repeating: 0, count: activeRules.count)
+                    for (i, cacheIdx) in mappedCacheIndices.enumerated() {
+                        let matches = cache[cacheIdx]
+                        var count = 0
+                        var firstHitLine: Int? = nil
+                        // Fast intersection for this bucket
+                        for fIdx in fLower..<fUpper {
+                            let lineIdx = filteredIndices[fIdx]
+                            let rLower = bSearch(matches, lineIdx)
+                            if rLower < matches.count && matches[rLower] == lineIdx {
+                                count += 1
+                                if firstHitLine == nil { firstHitLine = lineIdx }
                             }
                         }
+                        matchCounts[i] = count
+                        if let hit = firstHitLine {
+                            newTimelineMatches[i].append(hit)
+                        }
                     }
-                }
+                    bucketMatchCounts[bucket] = matchCounts
+                    bucketSampledCounts[bucket] = countInBucket
 
-                bucketMatchCounts[bucket] = matchCounts
-                bucketSampledCounts[bucket] = countInBucket
+                } else {
+                    let countInBucket = bucketEnd - bucketStart
+                    if countInBucket == 0 { continue }
+
+                    var matchCounts = [Int](repeating: 0, count: activeRules.count)
+                    for (i, cacheIdx) in mappedCacheIndices.enumerated() {
+                        let matches = cache[cacheIdx]
+                        let lower = bSearch(matches, bucketStart)
+                        let upper = bSearch(matches, bucketEnd)
+                        let count = upper - lower
+                        matchCounts[i] = count
+                        if count > 0 {
+                            newTimelineMatches[i].append(matches[lower])
+                        }
+                    }
+                    bucketMatchCounts[bucket] = matchCounts
+                    bucketSampledCounts[bucket] = countInBucket
+                }
             }
 
             if Task.isCancelled { return }
 
             var displayedRuleIndices: [Int] = []
-            for i in 0..<captures.count {
+            for i in 0..<activeRules.count {
                 if !newTimelineMatches[i].isEmpty {
                     displayedRuleIndices.append(i)
                 }
@@ -777,7 +802,7 @@ class LogViewModel: ObservableObject {
                     if count > 0 {
                         let density = CGFloat(count) / CGFloat(totalSampled)
                         let alpha = max(0.45, min(1.0, density * 1.6))
-                        if let scaledColor = captures[originalIdx].color.copy(alpha: alpha) {
+                        if let scaledColor = ruleColors[originalIdx].copy(alpha: alpha) {
                             ctx.setFillColor(scaledColor)
                             let colIdx = dispIdx + ruleOffset
                             let xOffset = colIdx * colWidth
@@ -883,37 +908,41 @@ class LogViewModel: ObservableObject {
         let exactLine = Int(clampedFraction * CGFloat(totalCount - 1))
         var finalExactLine = exactLine
 
-        let matches = openTabs[index].minimapMatches
-        if !matches.isEmpty {
-            var closestVal = matches[0]
-            var minDiff = abs(matches[0] - exactLine)
+        let cache = openTabs[index].highlightMatches
+        var globalClosestVal = -1
+        var globalMinDiff = Int.max
 
-            var left = 0
-            var right = matches.count
-            while left < right {
-                let mid = left + (right - left) / 2
-                if matches[mid] < exactLine { left = mid + 1 } else { right = mid }
-            }
+        for matches in cache {
+            if !matches.isEmpty {
+                var left = 0
+                var right = matches.count
+                while left < right {
+                    let mid = left + (right - left) / 2
+                    if matches[mid] < exactLine { left = mid + 1 } else { right = mid }
+                }
 
-            if left < matches.count {
-                let diff = abs(matches[left] - exactLine)
-                if diff < minDiff {
-                    minDiff = diff
-                    closestVal = matches[left]
+                if left < matches.count {
+                    let diff = abs(matches[left] - exactLine)
+                    if diff < globalMinDiff {
+                        globalMinDiff = diff
+                        globalClosestVal = matches[left]
+                    }
+                }
+                if left - 1 >= 0 {
+                    let diff = abs(matches[left - 1] - exactLine)
+                    if diff < globalMinDiff {
+                        globalMinDiff = diff
+                        globalClosestVal = matches[left - 1]
+                    }
                 }
             }
-            if left - 1 >= 0 {
-                let diff = abs(matches[left - 1] - exactLine)
-                if diff < minDiff {
-                    minDiff = diff
-                    closestVal = matches[left - 1]
-                }
-            }
+        }
 
+        if globalClosestVal != -1 {
             // Snap if within roughly 3 pixels in the minimap representation
             let stickyTolerance = max(1, totalCount / 1500) * 3
-            if minDiff <= stickyTolerance {
-                finalExactLine = closestVal
+            if globalMinDiff <= stickyTolerance {
+                finalExactLine = globalClosestVal
             }
         }
 
@@ -1109,7 +1138,7 @@ class LogViewModel: ObservableObject {
                         self.fileLoadTimer = nil
                         self.fileLoadProgress = 1.0
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
-                        self.generateMinimapData(for: id)
+                        self.generateHighlightData(for: id)
                         let savedPattern = self.openTabs[freshIndex].filterPattern
                         if !savedPattern.isEmpty && self.selectedTabID == id {
                             self.applyFilter(with: savedPattern)
@@ -1280,16 +1309,17 @@ class LogViewModel: ObservableObject {
                                 var linesArray = text.components(separatedBy: .newlines).map { $0.replacingOccurrences(of: "\r", with: "") }
                                 if linesArray.last?.isEmpty == true { linesArray.removeLast() }
 
-                                guard !linesArray.isEmpty else { continue }
+                                let finalLines = linesArray
+                                guard !finalLines.isEmpty else { continue }
 
-                                await MainActor.run {
+                                await MainActor.run { [weak self] in
                                     guard let self = self else { return }
                                     if let idx = self.openTabs.firstIndex(where: { $0.id == tabID }),
                                        let content = self.openTabs[idx].content {
                                         let baseOffset = content.count
-                                        content.appendLines(linesArray)
+                                        content.appendLines(finalLines)
                                         self.generateMinimapData(for: tabID)
-                                        self.appendFilterForLiveTail(with: linesArray, startingAt: baseOffset)
+                                        self.appendFilterForLiveTail(with: finalLines, startingAt: baseOffset)
                                         self.objectWillChange.send()
                                         if self.followTail {
                                             DispatchQueue.main.async {

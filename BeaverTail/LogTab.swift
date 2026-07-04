@@ -35,6 +35,8 @@ struct LogTab: Identifiable, Equatable, Codable {
     var minimapImage: NSImage?
     var minimapMatches: [Int] = []
     var timelineImage: NSImage?
+    var highlightMatches: [[Int]] = []
+    var activeRuleIDs: [UUID] = []
     var timelineMatches: [[Int]] = []
     var timelineActiveRuleIDs: [UUID] = []
     var isGeneratingTimeline: Bool = false
@@ -81,6 +83,8 @@ struct LogTab: Identifiable, Equatable, Codable {
         minimapImage: NSImage? = nil,
         minimapMatches: [Int] = [],
         timelineImage: NSImage? = nil,
+        highlightMatches: [[Int]] = [],
+        activeRuleIDs: [UUID] = [],
         timelineMatches: [[Int]] = [],
         timelineActiveRuleIDs: [UUID] = [],
         isGeneratingTimeline: Bool = false,
@@ -102,6 +106,8 @@ struct LogTab: Identifiable, Equatable, Codable {
         self.minimapImage = minimapImage
         self.minimapMatches = minimapMatches
         self.timelineImage = timelineImage
+        self.highlightMatches = highlightMatches
+        self.activeRuleIDs = activeRuleIDs
         self.timelineMatches = timelineMatches
         self.timelineActiveRuleIDs = timelineActiveRuleIDs
         self.isGeneratingTimeline = isGeneratingTimeline
@@ -133,6 +139,8 @@ struct LogTab: Identifiable, Equatable, Codable {
         minimapImage = nil
         minimapMatches = []
         timelineImage = nil
+        highlightMatches = []
+        activeRuleIDs = []
         timelineMatches = []
         timelineActiveRuleIDs = []
         isGeneratingTimeline = false

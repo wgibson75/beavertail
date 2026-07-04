@@ -207,7 +207,7 @@ enum LineMatcher {
 /// Returns true if `[hay, hay+len)` contains the needle `[needle, needle+nlen)`,
 /// comparing ASCII letters case-insensitively. Pointer-based, no allocation.
 @inline(__always)
-private func asciiInsensitiveContainsPtr(_ hay: UnsafePointer<UInt8>, _ len: Int, _ needle: UnsafePointer<UInt8>?, _ nlen: Int) -> Bool {
+    nonisolated private func asciiInsensitiveContainsPtr(_ hay: UnsafePointer<UInt8>, _ len: Int, _ needle: UnsafePointer<UInt8>?, _ nlen: Int) -> Bool {
     if nlen == 0 { return true }
     guard let needle, len >= nlen else { return false }
     let cFirst = needle[0]
@@ -450,7 +450,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
     // MARK: - Filter scan helpers
 
     /// Scan mode used by ScanParams.
-    private enum ScanMode {
+    private enum ScanMode: Sendable {
         case litSensitive, litInsensitive
         case multiLitSensitive, multiLitInsensitive
         case regexOnly, regexPreSensitive, regexPreInsensitive
@@ -466,7 +466,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
         let firstByteTable: [Bool]   // 256-entry acceptance table
     }
 
-    private static func buildScanParams(from matcher: LineMatcher) -> ScanParams {
+    nonisolated private static func buildScanParams(from matcher: LineMatcher) -> ScanParams {
         var blob: [UInt8] = []
         var offs: [Int] = []
         var lens: [Int] = []
@@ -491,9 +491,11 @@ final class LogContent: LineProvider, @unchecked Sendable {
                 : (caseInsensitive ? .regexPreInsensitive : .regexPreSensitive)
         }
         let needleCount = offs.count
-        let isCaseInsensitive = (mode == .litInsensitive
-            || mode == .multiLitInsensitive
-            || mode == .regexPreInsensitive)
+        let isCaseInsensitive: Bool
+        switch mode {
+        case .litInsensitive, .multiLitInsensitive, .regexPreInsensitive: isCaseInsensitive = true
+        default: isCaseInsensitive = false
+        }
         var firstByteTable = [Bool](repeating: false, count: 256)
         for idx in 0 ..< needleCount where lens[idx] > 0 {
             let byte = blob[offs[idx]]
@@ -642,7 +644,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
                         let starts = lineStarts
                         let total = totalBytes
                         nonisolated(unsafe) let nBlob = blobBase
-                        let scanParams = params
+                        
                         partials.withUnsafeMutableBufferPointer { outParam in
                             nonisolated(unsafe) let out = outParam
                             DispatchQueue.concurrentPerform(iterations: chunkCount) { chunkIdx in
@@ -662,7 +664,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
                                             let lineLen = lineEnd - lineStart
                                             if Self.lineMatchesScan(
                                                 base: base, start: lineStart, len: lineLen,
-                                                params: scanParams, fbBase: fbBase, blobBase: nBlob
+                                                params: params, fbBase: fbBase, blobBase: nBlob
                                             ) { matches.append(lineIdx) }
                                             sinceReport += 1
                                         }
@@ -701,8 +703,136 @@ final class LogContent: LineProvider, @unchecked Sendable {
         onUpdate(finalMatches)
     }
 
-    /// Tests a single decoded line against the matcher (used for live-tail lines).
-    private func lineMatches(_ line: String, matcher: LineMatcher) -> Bool {
+    /// Optimized extraction of all lines matching multiple matchers in a single parallel pass.
+    nonisolated func extractAllMatches(matchers: [LineMatcher], onUpdate: @escaping ([[Int]]) -> Void) {
+        let indexed = lineStarts.count
+        guard indexed > 0, !matchers.isEmpty else { onUpdate(Array(repeating: [], count: matchers.count)); return }
+
+        let paramsList = matchers.map { Self.buildScanParams(from: $0) }
+        var allBlobs: [UInt8] = []
+        var allFbs: [Bool] = []
+        var offsets = [(blobOff: Int, fbOff: Int)]()
+
+        for p in paramsList {
+            offsets.append((blobOff: allBlobs.count, fbOff: allFbs.count))
+            allBlobs.append(contentsOf: p.blob)
+            allFbs.append(contentsOf: p.firstByteTable)
+        }
+
+        let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
+        let targetChunks = min(coreCount * 8, 128)
+        let chunkSize = max(1, (indexed + targetChunks - 1) / targetChunks)
+        var ranges: [(start: Int, end: Int)] = []
+        var rangeStart = 0
+        while rangeStart < indexed {
+            let rangeEnd = min(rangeStart + chunkSize, indexed)
+            ranges.append((rangeStart, rangeEnd))
+            rangeStart = rangeEnd
+        }
+        let chunkCount = ranges.count
+
+        let outLock = NSLock()
+        var nextChunkToEmit = 0
+        var emittedSoFar = [[Int]](repeating: [], count: matchers.count)
+        var completeChunks: [Int: [[Int]]] = [:]
+        
+        var lastEmitTime = DispatchTime.now()
+
+        let performUpdates = { (snapshot: [[Int]], force: Bool) in
+            outLock.lock()
+            let now = DispatchTime.now()
+            let diff = now.uptimeNanoseconds - lastEmitTime.uptimeNanoseconds
+            let shouldEmit = force || diff > 150_000_000
+            if shouldEmit { lastEmitTime = now }
+            outLock.unlock()
+            
+            if shouldEmit {
+                onUpdate(snapshot)
+            }
+        }
+
+        if chunkCount > 0 {
+            allFbs.withUnsafeBufferPointer { fbPtr in
+                let fbBase = fbPtr.baseAddress!
+                allBlobs.withUnsafeBufferPointer { blobPtr in
+                    let blobBase = blobPtr.baseAddress
+                    data.withUnsafeBytes { rawBuffer in
+                        nonisolated(unsafe) let base = UnsafePointer(rawBuffer.bindMemory(to: UInt8.self).baseAddress!)
+                        let starts = lineStarts
+                        let total = totalBytes
+                        nonisolated(unsafe) let nBlob = blobBase
+                        
+                        nonisolated(unsafe) let nFbs = fbBase
+
+                        DispatchQueue.concurrentPerform(iterations: chunkCount) { chunkIdx in
+                            let (cs, ce) = ranges[chunkIdx]
+                            var chunkMatches = [[Int]](repeating: [], count: paramsList.count)
+                            var startIdx = cs
+                            while startIdx < ce {
+                                autoreleasepool {
+                                    let endIdx = min(startIdx + 2048, ce)
+                                    for lineIdx in startIdx ..< endIdx {
+                                        let lineStart = starts[lineIdx]
+                                        let rawEnd = (lineIdx + 1 < indexed) ? starts[lineIdx + 1] - 1 : total
+                                        var lineEnd = max(lineStart, rawEnd)
+                                        if lineEnd > lineStart, base[lineEnd - 1] == 0x0D { lineEnd -= 1 }
+                                        let lineLen = lineEnd - lineStart
+
+                                        for mIdx in 0..<paramsList.count {
+                                            let p = paramsList[mIdx]
+                                            let off = offsets[mIdx]
+                                            if Self.lineMatchesScan(
+                                                base: base, start: lineStart, len: lineLen,
+                                                params: p, fbBase: nFbs + off.fbOff, blobBase: nBlob != nil ? nBlob! + off.blobOff : nil
+                                            ) {
+                                                chunkMatches[mIdx].append(lineIdx)
+                                            }
+                                        }
+                                    }
+                                    startIdx = endIdx
+                                }
+                            }
+                            
+                            outLock.lock()
+                            completeChunks[chunkIdx] = chunkMatches
+                            var didEmit = false
+                            while let ready = completeChunks.removeValue(forKey: nextChunkToEmit) {
+                                for mIdx in 0..<matchers.count {
+                                    emittedSoFar[mIdx].append(contentsOf: ready[mIdx])
+                                }
+                                nextChunkToEmit += 1
+                                didEmit = true
+                            }
+                            let snapshot = emittedSoFar
+                            outLock.unlock()
+                            
+                            if didEmit {
+                                performUpdates(snapshot, false)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        outLock.lock()
+        var finalMatches = emittedSoFar
+        outLock.unlock()
+        
+        if !appended.isEmpty {
+            for (offset, line) in appended.enumerated() {
+                for mIdx in 0..<matchers.count {
+                    if lineMatches(line, matcher: matchers[mIdx]) {
+                        finalMatches[mIdx].append(indexed + offset)
+                    }
+                }
+            }
+        }
+        
+        performUpdates(finalMatches, true)
+    }
+
+    nonisolated private func lineMatches(_ line: String, matcher: LineMatcher) -> Bool {
         let bytes = Array(line.utf8)
         switch matcher {
         case .literalSensitive(let needle):

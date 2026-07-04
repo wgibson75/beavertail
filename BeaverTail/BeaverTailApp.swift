@@ -81,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.windows
                 .filter { $0.canBecomeMain }
                 .forEach { $0.makeKeyAndOrderFront(nil) }
-            NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+            NSApplication.shared.activate()
         }
         // Second attempt after a short delay covers the case where the window
         // needs a run-loop cycle to become ready after a fresh launch with a file.
@@ -90,7 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.windows
                 .filter { $0.canBecomeMain }
                 .forEach { $0.makeKeyAndOrderFront(nil) }
-            NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+            NSApplication.shared.activate()
         }
     }
 }
