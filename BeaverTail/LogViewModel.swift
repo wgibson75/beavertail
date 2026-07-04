@@ -1318,7 +1318,9 @@ class LogViewModel: ObservableObject {
                                        let content = self.openTabs[idx].content {
                                         let baseOffset = content.count
                                         content.appendLines(finalLines)
+                                        self.appendHighlightsForLiveTail(with: finalLines, startingAt: baseOffset)
                                         self.generateMinimapData(for: tabID)
+                                        self.generateTimelineData(for: tabID)
                                         self.appendFilterForLiveTail(with: finalLines, startingAt: baseOffset)
                                         self.objectWillChange.send()
                                         if self.followTail {
@@ -1382,6 +1384,33 @@ class LogViewModel: ObservableObject {
                 DispatchQueue.main.async {
                     NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
                 }
+            }
+        }
+    }
+
+    func appendHighlightsForLiveTail(with newLines: [String], startingAt originalStartIndex: Int) {
+        guard let tabID = selectedTabID,
+              let tabIndex = openTabs.firstIndex(where: { $0.id == tabID })
+        else { return }
+
+        let activeRules = highlightRules.filter { $0.compiledRegex != nil }
+        guard !activeRules.isEmpty, openTabs[tabIndex].highlightMatches.count == activeRules.count else { return }
+
+        var incrementalMatchesForRules = [[Int]](repeating: [], count: activeRules.count)
+        
+        for (idx, rule) in activeRules.enumerated() {
+            guard let regex = rule.compiledRegex else { continue }
+            for (offset, line) in newLines.enumerated() {
+                let range = NSRange(location: 0, length: line.utf16.count)
+                if regex.firstMatch(in: line, options: [], range: range) != nil {
+                    incrementalMatchesForRules[idx].append(originalStartIndex + offset)
+                }
+            }
+        }
+        
+        for idx in 0..<activeRules.count {
+            if !incrementalMatchesForRules[idx].isEmpty {
+                openTabs[tabIndex].highlightMatches[idx].append(contentsOf: incrementalMatchesForRules[idx])
             }
         }
     }
