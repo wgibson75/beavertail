@@ -33,6 +33,7 @@ struct LogTab: Identifiable, Equatable, Codable {
     var followTail: Bool = true
 
     var minimapImage: NSImage?
+    var minimapMatches: [Int] = []
     var timelineImage: NSImage?
     var timelineMatches: [[Int]] = []
     var timelineActiveRuleIDs: [UUID] = []
@@ -78,6 +79,7 @@ struct LogTab: Identifiable, Equatable, Codable {
         filterMessage: String? = nil,
         selectedFraction: CGFloat? = nil,
         minimapImage: NSImage? = nil,
+        minimapMatches: [Int] = [],
         timelineImage: NSImage? = nil,
         timelineMatches: [[Int]] = [],
         timelineActiveRuleIDs: [UUID] = [],
@@ -98,6 +100,7 @@ struct LogTab: Identifiable, Equatable, Codable {
         self.filterMessage = filterMessage
         self.selectedFraction = selectedFraction
         self.minimapImage = minimapImage
+        self.minimapMatches = minimapMatches
         self.timelineImage = timelineImage
         self.timelineMatches = timelineMatches
         self.timelineActiveRuleIDs = timelineActiveRuleIDs
@@ -128,6 +131,7 @@ struct LogTab: Identifiable, Equatable, Codable {
         filterMessage = nil
         selectedFraction = nil
         minimapImage = nil
+        minimapMatches = []
         timelineImage = nil
         timelineMatches = []
         timelineActiveRuleIDs = []

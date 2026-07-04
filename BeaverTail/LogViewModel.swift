@@ -543,21 +543,29 @@ class LogViewModel: ObservableObject {
             ctx.translateBy(x: 0, y: CGFloat(imgHeight))
             ctx.scaleBy(x: 1.0, y: -1.0)
 
+            var extractedMatches: [Int] = []
+
             for bucket in 0..<imgHeight {
                 if Task.isCancelled { return }
                 let bucketStart = Int(Double(bucket) * Double(totalLines) / Double(imgHeight))
                 if bucketStart >= totalLines { break }
-                let bucketEnd = bucket == imgHeight - 1 ? totalLines : Int(Double(bucket + 1) * Double(totalLines) / Double(imgHeight))
+                
+                let bucketEnd: Int
+                if bucket == imgHeight - 1 {
+                    bucketEnd = totalLines
+                } else {
+                    let fraction = Double(bucket + 1) / Double(imgHeight)
+                    bucketEnd = Int(fraction * Double(totalLines))
+                }
 
                 let linesInBucket = bucketEnd - bucketStart
                 if linesInBucket <= 0 { continue }
 
-                let maxSamples = min(linesInBucket, 30)
-                let step = max(1, linesInBucket / maxSamples)
-
                 var matchCount = 0, totalSampled = 0
                 var matchColor: CGColor?
 
+                // Sample every N-th line in the bucket to reduce work
+                let step = max(1, linesInBucket / 100)
                 var lineIdx = bucketStart
                 while lineIdx < bucketEnd {
                     let line = content.line(at: lineIdx)
@@ -566,6 +574,7 @@ class LogViewModel: ObservableObject {
                         if capture.regex.firstMatch(in: line, options: [], range: range) != nil {
                             matchCount += 1
                             if matchColor == nil { matchColor = capture.color }
+                            extractedMatches.append(lineIdx)
                             break
                         }
                     }
@@ -580,6 +589,19 @@ class LogViewModel: ObservableObject {
                     ctx.setFillColor(scaledColor)
                     ctx.fill(CGRect(x: 0, y: bucket, width: imgWidth, height: 1))
                 }
+
+                // Yield partial updates periodically
+                if bucket > 0 && bucket % 50 == 0 {
+                    if let interimCGImage = ctx.makeImage() {
+                        let interimBitmap = NSImage(cgImage: interimCGImage, size: NSSize(width: imgWidth, height: imgHeight))
+                        Task { @MainActor [weak self] in
+                            guard let self else { return }
+                            if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
+                                self.openTabs[freshIndex].minimapImage = interimBitmap
+                            }
+                        }
+                    }
+                }
             }
 
             guard !Task.isCancelled, let cgImage = ctx.makeImage() else { return }
@@ -588,6 +610,7 @@ class LogViewModel: ObservableObject {
                 guard let self else { return }
                 if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
                     self.openTabs[freshIndex].minimapImage = bitmap
+                    self.openTabs[freshIndex].minimapMatches = extractedMatches
                     self.objectWillChange.send()
                 }
             }
@@ -667,21 +690,14 @@ class LogViewModel: ObservableObject {
                 let countInBucket = isFiltered ? bucketIndices.count : (bucketEnd - bucketStart)
                 if countInBucket == 0 { continue }
 
-                let maxSamples = min(countInBucket, 30)
-                let step = max(1, countInBucket / max(1, maxSamples))
-
                 var matchCounts = [Int](repeating: 0, count: captures.count)
-                var totalSampled = 0
 
-                var idx = 0
-                while idx < maxSamples {
+                for idx in 0..<countInBucket {
                     let lineIdx: Int
                     if isFiltered {
-                        guard idx * step < bucketIndices.count else { break }
-                        lineIdx = bucketIndices[idx * step]
+                        lineIdx = bucketIndices[idx]
                     } else {
-                        lineIdx = bucketStart + idx * step
-                        if lineIdx >= bucketEnd { break }
+                        lineIdx = bucketStart + idx
                     }
 
                     let line = content.line(at: lineIdx)
@@ -694,12 +710,10 @@ class LogViewModel: ObservableObject {
                             }
                         }
                     }
-                    totalSampled += 1
-                    idx += 1
                 }
 
                 bucketMatchCounts[bucket] = matchCounts
-                bucketSampledCounts[bucket] = totalSampled
+                bucketSampledCounts[bucket] = countInBucket
             }
 
             if Task.isCancelled { return }
@@ -867,21 +881,57 @@ class LogViewModel: ObservableObject {
         guard totalCount > 0 else { return }
         let clampedFraction = max(0, min(1, fraction))
         let exactLine = Int(clampedFraction * CGFloat(totalCount - 1))
+        var finalExactLine = exactLine
+
+        let matches = openTabs[index].minimapMatches
+        if !matches.isEmpty {
+            var closestVal = matches[0]
+            var minDiff = abs(matches[0] - exactLine)
+
+            var left = 0
+            var right = matches.count
+            while left < right {
+                let mid = left + (right - left) / 2
+                if matches[mid] < exactLine { left = mid + 1 } else { right = mid }
+            }
+
+            if left < matches.count {
+                let diff = abs(matches[left] - exactLine)
+                if diff < minDiff {
+                    minDiff = diff
+                    closestVal = matches[left]
+                }
+            }
+            if left - 1 >= 0 {
+                let diff = abs(matches[left - 1] - exactLine)
+                if diff < minDiff {
+                    minDiff = diff
+                    closestVal = matches[left - 1]
+                }
+            }
+
+            // Snap if within roughly 3 pixels in the minimap representation
+            let stickyTolerance = max(1, totalCount / 1500) * 3
+            if minDiff <= stickyTolerance {
+                finalExactLine = closestVal
+            }
+        }
+
         // A one-pixel movement in the minimap can represent many log lines in
         // large files, so treat the second click as repeated if it lands in the
         // same approximate minimap bucket rather than requiring the exact same
         // line number.
         let repeatedSelectionTolerance = max(1, totalCount / 1500)
         let isRepeatedMinimapSelection = lastMinimapSelectedLineByTab[tabID].map {
-            abs($0 - exactLine) <= repeatedSelectionTolerance
+            abs($0 - finalExactLine) <= repeatedSelectionTolerance
         } ?? false
-        lastMinimapSelectedLineByTab[tabID] = exactLine
+        lastMinimapSelectedLineByTab[tabID] = finalExactLine
         isScrubbingMinimap = false
-        openTabs[index].selectedFraction = clampedFraction
+        openTabs[index].selectedFraction = max(0, min(1, CGFloat(finalExactLine) / CGFloat(totalCount - 1)))
         NotificationCenter.default.post(
             name: topPaneDirectScrollNotification,
             object: TopPaneDirectScrollRequest(
-                lineIndex: exactLine,
+                lineIndex: finalExactLine,
                 allowsHorizontalScroll: isRepeatedMinimapSelection
             )
         )
