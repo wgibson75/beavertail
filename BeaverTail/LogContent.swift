@@ -369,7 +369,6 @@ final class LogContent: LineProvider, @unchecked Sendable {
         data.withUnsafeBytes { raw in
             if let p = raw.baseAddress {
                 madvise(UnsafeMutableRawPointer(mutating: p), raw.count, MADV_SEQUENTIAL)
-                madvise(UnsafeMutableRawPointer(mutating: p), raw.count, MADV_WILLNEED)
             }
         }
         let newline: UInt8 = 0x0A
@@ -377,13 +376,9 @@ final class LogContent: LineProvider, @unchecked Sendable {
         let lineStarts: ContiguousArray<Int> = data.withUnsafeBytes { rawBuffer in
             nonisolated(unsafe) let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress!
             let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
-            // Use massive chunks so threads chew through linear memory sequentially
-            // instead of thrashing the disk readhead with hundreds of tiny cross-file chunks
             let targetChunks = coreCount
             let approxChunk = max(1, total / targetChunks)
 
-            // Split the byte range into chunks. Newline counting doesn't care
-            // about line boundaries, so chunks can split anywhere.
             var ranges: [(start: Int, end: Int)] = []
             var s = 0
             while s < total {
@@ -393,8 +388,6 @@ final class LogContent: LineProvider, @unchecked Sendable {
             }
 
             let chunkCount = ranges.count
-            // Each chunk records the start offset (newlinePos + 1) of every line
-            // that begins within it.
             var partials = [[Int]](repeating: [], count: chunkCount)
 
             partials.withUnsafeMutableBufferPointer { outParam in
@@ -402,13 +395,13 @@ final class LogContent: LineProvider, @unchecked Sendable {
                 DispatchQueue.concurrentPerform(iterations: chunkCount) { i in
                     let (cs, ce) = ranges[i]
                     var local: [Int] = []
-                    local.reserveCapacity((ce - cs) / 40)
+                    local.reserveCapacity((ce - cs) / 100)
 
                     var ptr: UnsafeRawPointer = UnsafeRawPointer(base + cs)
                     let endPtr: UnsafeRawPointer = UnsafeRawPointer(base + ce)
 
                     var sinceReport = 0
-                    let reportChunk = min((ce - cs) / 200, 100_000)
+                    let reportChunk = max(100_000, (ce - cs) / 20)
 
                     while ptr < endPtr, let found = memchr(ptr, Int32(newline), ptr.distance(to: endPtr)) {
                         let foundPtr = found.assumingMemoryBound(to: UInt8.self)
@@ -436,10 +429,9 @@ final class LogContent: LineProvider, @unchecked Sendable {
 
             var starts = ContiguousArray<Int>()
             starts.reserveCapacity(totalNewlines + 1)
-            starts.append(0) // the first line always starts at byte 0
+            starts.append(0)
             for c in partials { starts.append(contentsOf: c) }
-            // If the file ends with a newline, the final recorded start points to
-            // EOF (an empty trailing line) — drop it so we match "no trailing line".
+
             if let last = starts.last, last == total { starts.removeLast() }
             return starts
         }
@@ -518,7 +510,9 @@ final class LogContent: LineProvider, @unchecked Sendable {
         start: Int, len: Int,
         params: ScanParams,
         fbBase: UnsafePointer<Bool>,
-        blobBase: UnsafePointer<UInt8>?
+        blobBase: UnsafePointer<UInt8>?,
+        cachedLineStr: inout String?,
+        localRegex: NSRegularExpression?
     ) -> Bool {
         let needleCount = params.offsets.count
         let offsLet = params.offsets
@@ -576,9 +570,12 @@ final class LogContent: LineProvider, @unchecked Sendable {
             }
             return false
         case .regexOnly:
-            let lineStr = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
+            if cachedLineStr == nil {
+                cachedLineStr = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
+            }
+            let lineStr = cachedLineStr!
             let range = NSRange(location: 0, length: lineStr.utf16.count)
-            return params.regex!.firstMatch(in: lineStr, options: [], range: range) != nil
+            return localRegex!.firstMatch(in: lineStr, options: [], range: range) != nil
         case .regexPreSensitive:
             var hit = false
             var ki = 0
@@ -588,9 +585,12 @@ final class LogContent: LineProvider, @unchecked Sendable {
                 ki += 1
             }
             guard hit else { return false }
-            let lineStr = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
+            if cachedLineStr == nil {
+                cachedLineStr = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
+            }
+            let lineStr = cachedLineStr!
             let range = NSRange(location: 0, length: lineStr.utf16.count)
-            return params.regex!.firstMatch(in: lineStr, options: [], range: range) != nil
+            return localRegex!.firstMatch(in: lineStr, options: [], range: range) != nil
         case .regexPreInsensitive:
             var hit = false
             var ki = 0
@@ -601,9 +601,12 @@ final class LogContent: LineProvider, @unchecked Sendable {
                 ki += 1
             }
             guard hit else { return false }
-            let lineStr = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
+            if cachedLineStr == nil {
+                cachedLineStr = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
+            }
+            let lineStr = cachedLineStr!
             let range = NSRange(location: 0, length: lineStr.utf16.count)
-            return params.regex!.firstMatch(in: lineStr, options: [], range: range) != nil
+            return localRegex!.firstMatch(in: lineStr, options: [], range: range) != nil
         }
     }
 
@@ -632,6 +635,17 @@ final class LogContent: LineProvider, @unchecked Sendable {
         var emittedSoFar: [Int] = []
         var completeChunks: [Int: [Int]] = [:]
 
+        var lastEmitTime = DispatchTime.now()
+        let performUpdates = { (snapshot: [Int], force: Bool) in
+            outLock.lock()
+            let now = DispatchTime.now()
+            let diff = now.uptimeNanoseconds - lastEmitTime.uptimeNanoseconds
+            let shouldEmit = force || diff > 150_000_000
+            if shouldEmit { lastEmitTime = now }
+            outLock.unlock()
+            if shouldEmit { onUpdate(snapshot) }
+        }
+
         if chunkCount > 0 {
             params.firstByteTable.withUnsafeBufferPointer { fbPtr in
                 let fbBase = fbPtr.baseAddress!
@@ -645,45 +659,53 @@ final class LogContent: LineProvider, @unchecked Sendable {
                         let total = totalBytes
                         nonisolated(unsafe) let nBlob = blobBase
                         
-                        partials.withUnsafeMutableBufferPointer { outParam in
-                            nonisolated(unsafe) let out = outParam
-                            DispatchQueue.concurrentPerform(iterations: chunkCount) { chunkIdx in
-                                let (cs, ce) = ranges[chunkIdx]
-                                var matches: [Int] = []
-                                var startIdx = cs
-                                while startIdx < ce {
-                                    autoreleasepool {
-                                        let endIdx = min(startIdx + 2048, ce)
-                                        var sinceReport = 0
-                                        for lineIdx in startIdx ..< endIdx {
-                                            let lineStart = starts[lineIdx]
-                                            let rawEnd = (lineIdx + 1 < indexed)
-                                                ? starts[lineIdx + 1] - 1 : total
-                                            var lineEnd = max(lineStart, rawEnd)
-                                            if lineEnd > lineStart, base[lineEnd - 1] == 0x0D { lineEnd -= 1 }
-                                            let lineLen = lineEnd - lineStart
-                                            if Self.lineMatchesScan(
-                                                base: base, start: lineStart, len: lineLen,
-                                                params: params, fbBase: fbBase, blobBase: nBlob
-                                            ) { matches.append(lineIdx) }
-                                            sinceReport += 1
+                        starts.withUnsafeBufferPointer { startsBuffer in
+                            nonisolated(unsafe) let startsPtr = startsBuffer.baseAddress!
+                            partials.withUnsafeMutableBufferPointer { outParam in
+                                nonisolated(unsafe) let out = outParam
+                                DispatchQueue.concurrentPerform(iterations: chunkCount) { chunkIdx in
+                                    let localRx: NSRegularExpression? = params.regex.map { try! NSRegularExpression(pattern: $0.pattern, options: $0.options) }
+                                    let (cs, ce) = ranges[chunkIdx]
+                                    var matches: [Int] = []
+                                    var startIdx = cs
+                                    while startIdx < ce {
+                                        autoreleasepool {
+                                            let endIdx = min(startIdx + 2048, ce)
+                                            var sinceReport = 0
+                                            var cachedLineStr: String? = nil
+                                            for lineIdx in startIdx ..< endIdx {
+                                                let lineStart = startsPtr[lineIdx]
+                                                let rawEnd = (lineIdx + 1 < indexed)
+                                                    ? startsPtr[lineIdx + 1] - 1 : total
+                                                var lineEnd = max(lineStart, rawEnd)
+                                                if lineEnd > lineStart, base[lineEnd - 1] == 0x0D { lineEnd -= 1 }
+                                                let lineLen = lineEnd - lineStart
+                                                cachedLineStr = nil
+                                                if Self.lineMatchesScan(
+                                                    base: base, start: lineStart, len: lineLen,
+                                                    params: params, fbBase: fbBase, blobBase: nBlob,
+                                                    cachedLineStr: &cachedLineStr,
+                                                    localRegex: localRx
+                                                ) { matches.append(lineIdx) }
+                                                sinceReport += 1
+                                            }
+                                            if sinceReport > 0 { progress.add(sinceReport) }
+                                            startIdx = endIdx
                                         }
-                                        if sinceReport > 0 { progress.add(sinceReport) }
-                                        startIdx = endIdx
                                     }
+                                    out[chunkIdx] = matches
+                                    outLock.lock()
+                                    completeChunks[chunkIdx] = matches
+                                    var didEmit = false
+                                    while let ready = completeChunks.removeValue(forKey: nextChunkToEmit) {
+                                        emittedSoFar.append(contentsOf: ready)
+                                        nextChunkToEmit += 1
+                                        didEmit = true
+                                    }
+                                    let snapshot = emittedSoFar
+                                    outLock.unlock()
+                                    if didEmit { performUpdates(snapshot, false) }
                                 }
-                                out[chunkIdx] = matches
-                                outLock.lock()
-                                completeChunks[chunkIdx] = matches
-                                var didEmit = false
-                                while let ready = completeChunks.removeValue(forKey: nextChunkToEmit) {
-                                    emittedSoFar.append(contentsOf: ready)
-                                    nextChunkToEmit += 1
-                                    didEmit = true
-                                }
-                                let snapshot = emittedSoFar
-                                outLock.unlock()
-                                if didEmit { onUpdate(snapshot) }
                             }
                         }
                     }
@@ -700,7 +722,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
                 finalMatches.append(indexed + offset)
             }
         }
-        onUpdate(finalMatches)
+        performUpdates(finalMatches, true)
     }
 
     /// Optimized extraction of all lines matching multiple matchers in a single parallel pass.
@@ -764,50 +786,58 @@ final class LogContent: LineProvider, @unchecked Sendable {
                         
                         nonisolated(unsafe) let nFbs = fbBase
 
-                        DispatchQueue.concurrentPerform(iterations: chunkCount) { chunkIdx in
-                            let (cs, ce) = ranges[chunkIdx]
-                            var chunkMatches = [[Int]](repeating: [], count: paramsList.count)
-                            var startIdx = cs
-                            while startIdx < ce {
-                                autoreleasepool {
-                                    let endIdx = min(startIdx + 2048, ce)
-                                    for lineIdx in startIdx ..< endIdx {
-                                        let lineStart = starts[lineIdx]
-                                        let rawEnd = (lineIdx + 1 < indexed) ? starts[lineIdx + 1] - 1 : total
-                                        var lineEnd = max(lineStart, rawEnd)
-                                        if lineEnd > lineStart, base[lineEnd - 1] == 0x0D { lineEnd -= 1 }
-                                        let lineLen = lineEnd - lineStart
+                        starts.withUnsafeBufferPointer { startsBuffer in
+                            nonisolated(unsafe) let startsPtr = startsBuffer.baseAddress!
+                            DispatchQueue.concurrentPerform(iterations: chunkCount) { chunkIdx in
+                                let localRegexes: [NSRegularExpression?] = paramsList.map { p in p.regex.map { try! NSRegularExpression(pattern: $0.pattern, options: $0.options) } }
+                                let (cs, ce) = ranges[chunkIdx]
+                                var chunkMatches = [[Int]](repeating: [], count: paramsList.count)
+                                var startIdx = cs
+                                while startIdx < ce {
+                                    autoreleasepool {
+                                        let endIdx = min(startIdx + 2048, ce)
+                                        var cachedLineStr: String? = nil
+                                        for lineIdx in startIdx ..< endIdx {
+                                            let lineStart = startsPtr[lineIdx]
+                                            let rawEnd = (lineIdx + 1 < indexed) ? startsPtr[lineIdx + 1] - 1 : total
+                                            var lineEnd = max(lineStart, rawEnd)
+                                            if lineEnd > lineStart, base[lineEnd - 1] == 0x0D { lineEnd -= 1 }
+                                            let lineLen = lineEnd - lineStart
 
-                                        for mIdx in 0..<paramsList.count {
-                                            let p = paramsList[mIdx]
-                                            let off = offsets[mIdx]
-                                            if Self.lineMatchesScan(
-                                                base: base, start: lineStart, len: lineLen,
-                                                params: p, fbBase: nFbs + off.fbOff, blobBase: nBlob != nil ? nBlob! + off.blobOff : nil
-                                            ) {
-                                                chunkMatches[mIdx].append(lineIdx)
+                                            cachedLineStr = nil
+                                            for mIdx in 0..<paramsList.count {
+                                                let p = paramsList[mIdx]
+                                                let off = offsets[mIdx]
+                                                if Self.lineMatchesScan(
+                                                    base: base, start: lineStart, len: lineLen,
+                                                    params: p, fbBase: nFbs + off.fbOff, blobBase: nBlob != nil ? nBlob! + off.blobOff : nil,
+                                                    cachedLineStr: &cachedLineStr,
+                                                    localRegex: localRegexes[mIdx]
+                                                ) {
+                                                    chunkMatches[mIdx].append(lineIdx)
+                                                }
                                             }
                                         }
+                                        startIdx = endIdx
                                     }
-                                    startIdx = endIdx
                                 }
-                            }
-                            
-                            outLock.lock()
-                            completeChunks[chunkIdx] = chunkMatches
-                            var didEmit = false
-                            while let ready = completeChunks.removeValue(forKey: nextChunkToEmit) {
-                                for mIdx in 0..<matchers.count {
-                                    emittedSoFar[mIdx].append(contentsOf: ready[mIdx])
+                                
+                                outLock.lock()
+                                completeChunks[chunkIdx] = chunkMatches
+                                var didEmit = false
+                                while let ready = completeChunks.removeValue(forKey: nextChunkToEmit) {
+                                    for mIdx in 0..<matchers.count {
+                                        emittedSoFar[mIdx].append(contentsOf: ready[mIdx])
+                                    }
+                                    nextChunkToEmit += 1
+                                    didEmit = true
                                 }
-                                nextChunkToEmit += 1
-                                didEmit = true
-                            }
-                            let snapshot = emittedSoFar
-                            outLock.unlock()
-                            
-                            if didEmit {
-                                performUpdates(snapshot, false)
+                                let snapshot = emittedSoFar
+                                outLock.unlock()
+                                
+                                if didEmit {
+                                    performUpdates(snapshot, false)
+                                }
                             }
                         }
                     }

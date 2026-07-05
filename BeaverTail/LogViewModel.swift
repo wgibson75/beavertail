@@ -532,7 +532,7 @@ class LogViewModel: ObservableObject {
         let ruleIDs = activeRules.map { $0.id }
         let matchers = activeRules.compactMap { LineMatcher.make(pattern: $0.pattern, caseInsensitive: !$0.isCaseSensitive) }
 
-        Task.detached(priority: .utility) { [weak self] in
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             content.extractAllMatches(matchers: matchers) { matches in
                 DispatchQueue.main.async {
                     guard let self = self, let i = self.openTabs.firstIndex(where: { $0.id == tabID }) else { return }
@@ -1138,11 +1138,11 @@ class LogViewModel: ObservableObject {
                         self.fileLoadTimer = nil
                         self.fileLoadProgress = 1.0
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
-                        self.generateHighlightData(for: id)
                         let savedPattern = self.openTabs[freshIndex].filterPattern
                         if !savedPattern.isEmpty && self.selectedTabID == id {
                             self.applyFilter(with: savedPattern)
                         }
+                        self.generateHighlightData(for: id)
                         self.syncCurrentFilterPattern()
                         if self.selectedTabID == id { self.startLiveTailingForActiveTab() }
                     }
