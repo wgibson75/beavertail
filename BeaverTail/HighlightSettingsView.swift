@@ -194,6 +194,20 @@ struct HighlightSettingsView: View {
                                     .disabled(index == viewModel.highlightRules.count - 1)
                                 }
 
+                                Toggle("", isOn: Binding(
+                                    get: { rule.isEnabled },
+                                    set: { newValue in
+                                        if let idx = viewModel.highlightRules.firstIndex(where: { $0.id == rule.id }) {
+                                            viewModel.highlightRules[idx].isEnabled = newValue
+                                            // Optional: trigger re-generation in ViewModel? It's @Published, so should occur?
+                                            // Actually modifying the bound value of published array directly triggers updates!
+                                        }
+                                    }
+                                ))
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .scaleEffect(0.65) // Make the switch a bit smaller to fit the row nicely
+
                                 Text("\(index + 1)")
                                     .font(.system(.caption2, design: .monospaced))
                                     .foregroundStyle(.tertiary)
@@ -216,6 +230,7 @@ struct HighlightSettingsView: View {
                                             .help("Match Case")
                                     }
                                 }
+                                .opacity(rule.isEnabled ? 1.0 : 0.4) // Dim when disabled
                                 .contentShape(Rectangle())
                                 .onTapGesture {
                                     editingRuleID = rule.id

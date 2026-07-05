@@ -111,6 +111,7 @@ class LogViewModel: ObservableObject {
     private var minimapTasks: [UUID: Task<Void, Never>] = [:]
     private var timelineTasks: [UUID: Task<Void, Never>] = [:]
     private var liveTailTasks: [UUID: Task<Void, Never>] = [:]
+    private var highlightTasks: [UUID: Task<Void, Never>] = [:]
     private var sessionSaveDebounceTask: Task<Void, Never>?
     private var activeTailSource: DispatchSourceFileSystemObject?
     private var activeTailFileDescriptor: Int32 = -1
@@ -514,8 +515,9 @@ class LogViewModel: ObservableObject {
     }
 
     func generateHighlightData(for tabID: UUID) {
+        highlightTasks[tabID]?.cancel()
         guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-        let activeRules = highlightRules.filter { $0.compiledRegex != nil }
+        let activeRules = highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }
         guard let content = openTabs[index].content, content.count > 0, !activeRules.isEmpty else {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -532,8 +534,9 @@ class LogViewModel: ObservableObject {
         let ruleIDs = activeRules.map { $0.id }
         let matchers = activeRules.compactMap { LineMatcher.make(pattern: $0.pattern, caseInsensitive: !$0.isCaseSensitive) }
 
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        highlightTasks[tabID] = Task.detached(priority: .utility) { [weak self] in
             content.extractAllMatches(matchers: matchers) { matches in
+                if Task.isCancelled { return }
                 DispatchQueue.main.async {
                     guard let self = self, let i = self.openTabs.firstIndex(where: { $0.id == tabID }) else { return }
                     self.openTabs[i].highlightMatches = matches
@@ -548,7 +551,7 @@ class LogViewModel: ObservableObject {
     func generateMinimapData(for tabID: UUID) {
         minimapTasks[tabID]?.cancel()
         guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-        let activeRules = highlightRules.filter { $0.compiledRegex != nil }
+        let activeRules = highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }
 
         guard let content = openTabs[index].content, content.count > 0, !activeRules.isEmpty, openTabs[index].highlightMatches.count == activeRules.count else {
             openTabs[index].minimapImage = nil
@@ -641,7 +644,7 @@ class LogViewModel: ObservableObject {
             self?.openTabs[index].isGeneratingTimeline = true
         }
 
-        let activeRules = highlightRules.filter { $0.compiledRegex != nil }
+        let activeRules = highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }
         let isFiltered = !openTabs[index].filterPattern.isEmpty
         let filteredIndices = openTabs[index].filteredIndices
         let sortedMarks = Array(openTabs[index].markedIndices).sorted()
@@ -1393,7 +1396,7 @@ class LogViewModel: ObservableObject {
               let tabIndex = openTabs.firstIndex(where: { $0.id == tabID })
         else { return }
 
-        let activeRules = highlightRules.filter { $0.compiledRegex != nil }
+        let activeRules = highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }
         guard !activeRules.isEmpty, openTabs[tabIndex].highlightMatches.count == activeRules.count else { return }
 
         var incrementalMatchesForRules = [[Int]](repeating: [], count: activeRules.count)

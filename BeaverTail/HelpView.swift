@@ -114,10 +114,12 @@ private let helpSections: [HelpSection] = [
             + "lines in both panes. The paintbrush icon is highlighted while the window is open."),
         HelpItem(shortcut: nil, description:
             "Each rule takes a regex pattern, a text colour, a background colour, "
-            + "and an optional Aa (match-case) toggle."),
+            + "an optional Aa (match-case) toggle, and an enable/disable toggle. Disabled filters are ignored and appear dimmed."),
         HelpItem(shortcut: nil, description:
             "Use the ▲▼ arrows or drag and drop rules to change priority order. "
             + "Changes are reflected instantly without re-running the filter."),
+        HelpItem(shortcut: nil, description:
+            "Use the Import/Export buttons to save and load highlight filters. The enabled/disabled state is persisted when exporting to JSON."),
         HelpItem(shortcut: nil, description:
             "The Highlight Filters window can be freely moved and resized. "
             + "Its size and position are remembered between launches.")

@@ -402,7 +402,7 @@ private struct TimelinePaneView: View {
                                         .interpolation(.none)
                                         .frame(maxWidth: .infinity)
                                         .frame(height: max(geometry.size.height, image.size.height))
-                                        .opacity(viewModel.currentTab?.isGeneratingTimeline == true ? 0.3 : 1.0)
+                                        .opacity(1.0)
                                         .overlay {
                                             GeometryReader { _ in
                                                 HStack(spacing: 0) {
@@ -465,7 +465,7 @@ private struct TimelinePaneView: View {
                                 }
                             }
 
-                            if viewModel.currentTab?.isGeneratingTimeline == true {
+                            if viewModel.currentTab?.isGeneratingTimeline == true && viewModel.currentTab?.timelineImage == nil {
                                 VStack(spacing: 8) {
                                     ProgressView()
                                         .controlSize(.small)

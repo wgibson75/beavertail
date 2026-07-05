@@ -794,16 +794,14 @@ final class LogContent: LineProvider, @unchecked Sendable {
                                 var chunkMatches = [[Int]](repeating: [], count: paramsList.count)
                                 var startIdx = cs
                                 while startIdx < ce {
+                                    if Task.isCancelled { return }
                                     autoreleasepool {
                                         let endIdx = min(startIdx + 2048, ce)
                                         var cachedLineStr: String? = nil
                                         for lineIdx in startIdx ..< endIdx {
+                                            if Task.isCancelled { return }
                                             let lineStart = startsPtr[lineIdx]
-                                            let rawEnd = (lineIdx + 1 < indexed) ? startsPtr[lineIdx + 1] - 1 : total
-                                            var lineEnd = max(lineStart, rawEnd)
-                                            if lineEnd > lineStart, base[lineEnd - 1] == 0x0D { lineEnd -= 1 }
-                                            let lineLen = lineEnd - lineStart
-
+                                            let lineLen = (lineIdx == total - 1) ? Int(totalBytes) - lineStart : startsPtr[lineIdx + 1] - lineStart
                                             cachedLineStr = nil
                                             for mIdx in 0..<paramsList.count {
                                                 let p = paramsList[mIdx]

@@ -11,6 +11,7 @@ struct HighlightRule: Identifiable, Codable, Equatable {
     var pattern: String
     var foregroundColorHex: String
     var backgroundColorHex: String
+    var isEnabled: Bool
     /// When true the compiled regex is case-sensitive ("Match Case" / Aa ON).
     /// When false (default) the regex uses .caseInsensitive.
     var isCaseSensitive: Bool
@@ -28,15 +29,16 @@ struct HighlightRule: Identifiable, Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case pattern, foregroundColorHex, backgroundColorHex, isCaseSensitive
+        case pattern, foregroundColorHex, backgroundColorHex, isCaseSensitive, isEnabled
     }
 
-    init(id: UUID = UUID(), pattern: String, foregroundColorHex: String, backgroundColorHex: String, isCaseSensitive: Bool = false) {
+    init(id: UUID = UUID(), pattern: String, foregroundColorHex: String, backgroundColorHex: String, isCaseSensitive: Bool = false, isEnabled: Bool = true) {
         self.id = id
         self.pattern = pattern
         self.foregroundColorHex = foregroundColorHex
         self.backgroundColorHex = backgroundColorHex
         self.isCaseSensitive = isCaseSensitive
+        self.isEnabled = isEnabled
         updateCachedObjects()
     }
 
@@ -49,6 +51,7 @@ struct HighlightRule: Identifiable, Codable, Equatable {
         backgroundColorHex = try container.decode(String.self, forKey: .backgroundColorHex)
         // Default false (case-insensitive) when reading older saved data that lacks this key
         isCaseSensitive = (try? container.decode(Bool.self, forKey: .isCaseSensitive)) ?? false
+        isEnabled = (try? container.decode(Bool.self, forKey: .isEnabled)) ?? true
         updateCachedObjects()
     }
 
@@ -65,6 +68,7 @@ struct HighlightRule: Identifiable, Codable, Equatable {
         return lhs.id == rhs.id && lhs.pattern == rhs.pattern &&
             lhs.foregroundColorHex == rhs.foregroundColorHex &&
             lhs.backgroundColorHex == rhs.backgroundColorHex &&
-            lhs.isCaseSensitive == rhs.isCaseSensitive
+            lhs.isCaseSensitive == rhs.isCaseSensitive &&
+            lhs.isEnabled == rhs.isEnabled
     }
 }
