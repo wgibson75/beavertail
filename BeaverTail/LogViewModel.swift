@@ -1397,7 +1397,14 @@ class LogViewModel: ObservableObject {
         else { return }
 
         let activeRules = highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }
-        guard !activeRules.isEmpty, openTabs[tabIndex].highlightMatches.count == activeRules.count else { return }
+        guard !activeRules.isEmpty else { return }
+
+        if openTabs[tabIndex].highlightMatches.isEmpty && openTabs[tabIndex].content?.count ?? 0 > 0 {
+            openTabs[tabIndex].highlightMatches = [[Int]](repeating: [], count: activeRules.count)
+            openTabs[tabIndex].activeRuleIDs = activeRules.map { $0.id }
+        }
+
+        guard openTabs[tabIndex].highlightMatches.count == activeRules.count else { return }
 
         var incrementalMatchesForRules = [[Int]](repeating: [], count: activeRules.count)
         
