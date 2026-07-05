@@ -402,6 +402,7 @@ class LogViewModel: ObservableObject {
     /// Keeps currentFilterPattern in sync with the selected tab's saved pattern.
     private func syncCurrentFilterPattern() {
         currentFilterPattern = currentTab?.filterPattern ?? ""
+        currentActiveFilterPattern = currentFilterPattern
         // Mirror the per-tab Aa / Follow options into the bound published vars
         // without triggering their write-back into the tab.
         isSyncingTabState = true

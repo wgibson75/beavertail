@@ -728,7 +728,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
     /// Optimized extraction of all lines matching multiple matchers in a single parallel pass.
     nonisolated func extractAllMatches(matchers: [LineMatcher], onUpdate: @escaping ([[Int]]) -> Void) {
         let indexed = lineStarts.count
-        guard indexed > 0, !matchers.isEmpty else { onUpdate(Array(repeating: [], count: matchers.count)); return }
+        guard (indexed > 0 || !appended.isEmpty), !matchers.isEmpty else { onUpdate(Array(repeating: [], count: matchers.count)); return }
 
         let paramsList = matchers.map { Self.buildScanParams(from: $0) }
         var allBlobs: [UInt8] = []
