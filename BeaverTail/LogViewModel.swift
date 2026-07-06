@@ -332,6 +332,12 @@ class LogViewModel: ObservableObject {
         fullyScannedRuleIDsByTab.removeValue(forKey: id)
         openTabs.remove(at: index)
         if selectedTabID == id { selectedTabID = openTabs.last?.id }
+        
+        isLoadingFile = openTabs.contains { $0.isCurrentlyStreaming }
+        if !isLoadingFile {
+            fileLoadTimer?.invalidate()
+            fileLoadTimer = nil
+        }
     }
 
     /// Toggles marks on the provided original line indices for the currently selected tab.
