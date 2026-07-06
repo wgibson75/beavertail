@@ -366,134 +366,116 @@ private struct TimelinePaneView: View {
             ZStack(alignment: .topLeading) {
                 VStack(spacing: 0) {
                     let allActiveRules = viewModel.highlightRules.filter { $0.compiledRegex != nil }
-                    let displayedRuleIDs = viewModel.currentTab?.activeRuleIDs ?? []
+                    let displayedRuleIDs = viewModel.currentTab?.timelineActiveRuleIDs ?? []
                     let activeRules = allActiveRules.filter { displayedRuleIDs.contains($0.id) }
 
                     let hasMarks = !(viewModel.currentTab?.markedIndices.isEmpty ?? true)
-                    if !activeRules.isEmpty || hasMarks {
-                        HStack(spacing: 0) {
-                            if hasMarks {
-                                Image(systemName: "circle.fill")
-                                    .font(.system(size: 8))
-                                    .foregroundStyle(Color.primary)
-                                    .frame(maxWidth: .infinity, alignment: .center)
-                                    .help("Marks")
-                            }
-                            ForEach(activeRules) { rule in
-                                Text(rule.pattern)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .lineLimit(1)
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, alignment: .center)
-                                    .help(rule.pattern)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                        .background(Color(NSColor.controlBackgroundColor))
-                        Divider()
-                    }
 
                     GeometryReader { geometry in
                         ZStack {
                             ScrollView(.vertical) {
-                                if let image = viewModel.currentTab?.timelineImage {
-                                    Image(nsImage: image)
-                                        .resizable()
-                                        .interpolation(.none)
-                                        .frame(maxWidth: .infinity)
-                                        .frame(height: max(geometry.size.height, image.size.height))
-                                        .opacity(1.0)
-                                        .overlay {
-                                            GeometryReader { _ in
-                                                HStack(spacing: 0) {
-                                                    if hasMarks {
-                                                        Color.clear
-                                                            .frame(maxWidth: .infinity)
-                                                            .contentShape(Rectangle())
-                                                            .help("Marks")
-                                                            .gesture(
-                                                                DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                                                                    .onEnded { value in
-                                                                        let fraction = value.location.y
-                                                                            / max(geometry.size.height, image.size.height)
-                                                                        viewModel.jumpFromTimeline(
-                                                                            fraction: fraction, ruleIndex: -1)
-                                                                    }
-                                                            )
+                                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                                    Section(header:
+                                        Group {
+                                            if !activeRules.isEmpty || hasMarks {
+                                                VStack(spacing: 0) {
+                                                    HStack(spacing: 0) {
+                                                        if hasMarks {
+                                                            Image(systemName: "circle.fill")
+                                                                .font(.system(size: 8))
+                                                                .foregroundStyle(Color.primary)
+                                                                .frame(minWidth: 0, maxWidth: .infinity, alignment: .center)
+                                                                .help("Marks")
+                                                        }
+                                                        ForEach(activeRules) { rule in
+                                                            Text(rule.pattern)
+                                                                .font(.system(size: 10, design: .monospaced))
+                                                                .lineLimit(1)
+                                                                .truncationMode(.tail)
+                                                                .foregroundStyle(.secondary)
+                                                                .frame(minWidth: 0, maxWidth: .infinity, alignment: .center)
+                                                                .help(rule.pattern)
+                                                        }
                                                     }
-                    ForEach(Array(activeRules.enumerated()), id: \.element.id) { index, rule in
-                                                        Color.clear
-                                                            .frame(maxWidth: .infinity)
-                                                            .contentShape(Rectangle())
-                                                            .help(rule.pattern)
-                                                            .gesture(
-                                                                DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                                                                    .onEnded { value in
-                                                                        let fraction = value.location.y
-                                                                            / max(geometry.size.height, image.size.height)
-                                                                        viewModel.jumpFromTimeline(
-                                                                            fraction: fraction, ruleIndex: index)
-                                                                    }
-                                                            )
-                                                    }
+                                                    .padding(.vertical, 4)
+                                                    .background(Color(NSColor.controlBackgroundColor))
+                                                    Divider()
                                                 }
                                             }
                                         }
-                                } else if viewModel.currentTab?.isGeneratingTimeline == true {
-                                    Color.clear
-                                        .frame(maxWidth: .infinity, minHeight: geometry.size.height)
-                                } else if viewModel.highlightRules.isEmpty && !hasMarks {
-                                    VStack(spacing: 8) {
-                                        Image(systemName: "paintbrush")
-                                            .font(.system(size: 28))
-                                            .foregroundStyle(.tertiary)
-                                        Text("No Highlight Rules defined")
-                                            .font(.callout)
-                                            .foregroundStyle(.secondary)
+                                    ) {
+                                        if let image = viewModel.currentTab?.timelineImage {
+                                            Image(nsImage: image)
+                                                .resizable()
+                                                .interpolation(.none)
+                                                .frame(maxWidth: .infinity)
+                                                .frame(height: max(geometry.size.height, image.size.height))
+                                                .opacity(1.0)
+                                                .overlay {
+                                                    GeometryReader { _ in
+                                                        HStack(spacing: 0) {
+                                                            if hasMarks {
+                                                                Color.clear
+                                                                    .frame(maxWidth: .infinity)
+                                                                    .contentShape(Rectangle())
+                                                                    .help("Marks")
+                                                                    .gesture(
+                                                                        DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                                                                            .onEnded { value in
+                                                                                let fraction = value.location.y
+                                                                                    / max(geometry.size.height, image.size.height)
+                                                                                viewModel.jumpFromTimeline(
+                                                                                    fraction: fraction, ruleIndex: -1)
+                                                                            }
+                                                                    )
+                                                            }
+                                                            ForEach(Array(activeRules.enumerated()), id: \.element.id) { index, rule in
+                                                                Color.clear
+                                                                    .frame(maxWidth: .infinity)
+                                                                    .contentShape(Rectangle())
+                                                                    .help(rule.pattern)
+                                                                    .gesture(
+                                                                        DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                                                                            .onEnded { value in
+                                                                                let fraction = value.location.y
+                                                                                    / max(geometry.size.height, image.size.height)
+                                                                                viewModel.jumpFromTimeline(
+                                                                                    fraction: fraction, ruleIndex: index)
+                                                                            }
+                                                                    )
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                        } else if viewModel.currentTab?.isGeneratingTimeline == true {
+                                            Color.clear
+                                                .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+                                        } else if viewModel.highlightRules.isEmpty && !hasMarks {
+                                            VStack(spacing: 8) {
+                                                Image(systemName: "paintbrush")
+                                                    .font(.system(size: 28))
+                                                    .foregroundStyle(.tertiary)
+                                                Text("No Highlight Rules defined")
+                                                    .font(.callout)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+                                        } else {
+                                            VStack(spacing: 8) {
+                                                Image(systemName: "line.3.horizontal.decrease.circle")
+                                                    .font(.system(size: 28))
+                                                    .foregroundStyle(.tertiary)
+                                                Text("No Highlight Rules matched")
+                                                    .font(.callout)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+                                        }
                                     }
-                                    .frame(maxWidth: .infinity, minHeight: geometry.size.height)
-                                } else {
-                                    VStack(spacing: 8) {
-                                        Image(systemName: "line.3.horizontal.decrease.circle")
-                                            .font(.system(size: 28))
-                                            .foregroundStyle(.tertiary)
-                                        Text("No lines match the active filter")
-                                            .font(.callout)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .frame(maxWidth: .infinity, minHeight: geometry.size.height)
                                 }
-                            }
-
-                            if viewModel.currentTab?.isGeneratingTimeline == true && viewModel.currentTab?.timelineImage == nil {
-                                VStack(spacing: 8) {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                    Text("Generating Timeline...")
-                                        .font(.callout)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .padding(14)
-                                .background(Material.regular, in: RoundedRectangle(cornerRadius: 10))
                             }
                         }
                     }
-                }
-
-                if showFilterDropdown && !viewModel.filterHistory.isEmpty {
-                    FilterHistoryDropdown(
-                        history: viewModel.filterHistory,
-                        onSelect: { pattern in
-                            viewModel.currentFilterPattern = pattern
-                            showFilterDropdown = false
-                            viewModel.applyFilter(with: pattern)
-                            NSApp.keyWindow?.makeFirstResponder(nil)
-                        }
-                    )
-                    .padding(.leading, 56)
-                    .padding(.trailing, 90)
-                    .padding(.top, 4)
-                    .zIndex(100)
                 }
             }
         }

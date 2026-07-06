@@ -36,6 +36,7 @@ struct LogTab: Identifiable, Equatable, Codable {
     var minimapMatches: [Int] = []
     var timelineImage: NSImage?
     var highlightMatches: [[Int]] = []
+    var activeRuleSignatures: [String] = []
     var activeRuleIDs: [UUID] = []
     var timelineMatches: [[Int]] = []
     var timelineActiveRuleIDs: [UUID] = []
@@ -84,6 +85,7 @@ struct LogTab: Identifiable, Equatable, Codable {
         minimapMatches: [Int] = [],
         timelineImage: NSImage? = nil,
         highlightMatches: [[Int]] = [],
+        activeRuleSignatures: [String] = [],
         activeRuleIDs: [UUID] = [],
         timelineMatches: [[Int]] = [],
         timelineActiveRuleIDs: [UUID] = [],
@@ -103,10 +105,9 @@ struct LogTab: Identifiable, Equatable, Codable {
         self.displayedIndices = displayedIndices
         self.filterMessage = filterMessage
         self.selectedFraction = selectedFraction
-        self.minimapImage = minimapImage
-        self.minimapMatches = minimapMatches
         self.timelineImage = timelineImage
         self.highlightMatches = highlightMatches
+        self.activeRuleSignatures = activeRuleSignatures
         self.activeRuleIDs = activeRuleIDs
         self.timelineMatches = timelineMatches
         self.timelineActiveRuleIDs = timelineActiveRuleIDs
@@ -136,10 +137,9 @@ struct LogTab: Identifiable, Equatable, Codable {
         displayedIndices = markedIndices.sorted()
         filterMessage = nil
         selectedFraction = nil
-        minimapImage = nil
-        minimapMatches = []
         timelineImage = nil
         highlightMatches = []
+        activeRuleSignatures = []
         activeRuleIDs = []
         timelineMatches = []
         timelineActiveRuleIDs = []

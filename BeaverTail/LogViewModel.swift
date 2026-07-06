@@ -112,6 +112,7 @@ class LogViewModel: ObservableObject {
     private var timelineTasks: [UUID: Task<Void, Never>] = [:]
     private var liveTailTasks: [UUID: Task<Void, Never>] = [:]
     private var highlightTasks: [UUID: Task<Void, Never>] = [:]
+    private var fullyScannedRuleIDsByTab: [UUID: Set<UUID>] = [:]
     private var sessionSaveDebounceTask: Task<Void, Never>?
     private var activeTailSource: DispatchSourceFileSystemObject?
     private var activeTailFileDescriptor: Int32 = -1
@@ -323,6 +324,11 @@ class LogViewModel: ObservableObject {
         guard let index = openTabs.firstIndex(where: { $0.id == id }) else { return }
         minimapTasks[id]?.cancel()
         minimapTasks.removeValue(forKey: id)
+        highlightTasks[id]?.cancel()
+        highlightTasks.removeValue(forKey: id)
+        timelineTasks[id]?.cancel()
+        timelineTasks.removeValue(forKey: id)
+        fullyScannedRuleIDsByTab.removeValue(forKey: id)
         openTabs.remove(at: index)
         if selectedTabID == id { selectedTabID = openTabs.last?.id }
     }
@@ -519,12 +525,26 @@ class LogViewModel: ObservableObject {
         highlightTasks[tabID]?.cancel()
         guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
         let activeRules = highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }
+        
+        // Remove rules from fullyScanned that are no longer active, so their cache isn't erroneously reused if re-enabled.
+        if let scanned = self.fullyScannedRuleIDsByTab[tabID] {
+            let activeIDs = Set(activeRules.map { $0.id })
+            self.fullyScannedRuleIDsByTab[tabID] = scanned.filter { activeIDs.contains($0) }
+        }
+
+        let oldRuleSignatures = openTabs[index].activeRuleSignatures
+        let newRuleIDs = activeRules.map { $0.id }
+        let newRuleSignatures = activeRules.map { $0.signature }
+        
         guard let content = openTabs[index].content, content.count > 0, !activeRules.isEmpty else {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 if let i = self.openTabs.firstIndex(where: { $0.id == tabID }) {
                     self.openTabs[i].highlightMatches = []
                     self.openTabs[i].activeRuleIDs = []
+                    self.openTabs[i].activeRuleSignatures = []
+                    self.openTabs[i].timelineActiveRuleIDs = []
+                    self.fullyScannedRuleIDsByTab[tabID] = []
                     self.generateMinimapData(for: tabID)
                     self.generateTimelineData(for: tabID)
                 }
@@ -532,18 +552,117 @@ class LogViewModel: ObservableObject {
             return
         }
 
-        let ruleIDs = activeRules.map { $0.id }
-        let matchers = activeRules.compactMap { LineMatcher.make(pattern: $0.pattern, caseInsensitive: !$0.isCaseSensitive) }
+        var newCache: [[Int]] = []
+        var matchersToRun: [(globalIndex: Int, matcher: LineMatcher)] = []
+        let fullyScanned = self.fullyScannedRuleIDsByTab[tabID] ?? []
+        
+        for (i, id) in newRuleIDs.enumerated() {
+            let sig = newRuleSignatures[i]
+            // We match rule definitions to ensure edited rules (same ID) don't falsely reuse cache.
+            // But we must also rescan if not fully scanned (e.g. rapid toggle interrupted it).
+            if fullyScanned.contains(id), let oldIdx = oldRuleSignatures.firstIndex(of: sig), oldIdx < openTabs[index].highlightMatches.count {
+                newCache.append(openTabs[index].highlightMatches[oldIdx])
+            } else {
+                if let oldIdx = oldRuleSignatures.firstIndex(of: sig), oldIdx < openTabs[index].highlightMatches.count {
+                    newCache.append(openTabs[index].highlightMatches[oldIdx])
+                } else {
+                    newCache.append([])
+                }
+                if let m = LineMatcher.make(pattern: activeRules[i].pattern, caseInsensitive: !activeRules[i].isCaseSensitive) {
+                    matchersToRun.append((globalIndex: i, matcher: m))
+                }
+            }
+        }
+        
+        openTabs[index].highlightMatches = newCache
+        openTabs[index].activeRuleSignatures = newRuleSignatures
+        openTabs[index].activeRuleIDs = newRuleIDs
+        openTabs[index].timelineActiveRuleIDs = openTabs[index].timelineActiveRuleIDs.filter { newRuleIDs.contains($0) }
+        
+        if matchersToRun.isEmpty {
+            self.generateMinimapData(for: tabID)
+            self.generateTimelineData(for: tabID)
+            return
+        }
+
+        let runMatchers = matchersToRun.map { $0.matcher }
 
         highlightTasks[tabID] = Task.detached(priority: .utility) { [weak self] in
-            content.extractAllMatches(matchers: matchers) { matches in
+            content.extractAllMatches(matchers: runMatchers) { partialMatches, isFinal in
                 if Task.isCancelled { return }
                 DispatchQueue.main.async {
                     guard let self = self, let i = self.openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-                    self.openTabs[i].highlightMatches = matches
-                    self.openTabs[i].activeRuleIDs = ruleIDs
+                    
+                    var currentCache = self.openTabs[i].highlightMatches
+                    guard currentCache.count == newRuleIDs.count else { return }
+                    
+                    let isFiltered = !self.openTabs[i].filterPattern.isEmpty
+                    let filteredIndices = self.openTabs[i].filteredIndices
+                    let bSearch: ([Int], Int) -> Int = { arr, el in
+                        var low = 0, high = arr.count
+                        while low < high {
+                            let mid = low + (high - low) / 2
+                            if arr[mid] < el { low = mid + 1 } else { high = mid }
+                        }
+                        return low
+                    }
+                    
+                    var discoveredNewRules = false
+                    var validTimelineRules: [UUID] = []
+                    
+                    for (runIdx, partial) in partialMatches.enumerated() {
+                        let globalIdx = matchersToRun[runIdx].globalIndex
+                        currentCache[globalIdx] = partial
+                        
+                        if !partial.isEmpty {
+                            let ruleID = newRuleIDs[globalIdx]
+                            var hasValidMatch = false
+                            if isFiltered {
+                                for m in partial {
+                                    let loc = bSearch(filteredIndices, m)
+                                    if loc < filteredIndices.count, filteredIndices[loc] == m {
+                                        hasValidMatch = true
+                                        break
+                                    }
+                                }
+                            } else {
+                                hasValidMatch = true
+                            }
+                            if hasValidMatch {
+                                validTimelineRules.append(ruleID)
+                                if !self.openTabs[i].timelineActiveRuleIDs.contains(ruleID) {
+                                    discoveredNewRules = true
+                                }
+                            }
+                        }
+                    }
+                    
+                    self.openTabs[i].highlightMatches = currentCache
+                    
+                    if isFinal {
+                        var scanned = self.fullyScannedRuleIDsByTab[tabID] ?? []
+                        for m in matchersToRun {
+                            scanned.insert(newRuleIDs[m.globalIndex])
+                        }
+                        self.fullyScannedRuleIDsByTab[tabID] = scanned
+                    }
+                    
+                    // Display headings instantly
+                    var updatedTimelineIDs = self.openTabs[i].timelineActiveRuleIDs
+                    for rID in validTimelineRules {
+                        if !updatedTimelineIDs.contains(rID) {
+                            updatedTimelineIDs.append(rID)
+                        }
+                    }
+                    if discoveredNewRules {
+                        self.openTabs[i].timelineActiveRuleIDs = updatedTimelineIDs
+                    }
+
                     self.generateMinimapData(for: tabID)
-                    self.generateTimelineData(for: tabID)
+                    
+                    if isFinal || discoveredNewRules {
+                        self.generateTimelineData(for: tabID)
+                    }
                 }
             }
         }
@@ -688,7 +807,7 @@ class LogViewModel: ObservableObject {
             }
 
             var newTimelineMatches: [[Int]] = Array(repeating: [], count: activeRules.count)
-            var bucketMatchCounts = [[Int]](repeating: [Int](repeating: 0, count: activeRules.count), count: imgHeight)
+            var bucketMatchCounts = Array(repeating: Array(repeating: 0, count: activeRules.count), count: imgHeight)
             var bucketSampledCounts = [Int](repeating: 0, count: imgHeight)
 
             for bucket in 0..<imgHeight {

@@ -15,6 +15,10 @@ struct HighlightRule: Identifiable, Codable, Equatable {
     /// When true the compiled regex is case-sensitive ("Match Case" / Aa ON).
     /// When false (default) the regex uses .caseInsensitive.
     var isCaseSensitive: Bool
+    
+    var signature: String {
+        return "\(id.uuidString)-\(pattern.hashValue)-\(isCaseSensitive)-\(isEnabled)"
+    }
 
     var nsForegroundColor: NSColor = .labelColor
     var nsBackgroundColor: NSColor = .clear
