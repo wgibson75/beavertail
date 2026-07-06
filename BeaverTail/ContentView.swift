@@ -331,23 +331,36 @@ private struct TopPaneView: View {
             .padding(.vertical, 5)
             .background(Color(NSColor.controlBackgroundColor))
             Divider()
-            NativeLogViewer(
-                provider: viewModel.lineProvider,
-                textColor: .labelColor,
-                rules: viewModel.highlightRules,
-                highlightMatches: viewModel.currentTab?.highlightMatches ?? [],
-                activeRuleIDs: viewModel.currentTab?.activeRuleIDs ?? [],
-                selectedFraction: viewModel.selectedFraction,
-                directScrollNotificationName: topPaneDirectScrollNotification,
-                tailScrollNotificationName: topPaneScrollToBottomNotification,
-                showLineNumbers: viewModel.showLineNumbers,
-                fontSize: viewModel.fontSize,
-                markedIndices: viewModel.currentTab?.markedIndices ?? [],
-                isMinimapActiveDrive: viewModel.isScrubbingMinimap,
-                onLineIndexSelected: { viewModel.updateMinimapFromLineIndex($0) },
-                onToggleMark: { viewModel.toggleMarks($0) },
-                onClearAllMarks: { viewModel.clearAllMarks() }
-            ).id(viewModel.selectedTabID?.uuidString ?? "top")
+            if let currentTab = viewModel.currentTab, currentTab.content == nil, !currentTab.statusLines.isEmpty, !currentTab.isCurrentlyStreaming {
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.tertiary)
+                    Text(currentTab.statusLines.first ?? "")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .id(viewModel.selectedTabID?.uuidString ?? "top-error")
+            } else {
+                NativeLogViewer(
+                    provider: viewModel.lineProvider,
+                    textColor: .labelColor,
+                    rules: viewModel.highlightRules,
+                    highlightMatches: viewModel.currentTab?.highlightMatches ?? [],
+                    activeRuleIDs: viewModel.currentTab?.activeRuleIDs ?? [],
+                    selectedFraction: viewModel.selectedFraction,
+                    directScrollNotificationName: topPaneDirectScrollNotification,
+                    tailScrollNotificationName: topPaneScrollToBottomNotification,
+                    showLineNumbers: viewModel.showLineNumbers,
+                    fontSize: viewModel.fontSize,
+                    markedIndices: viewModel.currentTab?.markedIndices ?? [],
+                    isMinimapActiveDrive: viewModel.isScrubbingMinimap,
+                    onLineIndexSelected: { viewModel.updateMinimapFromLineIndex($0) },
+                    onToggleMark: { viewModel.toggleMarks($0) },
+                    onClearAllMarks: { viewModel.clearAllMarks() }
+                ).id(viewModel.selectedTabID?.uuidString ?? "top")
+            }
         }
     }
 }

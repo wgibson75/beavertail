@@ -314,6 +314,7 @@ class LogViewModel: ObservableObject {
                         self.openTabs[index].statusLines = ["Error opening file: \(error.localizedDescription)"]
                         self.openTabs[index].isCurrentlyStreaming = false
                         self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        if self.selectedTabID == targetTabID { self.startLiveTailingForActiveTab() }
                     }
                 }
             }
@@ -1272,13 +1273,17 @@ class LogViewModel: ObservableObject {
                 }
             } catch {
                 // File could not be loaded (moved, deleted, permission denied etc.) —
-                // silently remove the tab so the user never sees an error state.
+                // DO NOT remove the tab so the user can see an error state.
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.fileLoadTimer?.invalidate()
                     self.fileLoadTimer = nil
-                    self.closeTab(id: id)
-                    self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                    if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
+                        self.openTabs[freshIndex].statusLines = ["Unable to open file... File may have been deleted or moved."]
+                        self.openTabs[freshIndex].isCurrentlyStreaming = false
+                        self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        if self.selectedTabID == id { self.startLiveTailingForActiveTab() }
+                    }
                 }
             }
         }
@@ -1387,14 +1392,17 @@ class LogViewModel: ObservableObject {
 
     func startLiveTailingForActiveTab() {
         stopLiveTailing()
-        guard let tab = currentTab, tab.content != nil else { return }
+        guard let tab = currentTab else { return }
         let fileURL = tab.fileURL
         let tabID = tab.id
 
         let tailTask = Task.detached(priority: .utility) { [weak self] in
             var lastKnownSize: UInt64 = 0
+            var wasFilePresent = true
             if let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path) {
                 lastKnownSize = (attributes[.size] as? UInt64) ?? 0
+            } else {
+                wasFilePresent = tab.content != nil
             }
             var remainderData = Data()
 
@@ -1403,13 +1411,51 @@ class LogViewModel: ObservableObject {
                 if Task.isCancelled { break }
 
                 guard let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
-                      let currentSize = attributes[.size] as? UInt64 else { continue }
+                      let currentSize = attributes[.size] as? UInt64 else {
+                    // File may be deleted or moved.
+                    if wasFilePresent {
+                        wasFilePresent = false
+                        lastKnownSize = 0
+                        remainderData = Data()
+                        await MainActor.run { [weak self] in
+                            guard let self = self else { return }
+                            if let idx = self.openTabs.firstIndex(where: { $0.id == tabID }) {
+                                self.openTabs[idx].content = nil
+                                self.openTabs[idx].filteredIndices = []
+                                self.openTabs[idx].highlightMatches = []
+                                self.openTabs[idx].markedIndices = []
+                                self.openTabs[idx].timelineMatches = []
+                                self.openTabs[idx].activeRuleIDs = []
+                                self.openTabs[idx].activeRuleSignatures = []
+                                self.openTabs[idx].timelineActiveRuleIDs = []
+                                self.openTabs[idx].statusLines = ["Unable to open file... File may have been deleted or moved."]
+                                self.fullyScannedRuleIDsByTab[tabID] = []
+                                self.updateDisplayedIndices(for: idx)
+                                self.generateMinimapData(for: tabID)
+                                self.generateTimelineData(for: tabID)
+                                self.objectWillChange.send()
+                            }
+                        }
+                    }
+                    continue
+                }
 
-                if currentSize < lastKnownSize {
-                    // Log rotated or truncated
+                if currentSize < lastKnownSize || !wasFilePresent {
+                    // Log rotated or truncated, OR log file re-created/written to after being deleted.
                     lastKnownSize = 0
                     remainderData = Data()
-                    continue
+                    
+                    // We need to re-read the file completely. To avoid blocking the tailing thread long,
+                    // we can trigger the standard lazy load (which resets content on a background task properly)
+                    // and bail this obsolete live tail stream.
+                    await MainActor.run { [weak self] in
+                        guard let self = self else { return }
+                        if let idx = self.openTabs.firstIndex(where: { $0.id == tabID }) {
+                            self.openTabs[idx].content = nil
+                            self.triggerLazyLoadForTab(id: tabID)
+                        }
+                    }
+                    return
                 }
 
                 if currentSize > lastKnownSize {
