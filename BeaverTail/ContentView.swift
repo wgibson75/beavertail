@@ -490,6 +490,19 @@ private struct TimelinePaneView: View {
                         }
                     }
                 }
+                if showFilterDropdown && !viewModel.filterHistory.isEmpty {
+                    FilterHistoryDropdown(
+                        history: viewModel.filterHistory,
+                        onSelect: { pattern in
+                            viewModel.currentFilterPattern = pattern
+                            showFilterDropdown = false
+                            viewModel.applyFilter(with: pattern)
+                            NSApp.keyWindow?.makeFirstResponder(nil)
+                        }
+                    )
+                    .padding(.leading, 56)
+                    .padding(.trailing, 90)
+                }
             }
         }
     }
