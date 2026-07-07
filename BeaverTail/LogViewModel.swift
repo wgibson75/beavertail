@@ -49,8 +49,8 @@ class LogViewModel: ObservableObject {
     var selectedFraction: CGFloat? { currentTab?.selectedFraction ?? nil }
     var minimapImage: NSImage? { currentTab?.minimapImage ?? nil }
 
-    @Published var isFiltering: Bool = false
-    @Published var filterProgress: Double = 0.0
+    
+    
     @Published var isCaseInsensitive: Bool = true {
         didSet {
             guard !isSyncingTabState else { return }
@@ -61,8 +61,9 @@ class LogViewModel: ObservableObject {
         }
     }
     @Published var isScrubbingMinimap: Bool = false
-    @Published var isLoadingFile: Bool = false
-    @Published var fileLoadProgress: Double = 0.0
+    let progressTracker = LogProgressTracker()
+    
+    
     @Published var currentFilterPattern: String = ""
     /// When true, the view automatically scrolls to follow new lines appended to
     /// the log being viewed (live tailing). Defaults to true.
@@ -266,8 +267,8 @@ class LogViewModel: ObservableObject {
 
         addToRecentFiles(url)
 
-        isLoadingFile = true
-        fileLoadProgress = 0.0
+        progressTracker.isLoadingFile = true
+        progressTracker.fileLoadProgress = 0.0
 
         let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
         let totalSize = (attr?[.size] as? Int) ?? 1
@@ -277,7 +278,7 @@ class LogViewModel: ObservableObject {
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             let f = progress.fraction
-            if f > self.fileLoadProgress { self.fileLoadProgress = f }
+            if f > self.progressTracker.fileLoadProgress { self.progressTracker.fileLoadProgress = f }
         }
         RunLoop.main.add(timer, forMode: .common)
         fileLoadTimer = timer
@@ -294,8 +295,8 @@ class LogViewModel: ObservableObject {
                         self.openTabs[index].isCurrentlyStreaming = false
                         self.fileLoadTimer?.invalidate()
                         self.fileLoadTimer = nil
-                        self.fileLoadProgress = 1.0
-                        self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        self.progressTracker.fileLoadProgress = 1.0
+                        self.progressTracker.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
                         self.generateHighlightData(for: targetTabID)
                         if self.selectedTabID == targetTabID { self.startLiveTailingForActiveTab() }
                     }
@@ -309,11 +310,11 @@ class LogViewModel: ObservableObject {
                         self.closeTab(id: targetTabID)
                         self.recentFiles.removeAll { $0.name == url.lastPathComponent }
                         self.saveRecentFiles()
-                        self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        self.progressTracker.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
                     } else if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
                         self.openTabs[index].statusLines = ["Error opening file: \(error.localizedDescription)"]
                         self.openTabs[index].isCurrentlyStreaming = false
-                        self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        self.progressTracker.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
                         if self.selectedTabID == targetTabID { self.startLiveTailingForActiveTab() }
                     }
                 }
@@ -333,8 +334,8 @@ class LogViewModel: ObservableObject {
         openTabs.remove(at: index)
         if selectedTabID == id { selectedTabID = openTabs.last?.id }
         
-        isLoadingFile = openTabs.contains { $0.isCurrentlyStreaming }
-        if !isLoadingFile {
+        progressTracker.isLoadingFile = openTabs.contains { $0.isCurrentlyStreaming }
+        if !progressTracker.isLoadingFile {
             fileLoadTimer?.invalidate()
             fileLoadTimer = nil
         }
@@ -439,7 +440,7 @@ class LogViewModel: ObservableObject {
             filterTimer?.invalidate(); filterTimer = nil
             openTabs[tabIndex].filteredIndices = []
             openTabs[tabIndex].filterMessage = nil
-            isFiltering = false
+            progressTracker.isFiltering = false
             updateDisplayedIndices(for: tabIndex)
             return
         }
@@ -448,19 +449,19 @@ class LogViewModel: ObservableObject {
             filterTimer?.invalidate(); filterTimer = nil
             openTabs[tabIndex].filteredIndices = []
             openTabs[tabIndex].filterMessage = "Invalid Regular Expression"
-            isFiltering = false
+            progressTracker.isFiltering = false
             updateDisplayedIndices(for: tabIndex)
             return
         }
 
         addToFilterHistory(pattern)
 
-        isFiltering = true
-        filterProgress = 0.0
+        progressTracker.isFiltering = true
+        progressTracker.filterProgress = 0.0
         openTabs[tabIndex].filterMessage = nil
 
         guard let content = openTabs[tabIndex].content else {
-            isFiltering = false
+            progressTracker.isFiltering = false
             return
         }
 
@@ -472,8 +473,8 @@ class LogViewModel: ObservableObject {
             guard let self = self else { return }
             let f = progress.fraction
             // Ensure visual progress never shrinks
-            if f > self.filterProgress {
-                self.filterProgress = f
+            if f > self.progressTracker.filterProgress {
+                self.progressTracker.filterProgress = f
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -521,8 +522,8 @@ class LogViewModel: ObservableObject {
                 guard gen == self.filterGeneration else { return }
                 self.filterTimer?.invalidate()
                 self.filterTimer = nil
-                self.filterProgress = 1.0
-                self.isFiltering = false
+                self.progressTracker.filterProgress = 1.0
+                self.progressTracker.isFiltering = false
                 NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
             }
         }
@@ -1237,8 +1238,8 @@ class LogViewModel: ObservableObject {
         guard tab.content == nil, !tab.isCurrentlyStreaming else { return }
 
         openTabs[index].isCurrentlyStreaming = true
-        isLoadingFile = true
-        fileLoadProgress = 0.0
+        progressTracker.isLoadingFile = true
+        progressTracker.fileLoadProgress = 0.0
 
         let url = tab.fileURL
         let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
@@ -1249,7 +1250,7 @@ class LogViewModel: ObservableObject {
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             let f = progress.fraction
-            if f > self.fileLoadProgress { self.fileLoadProgress = f }
+            if f > self.progressTracker.fileLoadProgress { self.progressTracker.fileLoadProgress = f }
         }
         RunLoop.main.add(timer, forMode: .common)
         fileLoadTimer = timer
@@ -1266,8 +1267,8 @@ class LogViewModel: ObservableObject {
                         self.openTabs[freshIndex].isCurrentlyStreaming = false
                         self.fileLoadTimer?.invalidate()
                         self.fileLoadTimer = nil
-                        self.fileLoadProgress = 1.0
-                        self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        self.progressTracker.fileLoadProgress = 1.0
+                        self.progressTracker.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
                         let savedPattern = self.openTabs[freshIndex].filterPattern
                         if !savedPattern.isEmpty && self.selectedTabID == id {
                             self.applyFilter(with: savedPattern)
@@ -1287,7 +1288,7 @@ class LogViewModel: ObservableObject {
                     if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
                         self.openTabs[freshIndex].statusLines = ["Unable to open file... File may have been deleted or moved."]
                         self.openTabs[freshIndex].isCurrentlyStreaming = false
-                        self.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        self.progressTracker.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
                         if self.selectedTabID == id { self.startLiveTailingForActiveTab() }
                     }
                 }
@@ -1628,4 +1629,11 @@ extension Color {
         let bInt = Int(clamping: lround(Double(components[2] * 255.0)))
         return String(format: "%02X%02X%02X", rInt, gInt, bInt)
     }
+}
+
+class LogProgressTracker: ObservableObject {
+    @Published var isLoadingFile: Bool = false
+    @Published var fileLoadProgress: Double = 0.0
+    @Published var isFiltering: Bool = false
+    @Published var filterProgress: Double = 0.0
 }

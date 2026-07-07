@@ -20,20 +20,7 @@ struct ContentView: View {
         VStack(spacing: 0) {
 
             // FILE STREAMING PROGRESS BAR
-            if viewModel.isLoadingFile {
-                VStack(spacing: 2) {
-                    ProgressView(value: viewModel.fileLoadProgress)
-                        .progressViewStyle(.linear)
-                        .controlSize(.small)
-                        .animation(.none, value: viewModel.fileLoadProgress)
-                    Text("Loading file… \(Int(viewModel.fileLoadProgress * 100))%")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                Divider()
-            }
+            FileLoadProgressView(progressTracker: viewModel.progressTracker)
 
             // TAB STRIP
             if !viewModel.openTabs.isEmpty {
@@ -519,17 +506,10 @@ private struct BottomPaneView: View {
 
             ZStack(alignment: .topLeading) {
                 VStack(spacing: 0) {
-                    if viewModel.isFiltering {
-                        ProgressView(value: viewModel.filterProgress)
-                            .progressViewStyle(.linear)
-                            .controlSize(.small)
-                            .animation(.none, value: viewModel.filterProgress)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 2)
-                    }
+                    FilterProgressView(progressTracker: viewModel.progressTracker)
                     Divider()
                     if viewModel.filteredCount == 0
-                        && !viewModel.isFiltering
+                        && !viewModel.progressTracker.isFiltering
                         && viewModel.currentFilterPattern.isEmpty {
                         VStack(spacing: 8) {
                             Image(systemName: "magnifyingglass")
@@ -867,5 +847,41 @@ private struct HistoryRow: View {
         .buttonStyle(.plain)
         .background(hovered ? Color.accentColor.opacity(0.08) : Color.clear)
         .onHover { hovered = $0 }
+    }
+}
+
+struct FileLoadProgressView: View {
+    @ObservedObject var progressTracker: LogProgressTracker
+
+    var body: some View {
+        if progressTracker.isLoadingFile {
+            VStack(spacing: 2) {
+                ProgressView(value: progressTracker.fileLoadProgress)
+                    .progressViewStyle(.linear)
+                    .controlSize(.small)
+                    .animation(.none, value: progressTracker.fileLoadProgress)
+                Text("Loading file… \(Int(progressTracker.fileLoadProgress * 100))%")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            Divider()
+        }
+    }
+}
+
+struct FilterProgressView: View {
+    @ObservedObject var progressTracker: LogProgressTracker
+
+    var body: some View {
+        if progressTracker.isFiltering {
+            ProgressView(value: progressTracker.filterProgress)
+                .progressViewStyle(.linear)
+                .controlSize(.small)
+                .animation(.none, value: progressTracker.filterProgress)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 2)
+        }
     }
 }
