@@ -254,7 +254,11 @@ enum BTailInstaller {
 @main
 struct BeaverTailApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var viewModel = LogViewModel()
+    // Using @State instead of @StateObject prevents the entire App menu from redrawing
+    // whenever LogViewModel `@Published` properties (like openTabs) are repeatedly
+    // updated during file loading, regex filtering, and minimap rendering.
+    @State private var viewModel = LogViewModel()
+    @StateObject private var recentTracker = RecentFilesTracker.shared
 
     var body: some Scene {
         WindowGroup {
@@ -282,11 +286,11 @@ struct BeaverTailApp: App {
                 .keyboardShortcut("o", modifiers: .command)
 
                 Menu("Open Recent") {
-                    if viewModel.recentFiles.isEmpty {
+                    if recentTracker.recentFiles.isEmpty {
                         Text("No Recent Files")
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(viewModel.recentFiles) { recent in
+                        ForEach(recentTracker.recentFiles) { recent in
                             Button(recent.name) {
                                 viewModel.openRecentFile(recent)
                             }

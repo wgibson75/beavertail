@@ -104,12 +104,17 @@ class LogViewModel: ObservableObject {
     }
 
     @Published var filterHistory: [String] = []
-    @Published var recentFiles: [RecentFile] = []
+
+    var recentFiles: [RecentFile] {
+        get { RecentFilesTracker.shared.recentFiles }
+        set { RecentFilesTracker.shared.recentFiles = newValue }
+    }
 
     private var filterGeneration: Int = 0
     private var filterTimer: Timer?
     private var fileLoadTimer: Timer?
     private var minimapTasks: [UUID: Task<Void, Never>] = [:]
+    private var lastMinimapUpdate: [UUID: DispatchTime] = [:]
     private var timelineTasks: [UUID: Task<Void, Never>] = [:]
     private var liveTailTasks: [UUID: Task<Void, Never>] = [:]
     private var highlightTasks: [UUID: Task<Void, Never>] = [:]
@@ -665,8 +670,14 @@ class LogViewModel: ObservableObject {
                     if discoveredNewRules {
                         self.openTabs[i].timelineActiveRuleIDs = updatedTimelineIDs
                     }
-
-                    self.generateMinimapData(for: tabID)
+                    
+                    let now = DispatchTime.now()
+                    let lastMinimap = self.lastMinimapUpdate[tabID] ?? DispatchTime(uptimeNanoseconds: 0)
+                    let diff = now.uptimeNanoseconds - lastMinimap.uptimeNanoseconds
+                    if isFinal || diff > 1_000_000_000 { // 1 second throttle
+                        self.lastMinimapUpdate[tabID] = now
+                        self.generateMinimapData(for: tabID)
+                    }
                     
                     if isFinal || discoveredNewRules {
                         self.generateTimelineData(for: tabID)
@@ -1331,9 +1342,11 @@ class LogViewModel: ObservableObject {
     func addToRecentFiles(_ url: URL) {
         guard let bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) else { return }
         let entry = RecentFile(name: url.lastPathComponent, bookmarkBase64: bookmark.base64EncodedString())
-        recentFiles.removeAll { $0.name == entry.name }
-        recentFiles.insert(entry, at: 0)
-        if recentFiles.count > 10 { recentFiles = Array(recentFiles.prefix(10)) }
+        var current = RecentFilesTracker.shared.recentFiles
+        current.removeAll { $0.name == entry.name }
+        current.insert(entry, at: 0)
+        if current.count > 10 { current = Array(current.prefix(10)) }
+        RecentFilesTracker.shared.recentFiles = current
         saveRecentFiles()
     }
 
@@ -1345,20 +1358,20 @@ class LogViewModel: ObservableObject {
             let url = try URL(resolvingBookmarkData: bookmarkData, options: [], relativeTo: nil, bookmarkDataIsStale: &isStale)
 
             guard FileManager.default.fileExists(atPath: url.path) else {
-                recentFiles.removeAll { $0.bookmarkBase64 == recent.bookmarkBase64 }
+                RecentFilesTracker.shared.recentFiles.removeAll { $0.bookmarkBase64 == recent.bookmarkBase64 }
                 saveRecentFiles()
                 return
             }
 
             loadNewTab(from: url, isRecent: true)
         } catch {
-            recentFiles.removeAll { $0.bookmarkBase64 == recent.bookmarkBase64 }
+            RecentFilesTracker.shared.recentFiles.removeAll { $0.bookmarkBase64 == recent.bookmarkBase64 }
             saveRecentFiles()
         }
     }
 
     func clearRecentFiles() {
-        recentFiles.removeAll()
+        RecentFilesTracker.shared.recentFiles.removeAll()
         recentFilesData = ""
     }
 
@@ -1367,11 +1380,11 @@ class LogViewModel: ObservableObject {
               let data = recentFilesData.data(using: .utf8),
               let decoded = try? JSONDecoder().decode([RecentFile].self, from: data)
         else { return }
-        recentFiles = decoded
+        RecentFilesTracker.shared.recentFiles = decoded
     }
 
     private func saveRecentFiles() {
-        if let data = try? JSONEncoder().encode(recentFiles),
+        if let data = try? JSONEncoder().encode(RecentFilesTracker.shared.recentFiles),
            let string = String(data: data, encoding: .utf8) {
             recentFilesData = string
         }
@@ -1636,4 +1649,9 @@ class LogProgressTracker: ObservableObject {
     @Published var fileLoadProgress: Double = 0.0
     @Published var isFiltering: Bool = false
     @Published var filterProgress: Double = 0.0
+}
+
+class RecentFilesTracker: ObservableObject {
+    static let shared = RecentFilesTracker()
+    @Published var recentFiles: [RecentFile] = []
 }
