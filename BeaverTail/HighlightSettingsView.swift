@@ -91,6 +91,12 @@ struct HighlightSettingsView: View {
     @State private var editingRuleID: UUID?
     @State private var mouseMonitor: Any?
 
+    private var isUniqueRule: Bool {
+        !viewModel.highlightRules.contains { rule in
+            rule.pattern == patternInput && rule.isCaseSensitive == isCaseSensitive
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // ── Form area ──
@@ -108,41 +114,34 @@ struct HighlightSettingsView: View {
                         .frame(width: 44, height: 24)
                         .help("Background colour")
 
-                    Toggle("Aa", isOn: $isCaseSensitive)
-                        .toggleStyle(.button)
-                        .help("Match Case: when active, the pattern matches case-sensitively")
-                        .font(.system(size: 11, weight: .semibold))
+                    Button(action: { isCaseSensitive.toggle() }) {
+                        Text("Aa")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 4)
+                            .foregroundColor(isCaseSensitive ? .primary : .secondary)
+                            .background(Color(NSColor.controlBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .stroke(isCaseSensitive ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: isCaseSensitive ? 2 : 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Match Case: when active, the pattern matches case-sensitively")
 
                     Button(editingRuleID == nil ? "Add" : "Update") {
-                        guard !patternInput.isEmpty else { return }
-                        if let editingID = editingRuleID {
-                            if let index = viewModel.highlightRules.firstIndex(where: { $0.id == editingID }) {
-                                var rule = viewModel.highlightRules[index]
-                                rule.pattern = patternInput
-                                rule.foregroundColorHex = fgColor.toHex()
-                                rule.backgroundColorHex = bgColor.toHex()
-                                rule.isCaseSensitive = isCaseSensitive
-                                rule.updateCachedObjects()
-                                viewModel.highlightRules[index] = rule
-                            }
-                        } else {
-                            var rule = HighlightRule(
-                                pattern: patternInput,
-                                foregroundColorHex: fgColor.toHex(),
-                                backgroundColorHex: bgColor.toHex(),
-                                isCaseSensitive: isCaseSensitive
-                            )
-                            rule.updateCachedObjects()
-                            viewModel.highlightRules.append(rule)
-                        }
-                        clearForm()
+                        handleAddOrUpdate(isSecondaryAdd: false)
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(patternInput.isEmpty)
 
                     if editingRuleID != nil {
-                        Button("Cancel") { clearForm() }
-                            .buttonStyle(.borderless)
+                        Button("Add") {
+                            handleAddOrUpdate(isSecondaryAdd: true)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(patternInput.isEmpty || !isUniqueRule)
                     }
                 }
             }
@@ -276,6 +275,18 @@ struct HighlightSettingsView: View {
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
             }
+            .background(
+                // Hidden escape key handler
+                Button("") {
+                    if editingRuleID != nil || !patternInput.isEmpty {
+                        clearForm()
+                    } else {
+                        dismiss()
+                    }
+                }
+                .keyboardShortcut(.cancelAction)
+                .hidden()
+            )
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
         }
@@ -301,6 +312,56 @@ struct HighlightSettingsView: View {
                 NSColorPanel.shared.close()
             }
         }
+    }
+
+    private func handleAddOrUpdate(isSecondaryAdd: Bool) {
+        guard !patternInput.isEmpty else { return }
+
+        if let editingID = editingRuleID {
+            if isSecondaryAdd {
+                if let rule = viewModel.highlightRules.first(where: { $0.id == editingID }),
+                   (rule.pattern != patternInput || rule.isCaseSensitive != isCaseSensitive) {
+                    addNewRule(insertAfter: editingID)
+                } else {
+                    updateExistingRule(id: editingID)
+                }
+            } else {
+                updateExistingRule(id: editingID)
+            }
+        } else {
+            addNewRule()
+        }
+    }
+
+    private func updateExistingRule(id: UUID) {
+        if let index = viewModel.highlightRules.firstIndex(where: { $0.id == id }) {
+            var rule = viewModel.highlightRules[index]
+            rule.pattern = patternInput
+            rule.foregroundColorHex = fgColor.toHex()
+            rule.backgroundColorHex = bgColor.toHex()
+            rule.isCaseSensitive = isCaseSensitive
+            rule.updateCachedObjects()
+            viewModel.highlightRules[index] = rule
+        }
+        clearForm()
+    }
+
+    private func addNewRule(insertAfter existingID: UUID? = nil) {
+        var rule = HighlightRule(
+            pattern: patternInput,
+            foregroundColorHex: fgColor.toHex(),
+            backgroundColorHex: bgColor.toHex(),
+            isCaseSensitive: isCaseSensitive
+        )
+        rule.updateCachedObjects()
+
+        if let existingID = existingID,
+           let index = viewModel.highlightRules.firstIndex(where: { $0.id == existingID }) {
+            viewModel.highlightRules.insert(rule, at: index + 1)
+        } else {
+            viewModel.highlightRules.append(rule)
+        }
+        clearForm()
     }
 
     private func clearForm() {
