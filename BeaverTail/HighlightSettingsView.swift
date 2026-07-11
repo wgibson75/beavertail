@@ -91,6 +91,7 @@ struct HighlightSettingsView: View {
     @State private var isCaseSensitive = false
     @State private var editingRuleID: UUID?
     @State private var mouseMonitor: Any?
+    @State private var deletingRules: Set<UUID> = []
 
     private var isUniqueRule: Bool {
         !viewModel.highlightRules.contains { rule in
@@ -159,49 +160,53 @@ struct HighlightSettingsView: View {
                     ForEach(viewModel.highlightRules) { rule in
                         if let index = viewModel.highlightRules.firstIndex(where: { $0.id == rule.id }) {
                             HStack(spacing: 10) {
-                                Text("\(index + 1)")
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .foregroundStyle(.tertiary)
-                                    .frame(width: 14, alignment: .center)
+                                HStack(spacing: 10) {
+                                    Text("\(index + 1)")
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundStyle(.tertiary)
+                                        .frame(width: 14, alignment: .center)
 
-                                Toggle("", isOn: Binding(
-                                    get: { rule.isEnabled },
-                                    set: { newValue in
-                                        if let idx = viewModel.highlightRules.firstIndex(where: { $0.id == rule.id }) {
-                                            viewModel.highlightRules[idx].isEnabled = newValue
+                                    Toggle("", isOn: Binding(
+                                        get: { rule.isEnabled },
+                                        set: { newValue in
+                                            if let idx = viewModel.highlightRules.firstIndex(where: { $0.id == rule.id }) {
+                                                viewModel.highlightRules[idx].isEnabled = newValue
+                                            }
+                                        }
+                                    ))
+                                    .labelsHidden()
+                                    .toggleStyle(.switch)
+                                    .scaleEffect(0.65) // Make the switch a bit smaller to fit the row nicely
+
+                                    // Pattern preview badge
+                                    HStack(spacing: 6) {
+                                        Text(editingRuleID == rule.id ? (patternInput.isEmpty ? " " : patternInput) : rule.pattern)
+                                            .font(.system(.body, design: .monospaced))
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(editingRuleID == rule.id ? bgColor : rule.backgroundColor)
+                                            .foregroundColor(editingRuleID == rule.id ? fgColor : rule.foregroundColor)
+                                            .clipShape(RoundedRectangle(cornerRadius: 4))
+
+                                        if (editingRuleID == rule.id ? isCaseSensitive : rule.isCaseSensitive) {
+                                            Text("Aa")
+                                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                                .foregroundStyle(.secondary)
+                                                .help("Match Case")
                                         }
                                     }
-                                ))
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-                                .scaleEffect(0.65) // Make the switch a bit smaller to fit the row nicely
+                                    .opacity(rule.isEnabled ? 1.0 : 0.4) // Dim when disabled
 
-                                // Pattern preview badge
-                                HStack(spacing: 6) {
-                                    Text(rule.pattern)
-                                        .font(.system(.body, design: .monospaced))
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(rule.backgroundColor)
-                                        .foregroundColor(rule.foregroundColor)
-                                        .clipShape(RoundedRectangle(cornerRadius: 4))
-
-                                    if rule.isCaseSensitive {
-                                        Text("Aa")
-                                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                            .foregroundStyle(.secondary)
-                                            .help("Match Case")
-                                    }
+                                    Spacer()
                                 }
-                                .opacity(rule.isEnabled ? 1.0 : 0.4) // Dim when disabled
-
-                                Spacer()
+                                .offset(x: deletingRules.contains(rule.id) ? -450 : 0)
+                                .opacity(deletingRules.contains(rule.id) ? 0.0 : 1.0)
+                                .animation(.easeIn(duration: 0.35), value: deletingRules)
 
                                 Divider().frame(height: 16)
 
                                 Button {
-                                    if editingRuleID == rule.id { clearForm() }
-                                    viewModel.highlightRules.removeAll { $0.id == rule.id }
+                                    deleteRule(rule)
                                 } label: {
                                     Image(systemName: "trash")
                                         .foregroundStyle(.secondary)
@@ -231,8 +236,8 @@ struct HighlightSettingsView: View {
             }
             .listStyle(.plain)
             .tint(Color.clear)
-            .onChange(of: editingRuleID) { newID in
-                if let id = newID, let rule = viewModel.highlightRules.first(where: { $0.id == id }) {
+            .onChange(of: editingRuleID) { oldValue, newValue in
+                if let id = newValue, let rule = viewModel.highlightRules.first(where: { $0.id == id }) {
                     patternInput = rule.pattern
                     fgColor = rule.foregroundColor
                     bgColor = rule.backgroundColor
@@ -286,6 +291,20 @@ struct HighlightSettingsView: View {
             }
             if NSColorPanel.shared.isVisible {
                 NSColorPanel.shared.close()
+            }
+        }
+    }
+
+    private func deleteRule(_ rule: HighlightRule) {
+        withAnimation(.easeIn(duration: 0.35)) {
+            _ = deletingRules.insert(rule.id)
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            withAnimation {
+                if editingRuleID == rule.id { clearForm() }
+                viewModel.highlightRules.removeAll { $0.id == rule.id }
+                deletingRules.remove(rule.id)
             }
         }
     }
