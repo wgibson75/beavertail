@@ -83,6 +83,7 @@ private struct WheelColorWell: NSViewRepresentable {
 struct HighlightSettingsView: View {
     @ObservedObject var viewModel: LogViewModel
     @Environment(\.dismiss) var dismiss
+    @Environment(\.colorScheme) var colorScheme
 
     @State private var patternInput = ""
     @State private var fgColor = Color(red: 1, green: 1, blue: 1)
@@ -116,15 +117,11 @@ struct HighlightSettingsView: View {
 
                     Button(action: { isCaseSensitive.toggle() }) {
                         Text("Aa")
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .font(.system(size: 14, weight: .bold, design: .monospaced))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 4)
-                            .foregroundColor(isCaseSensitive ? .primary : .secondary)
-                            .background(Color(NSColor.controlBackgroundColor))
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 4)
-                                    .stroke(isCaseSensitive ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: isCaseSensitive ? 2 : 1)
+                            .foregroundColor(
+                                isCaseSensitive ? Color.accentColor : Color.gray
                             )
                     }
                     .buttonStyle(.plain)
@@ -152,7 +149,7 @@ struct HighlightSettingsView: View {
             Divider()
 
             // ── Rules list ──
-            List {
+            List(selection: $editingRuleID) {
                 if viewModel.highlightRules.isEmpty {
                     ContentUnavailableLabel(
                         text: "No highlight rules yet.",
@@ -162,55 +159,22 @@ struct HighlightSettingsView: View {
                     ForEach(viewModel.highlightRules) { rule in
                         if let index = viewModel.highlightRules.firstIndex(where: { $0.id == rule.id }) {
                             HStack(spacing: 10) {
-                                // Priority reorder controls
-                                VStack(spacing: 0) {
-                                    Button {
-                                        withAnimation {
-                                            viewModel.highlightRules.move(
-                                                fromOffsets: IndexSet(integer: index),
-                                                toOffset: index - 1
-                                            )
-                                        }
-                                    } label: {
-                                        Image(systemName: "chevron.up")
-                                            .font(.system(size: 9, weight: .bold))
-                                    }
-                                    .buttonStyle(.borderless)
-                                    .disabled(index == 0)
-
-                                    Button {
-                                        withAnimation {
-                                            viewModel.highlightRules.move(
-                                                fromOffsets: IndexSet(integer: index),
-                                                toOffset: index + 2
-                                            )
-                                        }
-                                    } label: {
-                                        Image(systemName: "chevron.down")
-                                            .font(.system(size: 9, weight: .bold))
-                                    }
-                                    .buttonStyle(.borderless)
-                                    .disabled(index == viewModel.highlightRules.count - 1)
-                                }
+                                Text("\(index + 1)")
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                                    .frame(width: 14, alignment: .center)
 
                                 Toggle("", isOn: Binding(
                                     get: { rule.isEnabled },
                                     set: { newValue in
                                         if let idx = viewModel.highlightRules.firstIndex(where: { $0.id == rule.id }) {
                                             viewModel.highlightRules[idx].isEnabled = newValue
-                                            // Optional: trigger re-generation in ViewModel? It's @Published, so should occur?
-                                            // Actually modifying the bound value of published array directly triggers updates!
                                         }
                                     }
                                 ))
                                 .labelsHidden()
                                 .toggleStyle(.switch)
                                 .scaleEffect(0.65) // Make the switch a bit smaller to fit the row nicely
-
-                                Text("\(index + 1)")
-                                    .font(.system(.caption2, design: .monospaced))
-                                    .foregroundStyle(.tertiary)
-                                    .frame(width: 14, alignment: .center)
 
                                 // Pattern preview badge
                                 HStack(spacing: 6) {
@@ -230,37 +194,49 @@ struct HighlightSettingsView: View {
                                     }
                                 }
                                 .opacity(rule.isEnabled ? 1.0 : 0.4) // Dim when disabled
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    editingRuleID = rule.id
-                                    patternInput = rule.pattern
-                                    fgColor = rule.foregroundColor
-                                    bgColor = rule.backgroundColor
-                                    isCaseSensitive = rule.isCaseSensitive
-                                }
 
                                 Spacer()
 
-                                Image(systemName: "pencil")
-                                    .font(.caption)
-                                    .foregroundStyle(editingRuleID == rule.id ? Color.accentColor : Color.secondary.opacity(0.4))
-
                                 Divider().frame(height: 16)
 
-                                Button(role: .destructive) {
+                                Button {
                                     if editingRuleID == rule.id { clearForm() }
                                     viewModel.highlightRules.removeAll { $0.id == rule.id }
                                 } label: {
                                     Image(systemName: "trash")
+                                        .foregroundStyle(.secondary)
                                 }
-                                .buttonStyle(.borderless)
+                                .buttonStyle(.plain)
+                                .help("Delete rule")
                             }
                             .padding(.vertical, 2)
+                            .padding(.horizontal, 8)
+                            .contentShape(Rectangle())
+                            .tag(rule.id)
+                            .listRowBackground(
+                                Rectangle()
+                                    .fill(Color(NSColor.windowBackgroundColor)) // Opaque full-width fill to hide 100% of the native selection
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .stroke(editingRuleID == rule.id ? Color.accentColor : Color.clear, lineWidth: 2)
+                                    )
+                            )
+                            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
                         }
                     }
                     .onMove { fromOffsets, toOffset in
                         viewModel.highlightRules.move(fromOffsets: fromOffsets, toOffset: toOffset)
                     }
+                }
+            }
+            .listStyle(.plain)
+            .tint(Color.clear)
+            .onChange(of: editingRuleID) { newID in
+                if let id = newID, let rule = viewModel.highlightRules.first(where: { $0.id == id }) {
+                    patternInput = rule.pattern
+                    fgColor = rule.foregroundColor
+                    bgColor = rule.backgroundColor
+                    isCaseSensitive = rule.isCaseSensitive
                 }
             }
 
@@ -359,7 +335,7 @@ struct HighlightSettingsView: View {
            let index = viewModel.highlightRules.firstIndex(where: { $0.id == existingID }) {
             viewModel.highlightRules.insert(rule, at: index + 1)
         } else {
-            viewModel.highlightRules.append(rule)
+            viewModel.highlightRules.insert(rule, at: 0)
         }
         clearForm()
     }

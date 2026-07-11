@@ -565,6 +565,7 @@ private struct BottomPaneView: View {
 private struct FilterBarView: View {
     @ObservedObject var viewModel: LogViewModel
     @Binding var showFilterDropdown: Bool
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(spacing: 8) {
@@ -651,16 +652,22 @@ private struct FilterBarView: View {
             // Animate the field's position so it slides left to fill the space
             // freed by the vanishing dropdown, and slides right when it reappears.
             .animation(.spring(response: 0.42, dampingFraction: 0.78), value: viewModel.currentTabHasMarks)
-            Toggle("Aa", isOn: Binding(
-                get: { !viewModel.isCaseInsensitive },
-                set: { caseSensitive in
-                    viewModel.isCaseInsensitive = !caseSensitive
-                    viewModel.applyFilter(with: viewModel.currentFilterPattern)
-                }
-            ))
-            .toggleStyle(.button)
+            
+            Button(action: {
+                let caseSensitive = !viewModel.isCaseInsensitive
+                viewModel.isCaseInsensitive = caseSensitive
+                viewModel.applyFilter(with: viewModel.currentFilterPattern)
+            }) {
+                Text("Aa")
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .foregroundColor(
+                        !viewModel.isCaseInsensitive ? Color.accentColor : Color.gray
+                    )
+            }
+            .buttonStyle(.plain)
             .help("Match Case: when active, the filter matches case-sensitively")
-            .font(.system(size: 11, weight: .semibold))
 
             Toggle(isOn: $viewModel.followTail) {
                 Label("Follow", systemImage: "arrow.down.to.line")
