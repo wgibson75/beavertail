@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXFileReference section */
+		5BF48574263C4ED39B0828CC /* LogHelpers.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "LogHelpers.swift"; sourceTree = "<group>"; };
+		9E1D1FE58C8C43A9979D557F /* LogViewModel+Rules.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "LogViewModel+Rules.swift"; sourceTree = "<group>"; };
+		AF5D5696E5B346C1B8959359 /* LogViewModel+RecentFiles.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "LogViewModel+RecentFiles.swift"; sourceTree = "<group>"; };
+		7F1A5739882F42B19D538F62 /* LogViewModel+FilterHistory.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "LogViewModel+FilterHistory.swift"; sourceTree = "<group>"; };
+		54FB55BC4DB3498985DE3678 /* LogViewModel+LiveTailing.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "LogViewModel+LiveTailing.swift"; sourceTree = "<group>"; };
+		D66CF918B3BB4AF081F6630E /* LogViewModel+Persistence.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "LogViewModel+Persistence.swift"; sourceTree = "<group>"; };
 		BE4D7B052FDD115300A0BCDB /* BeaverTail.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BeaverTail.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -119,6 +125,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FF95994D2C7E40B1B6D67CE5 /* LogHelpers.swift in Sources */,
+				D816ACD0C56544D39A61C104 /* LogViewModel+Rules.swift in Sources */,
+				8B25CE7C88E947549707CE95 /* LogViewModel+RecentFiles.swift in Sources */,
+				D05F84B5192C432EA5E40E88 /* LogViewModel+FilterHistory.swift in Sources */,
+				D16107EBE4A74E2685D656BE /* LogViewModel+LiveTailing.swift in Sources */,
+				1B71FC10A3CC4049A9C1FC26 /* LogViewModel+Persistence.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -86,14 +86,14 @@ class LogViewModel: ObservableObject {
     /// toolbar toggle can reflect (and drive) its state.
     @Published var isHighlightWindowOpen: Bool = false
 
-    @AppStorage("saved_highlight_rules") private var rulesData: String = ""
+    @AppStorage("saved_highlight_rules") var rulesData: String = ""
     @AppStorage("saved_show_minimap") var showMinimap: Bool = true
     @AppStorage("saved_show_line_numbers") var showLineNumbers: Bool = true
     @Published var showTimeline: Bool = false
-    @AppStorage("saved_filter_history_v1") private var filterHistoryData: String = ""
+    @AppStorage("saved_filter_history_v1") var filterHistoryData: String = ""
     @AppStorage("saved_font_size") var fontSize: Double = 12
-    @AppStorage("saved_recent_files_v1") private var recentFilesData: String = ""
-    @AppStorage("saved_session_bookmarks_v2") private var sessionBookmarksData: String = ""
+    @AppStorage("saved_recent_files_v1") var recentFilesData: String = ""
+    @AppStorage("saved_session_bookmarks_v2") var sessionBookmarksData: String = ""
     @AppStorage("saved_filter_display_mode") private var filterDisplayModeRaw: String = FilterDisplayMode.marksAndMatches.rawValue
 
     @Published var highlightRules: [HighlightRule] = [] {
@@ -112,17 +112,17 @@ class LogViewModel: ObservableObject {
 
     private var filterGeneration: Int = 0
     private var filterTimer: Timer?
-    private var fileLoadTimer: Timer?
+    var fileLoadTimer: Timer?
     private var minimapTasks: [UUID: Task<Void, Never>] = [:]
     private var lastMinimapUpdate: [UUID: DispatchTime] = [:]
     private var timelineTasks: [UUID: Task<Void, Never>] = [:]
-    private var liveTailTasks: [UUID: Task<Void, Never>] = [:]
+    var liveTailTasks: [UUID: Task<Void, Never>] = [:]
     private var highlightTasks: [UUID: Task<Void, Never>] = [:]
-    private var fullyScannedRuleIDsByTab: [UUID: Set<UUID>] = [:]
-    private var sessionSaveDebounceTask: Task<Void, Never>?
+    var fullyScannedRuleIDsByTab: [UUID: Set<UUID>] = [:]
+    var sessionSaveDebounceTask: Task<Void, Never>?
     private var activeTailSource: DispatchSourceFileSystemObject?
     private var activeTailFileDescriptor: Int32 = -1
-    private var currentActiveFilterPattern: String = ""
+    var currentActiveFilterPattern: String = ""
     private var lastMinimapSelectedLineByTab: [UUID: Int] = [:]
     /// Guards the Aa/Follow published vars from writing back into the tab while
     /// they are being mirrored *from* the newly-selected tab.
@@ -381,7 +381,7 @@ class LogViewModel: ObservableObject {
     }
 
     /// Updates the displayed indices for a specific log tab depending on the current filter mode.
-    private func updateDisplayedIndices(for tabIndex: Int) {
+    func updateDisplayedIndices(for tabIndex: Int) {
         let tab = openTabs[tabIndex]
         switch filterDisplayMode {
         case .matches:
@@ -419,7 +419,7 @@ class LogViewModel: ObservableObject {
     }
 
     /// Keeps currentFilterPattern in sync with the selected tab's saved pattern.
-    private func syncCurrentFilterPattern() {
+    func syncCurrentFilterPattern() {
         currentFilterPattern = currentTab?.filterPattern ?? ""
         currentActiveFilterPattern = currentFilterPattern
         // Mirror the per-tab Aa / Follow options into the bound published vars
@@ -976,7 +976,7 @@ class LogViewModel: ObservableObject {
         }
     }
 
-    private func generateTimelineDataForAllTabs() {
+    func generateTimelineDataForAllTabs() {
         for tab in openTabs { generateTimelineData(for: tab.id) }
     }
 
@@ -1122,536 +1122,4 @@ class LogViewModel: ObservableObject {
         openTabs[tabIdx].selectedFraction = max(0, min(1, fraction))
     }
 
-    /// Called when the user plain-clicks a row in the top pane that is already
-    // MARK: - Session Persistence
-
-    private func saveLoadedTabsSession() {
-        sessionSaveDebounceTask?.cancel()
-        sessionSaveDebounceTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            guard !Task.isCancelled else { return }
-            self?.flushSaveLoadedTabsSession()
-        }
-    }
-
-    func flushSaveLoadedTabsSession() {
-        struct SavedTabMetadata: Codable {
-            let bookmarkBase64: String
-            let filterPattern: String
-            let isSelected: Bool
-            let markedIndices: [Int]?
-            let isCaseInsensitive: Bool?
-            let followTail: Bool?
-        }
-        var serializedMetadata: [SavedTabMetadata] = []
-        for tab in openTabs {
-            do {
-                // Use minimal options — security-scoped bookmarks require App Sandbox
-                // which this app does not use.
-                let bm = try tab.fileURL.bookmarkData(
-                    options: [],
-                    includingResourceValuesForKeys: nil,
-                    relativeTo: nil
-                )
-                serializedMetadata.append(SavedTabMetadata(
-                    bookmarkBase64: bm.base64EncodedString(),
-                    filterPattern: tab.filterPattern,
-                    isSelected: tab.id == selectedTabID,
-                    markedIndices: Array(tab.markedIndices),
-                    isCaseInsensitive: tab.isCaseInsensitive,
-                    followTail: tab.followTail
-                ))
-            } catch { print("Failed to save bookmark for \(tab.name): \(error)") }
-        }
-        if let data = try? JSONEncoder().encode(serializedMetadata),
-           let string = String(data: data, encoding: .utf8) {
-            sessionBookmarksData = string
-            // Force an immediate UserDefaults flush so the data is on disk
-            // before the process exits (async batching would lose it otherwise).
-            UserDefaults.standard.synchronize()
-        }
-    }
-
-    private func loadSavedTabsSession() {
-        struct SavedTabMetadata: Codable {
-            let bookmarkBase64: String
-            let filterPattern: String
-            let isSelected: Bool?   // nil for entries saved before this field existed
-            let markedIndices: [Int]?
-            let isCaseInsensitive: Bool?
-            let followTail: Bool?
-        }
-        guard !sessionBookmarksData.isEmpty,
-              let data = sessionBookmarksData.data(using: .utf8),
-              let metadataArray = try? JSONDecoder().decode([SavedTabMetadata].self, from: data)
-        else { return }
-
-        var restoredSelectedID: UUID?
-
-        for metadata in metadataArray {
-            guard let bookmarkData = Data(base64Encoded: metadata.bookmarkBase64) else { continue }
-            do {
-                var isStale = false
-                let restoredURL = try URL(
-                    resolvingBookmarkData: bookmarkData,
-                    options: [],
-                    relativeTo: nil,
-                    bookmarkDataIsStale: &isStale
-                )
-
-                // Skip if the file no longer exists on disk
-                guard FileManager.default.fileExists(atPath: restoredURL.path) else {
-                    print("Session restore: file no longer exists, skipping – \(restoredURL.lastPathComponent)")
-                    continue
-                }
-
-                guard !openTabs.contains(where: { $0.fileURL == restoredURL }) else { continue }
-
-                let newID = UUID()
-                let lazyTab = LogTab(
-                    id: newID,
-                    name: restoredURL.lastPathComponent,
-                    fileURL: restoredURL,
-                    content: nil,
-                    statusLines: [],
-                    filteredIndices: [],
-                    markedIndices: Set(metadata.markedIndices ?? []),
-                    displayedIndices: (metadata.markedIndices ?? []).sorted(),
-                    filterMessage: nil,
-                    selectedFraction: nil,
-                    minimapImage: nil,
-                    isCurrentlyStreaming: false,
-                    filterPattern: metadata.filterPattern,
-                    isCaseInsensitive: metadata.isCaseInsensitive ?? true,
-                    followTail: metadata.followTail ?? true
-                )
-                openTabs.append(lazyTab)
-
-                if metadata.isSelected == true {
-                    restoredSelectedID = newID
-                }
-            } catch {
-                print("Session restore failed: \(error.localizedDescription)")
-            }
-        }
-
-        // Select the tab that was active at last close, falling back to the first tab
-        let targetID = restoredSelectedID ?? openTabs.first?.id
-        if let targetID {
-            selectedTabID = targetID
-            triggerLazyLoadForTab(id: targetID)
-        }
-    }
-
-    func triggerLazyLoadForTab(id: UUID) {
-        guard let index = openTabs.firstIndex(where: { $0.id == id }) else { return }
-        let tab = openTabs[index]
-        guard tab.content == nil, !tab.isCurrentlyStreaming else { return }
-
-        openTabs[index].isCurrentlyStreaming = true
-        progressTracker.isLoadingFile = true
-        progressTracker.fileLoadProgress = 0.0
-
-        let url = tab.fileURL
-        let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
-        let totalSize = (attr?[.size] as? Int) ?? 1
-        let progress = ScanProgress(total: totalSize)
-
-        fileLoadTimer?.invalidate()
-        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            let f = progress.fraction
-            if f > self.progressTracker.fileLoadProgress { self.progressTracker.fileLoadProgress = f }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        fileLoadTimer = timer
-
-        Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self else { return }
-            do {
-                let content = try LogContent.build(from: url, progress: progress)
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
-                        self.openTabs[freshIndex].content = content
-                        self.openTabs[freshIndex].statusLines = []
-                        self.openTabs[freshIndex].isCurrentlyStreaming = false
-                        self.fileLoadTimer?.invalidate()
-                        self.fileLoadTimer = nil
-                        self.progressTracker.fileLoadProgress = 1.0
-                        self.progressTracker.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
-                        let savedPattern = self.openTabs[freshIndex].filterPattern
-                        if !savedPattern.isEmpty && self.selectedTabID == id {
-                            self.applyFilter(with: savedPattern)
-                        }
-                        self.generateHighlightData(for: id)
-                        self.syncCurrentFilterPattern()
-                        if self.selectedTabID == id { self.startLiveTailingForActiveTab() }
-                    }
-                }
-            } catch {
-                // File could not be loaded (moved, deleted, permission denied etc.) —
-                // DO NOT remove the tab so the user can see an error state.
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.fileLoadTimer?.invalidate()
-                    self.fileLoadTimer = nil
-                    if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
-                        self.openTabs[freshIndex].statusLines = ["Unable to open file... File may have been deleted or moved."]
-                        self.openTabs[freshIndex].isCurrentlyStreaming = false
-                        self.progressTracker.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
-                        if self.selectedTabID == id { self.startLiveTailingForActiveTab() }
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - Filter History
-
-    func addToFilterHistory(_ pattern: String) {
-        guard !pattern.isEmpty else { return }
-        filterHistory.removeAll { $0 == pattern }
-        filterHistory.insert(pattern, at: 0)
-        if filterHistory.count > 50 { filterHistory = Array(filterHistory.prefix(50)) }
-        saveFilterHistory()
-    }
-
-    func clearFilterHistory() {
-        filterHistory.removeAll()
-        filterHistoryData = ""
-    }
-
-    private func loadFilterHistory() {
-        guard !filterHistoryData.isEmpty,
-              let data = filterHistoryData.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode([String].self, from: data)
-        else { return }
-        filterHistory = decoded
-    }
-
-    private func saveFilterHistory() {
-        if let data = try? JSONEncoder().encode(filterHistory),
-           let string = String(data: data, encoding: .utf8) {
-            filterHistoryData = string
-        }
-    }
-
-    // MARK: - Recent Files
-
-    func addToRecentFiles(_ url: URL) {
-        guard let bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) else { return }
-        let entry = RecentFile(name: url.lastPathComponent, bookmarkBase64: bookmark.base64EncodedString())
-        var current = RecentFilesTracker.shared.recentFiles
-        current.removeAll { $0.name == entry.name }
-        current.insert(entry, at: 0)
-        if current.count > 10 { current = Array(current.prefix(10)) }
-        RecentFilesTracker.shared.recentFiles = current
-        saveRecentFiles()
-    }
-
-    @MainActor
-    func openRecentFile(_ recent: RecentFile) {
-        guard let bookmarkData = Data(base64Encoded: recent.bookmarkBase64) else { return }
-        do {
-            var isStale = false
-            let url = try URL(resolvingBookmarkData: bookmarkData, options: [], relativeTo: nil, bookmarkDataIsStale: &isStale)
-
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                RecentFilesTracker.shared.recentFiles.removeAll { $0.bookmarkBase64 == recent.bookmarkBase64 }
-                saveRecentFiles()
-                return
-            }
-
-            loadNewTab(from: url, isRecent: true)
-        } catch {
-            RecentFilesTracker.shared.recentFiles.removeAll { $0.bookmarkBase64 == recent.bookmarkBase64 }
-            saveRecentFiles()
-        }
-    }
-
-    func clearRecentFiles() {
-        RecentFilesTracker.shared.recentFiles.removeAll()
-        recentFilesData = ""
-    }
-
-    private func loadRecentFiles() {
-        guard !recentFilesData.isEmpty,
-              let data = recentFilesData.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode([RecentFile].self, from: data)
-        else { return }
-        RecentFilesTracker.shared.recentFiles = decoded
-    }
-
-    private func saveRecentFiles() {
-        if let data = try? JSONEncoder().encode(RecentFilesTracker.shared.recentFiles),
-           let string = String(data: data, encoding: .utf8) {
-            recentFilesData = string
-        }
-    }
-
-    // MARK: - Rules
-
-    private func saveRules() {
-        if let encoded = try? JSONEncoder().encode(highlightRules),
-           let string = String(data: encoded, encoding: .utf8) {
-            if rulesData != string { rulesData = string }
-        }
-    }
-
-    private func loadRules() {
-        guard !rulesData.isEmpty,
-              let data = rulesData.data(using: .utf8),
-              var decoded = try? JSONDecoder().decode([HighlightRule].self, from: data)
-        else { return }
-        for idx in 0 ..< decoded.count { decoded[idx].updateCachedObjects() }
-        highlightRules = decoded
-    }
-
-    // MARK: - Live Tailing
-
-    func startLiveTailingForActiveTab() {
-        stopLiveTailing()
-        guard let tab = currentTab else { return }
-        let fileURL = tab.fileURL
-        let tabID = tab.id
-
-        let tailTask = Task.detached(priority: .utility) { [weak self] in
-            var lastKnownSize: UInt64 = 0
-            var wasFilePresent = true
-            if let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path) {
-                lastKnownSize = (attributes[.size] as? UInt64) ?? 0
-            } else {
-                wasFilePresent = tab.content != nil
-            }
-            var remainderData = Data()
-
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                if Task.isCancelled { break }
-
-                guard let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
-                      let currentSize = attributes[.size] as? UInt64 else {
-                    // File may be deleted or moved.
-                    if wasFilePresent {
-                        wasFilePresent = false
-                        lastKnownSize = 0
-                        remainderData = Data()
-                        await MainActor.run { [weak self] in
-                            guard let self = self else { return }
-                            if let idx = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                                self.openTabs[idx].content = nil
-                                self.openTabs[idx].filteredIndices = []
-                                self.openTabs[idx].highlightMatches = []
-                                self.openTabs[idx].markedIndices = []
-                                self.openTabs[idx].timelineMatches = []
-                                self.openTabs[idx].activeRuleIDs = []
-                                self.openTabs[idx].activeRuleSignatures = []
-                                self.openTabs[idx].timelineActiveRuleIDs = []
-                                self.openTabs[idx].statusLines = ["Unable to open file... File may have been deleted or moved."]
-                                self.fullyScannedRuleIDsByTab[tabID] = []
-                                self.updateDisplayedIndices(for: idx)
-                                self.generateMinimapData(for: tabID)
-                                self.generateTimelineData(for: tabID)
-                                self.objectWillChange.send()
-                            }
-                        }
-                    }
-                    continue
-                }
-
-                if currentSize < lastKnownSize || !wasFilePresent {
-                    // Log rotated or truncated, OR log file re-created/written to after being deleted.
-                    lastKnownSize = 0
-                    remainderData = Data()
-                    
-                    // We need to re-read the file completely. To avoid blocking the tailing thread long,
-                    // we can trigger the standard lazy load (which resets content on a background task properly)
-                    // and bail this obsolete live tail stream.
-                    await MainActor.run { [weak self] in
-                        guard let self = self else { return }
-                        if let idx = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                            self.openTabs[idx].content = nil
-                            self.triggerLazyLoadForTab(id: tabID)
-                        }
-                    }
-                    return
-                }
-
-                if currentSize > lastKnownSize {
-                    guard let fileHandle = try? FileHandle(forReadingFrom: fileURL) else { continue }
-                    do {
-                        try fileHandle.seek(toOffset: lastKnownSize)
-                        let bytesToRead = currentSize - lastKnownSize
-                        let readCount = min(bytesToRead, 50 * 1024 * 1024)
-                        if let newData = try fileHandle.read(upToCount: Int(readCount)), !newData.isEmpty {
-                            lastKnownSize += UInt64(newData.count)
-
-                            var dataToProcess = remainderData
-                            dataToProcess.append(newData)
-
-                            if let lastNewline = dataToProcess.lastIndex(of: 0x0A) {
-                                let completeData = dataToProcess.prefix(upTo: lastNewline + 1)
-                                remainderData = Data(dataToProcess.suffix(from: lastNewline + 1))
-
-                                let text = String(decoding: completeData, as: UTF8.self)
-                                var linesArray = text.components(separatedBy: .newlines).map { $0.replacingOccurrences(of: "\r", with: "") }
-                                if linesArray.last?.isEmpty == true { linesArray.removeLast() }
-
-                                let finalLines = linesArray
-                                guard !finalLines.isEmpty else { continue }
-
-                                await MainActor.run { [weak self] in
-                                    guard let self = self else { return }
-                                    if let idx = self.openTabs.firstIndex(where: { $0.id == tabID }),
-                                       let content = self.openTabs[idx].content {
-                                        let baseOffset = content.count
-                                        content.appendLines(finalLines)
-                                        self.appendHighlightsForLiveTail(with: finalLines, startingAt: baseOffset)
-                                        self.generateMinimapData(for: tabID)
-                                        self.generateTimelineData(for: tabID)
-                                        self.appendFilterForLiveTail(with: finalLines, startingAt: baseOffset)
-                                        self.objectWillChange.send()
-                                        if self.followTail {
-                                            DispatchQueue.main.async {
-                                                NotificationCenter.default.post(name: topPaneScrollToBottomNotification, object: nil)
-                                                // Note: we already post bottom pane notification in appendFilterForLiveTail
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                remainderData = dataToProcess
-                            }
-                        }
-                    } catch {
-                        print("Live tail read error: \(error)")
-                    }
-                    try? fileHandle.close()
-                }
-            }
-        }
-        liveTailTasks[tabID] = tailTask
-    }
-
-    func stopLiveTailing() {
-        // Cancel all existing tail tasks
-        for task in liveTailTasks.values {
-            task.cancel()
-        }
-        liveTailTasks.removeAll()
-    }
-
-    func appearanceChanged(isDark: Bool) {
-        if self.isSystemDark != isDark {
-            self.isSystemDark = isDark
-            generateTimelineDataForAllTabs()
-        }
-    }
-
-    func appendFilterForLiveTail(with newLines: [String], startingAt originalStartIndex: Int) {
-        guard !currentActiveFilterPattern.isEmpty,
-              let tabID = selectedTabID,
-              let tabIndex = openTabs.firstIndex(where: { $0.id == tabID })
-        else { return }
-
-        let regexOptions: NSRegularExpression.Options = isCaseInsensitive ? [.caseInsensitive] : []
-        guard let regex = try? NSRegularExpression(pattern: currentActiveFilterPattern, options: regexOptions) else { return }
-
-        var incrementalMatches: [Int] = []
-        for (offset, line) in newLines.enumerated() {
-            let range = NSRange(location: 0, length: line.utf16.count)
-            if regex.firstMatch(in: line, options: [], range: range) != nil {
-                incrementalMatches.append(originalStartIndex + offset)
-            }
-        }
-
-        if !incrementalMatches.isEmpty {
-            openTabs[tabIndex].filteredIndices.append(contentsOf: incrementalMatches)
-            updateDisplayedIndices(for: tabIndex)
-            if followTail {
-                DispatchQueue.main.async {
-                    NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
-                }
-            }
-        }
-    }
-
-    func appendHighlightsForLiveTail(with newLines: [String], startingAt originalStartIndex: Int) {
-        guard let tabID = selectedTabID,
-              let tabIndex = openTabs.firstIndex(where: { $0.id == tabID })
-        else { return }
-
-        let activeRules = highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }
-        guard !activeRules.isEmpty else { return }
-
-        if openTabs[tabIndex].highlightMatches.isEmpty && openTabs[tabIndex].content?.count ?? 0 > 0 {
-            openTabs[tabIndex].highlightMatches = [[Int]](repeating: [], count: activeRules.count)
-            openTabs[tabIndex].activeRuleIDs = activeRules.map { $0.id }
-        }
-
-        guard openTabs[tabIndex].highlightMatches.count == activeRules.count else { return }
-
-        var incrementalMatchesForRules = [[Int]](repeating: [], count: activeRules.count)
-        
-        for (idx, rule) in activeRules.enumerated() {
-            guard let regex = rule.compiledRegex else { continue }
-            for (offset, line) in newLines.enumerated() {
-                let range = NSRange(location: 0, length: line.utf16.count)
-                if regex.firstMatch(in: line, options: [], range: range) != nil {
-                    incrementalMatchesForRules[idx].append(originalStartIndex + offset)
-                }
-            }
-        }
-        
-        for idx in 0..<activeRules.count {
-            if !incrementalMatchesForRules[idx].isEmpty {
-                openTabs[tabIndex].highlightMatches[idx].append(contentsOf: incrementalMatchesForRules[idx])
-            }
-        }
-    }
-}
-
-// MARK: - Recent File Model
-
-struct RecentFile: Codable, Identifiable {
-    var id: String { bookmarkBase64 }
-    let name: String
-    let bookmarkBase64: String
-}
-
-// MARK: - Color Helpers
-
-extension Color {
-    init?(hex: String) {
-        var hexSanitized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
-        hexSanitized = hexSanitized.replacingOccurrences(of: "#", with: "")
-        var rgb: UInt64 = 0
-        guard Scanner(string: hexSanitized).scanHexInt64(&rgb) else { return nil }
-        self.init(
-            red: Double((rgb & 0xFF0000) >> 16) / 255.0,
-            green: Double((rgb & 0x00FF00) >> 8) / 255.0,
-            blue: Double(rgb & 0x0000FF) / 255.0
-        )
-    }
-
-    func toHex() -> String {
-        guard let components = NSColor(self).usingColorSpace(.sRGB)?.cgColor.components, components.count >= 3 else { return "000000" }
-        let rInt = Int(clamping: lround(Double(components[0] * 255.0)))
-        let gInt = Int(clamping: lround(Double(components[1] * 255.0)))
-        let bInt = Int(clamping: lround(Double(components[2] * 255.0)))
-        return String(format: "%02X%02X%02X", rInt, gInt, bInt)
-    }
-}
-
-class LogProgressTracker: ObservableObject {
-    @Published var isLoadingFile: Bool = false
-    @Published var fileLoadProgress: Double = 0.0
-    @Published var isFiltering: Bool = false
-    @Published var filterProgress: Double = 0.0
-}
-
-class RecentFilesTracker: ObservableObject {
-    static let shared = RecentFilesTracker()
-    @Published var recentFiles: [RecentFile] = []
 }

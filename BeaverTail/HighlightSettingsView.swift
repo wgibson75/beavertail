@@ -90,6 +90,7 @@ struct HighlightSettingsView: View {
     @State private var bgColor = Color(red: 1, green: 0.84, blue: 0)
     @State private var isCaseSensitive = false
     @State private var editingRuleID: UUID?
+    @FocusState private var isPatternFocused: Bool
     @State private var mouseMonitor: Any?
     @State private var deletingRules: Set<UUID> = []
 
@@ -105,6 +106,7 @@ struct HighlightSettingsView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     TextField("Regex pattern", text: $patternInput)
+                        .focused($isPatternFocused)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: .infinity)
 
@@ -163,7 +165,7 @@ struct HighlightSettingsView: View {
                                 HStack(spacing: 10) {
                                     Text("\(index + 1)")
                                         .font(.system(.caption2, design: .monospaced))
-                                        .foregroundStyle(.tertiary)
+                                        .foregroundColor(Color(NSColor.tertiaryLabelColor))
                                         .frame(width: 14, alignment: .center)
 
                                     Toggle("", isOn: Binding(
@@ -191,7 +193,7 @@ struct HighlightSettingsView: View {
                                         if (editingRuleID == rule.id ? isCaseSensitive : rule.isCaseSensitive) {
                                             Text("Aa")
                                                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                                .foregroundStyle(.secondary)
+                                                .foregroundColor(Color(NSColor.secondaryLabelColor))
                                                 .help("Match Case")
                                         }
                                     }
@@ -201,7 +203,7 @@ struct HighlightSettingsView: View {
                                 }
                                 .offset(x: deletingRules.contains(rule.id) ? -450 : 0)
                                 .opacity(deletingRules.contains(rule.id) ? 0.0 : 1.0)
-                                .animation(.easeIn(duration: 0.35), value: deletingRules)
+                                .animation(.easeIn(duration: 0.15), value: deletingRules)
 
                                 Divider().frame(height: 16)
 
@@ -209,7 +211,7 @@ struct HighlightSettingsView: View {
                                     deleteRule(rule)
                                 } label: {
                                     Image(systemName: "trash")
-                                        .foregroundStyle(.secondary)
+                                        .foregroundColor(Color(NSColor.secondaryLabelColor))
                                 }
                                 .buttonStyle(.plain)
                                 .help("Delete rule")
@@ -220,13 +222,15 @@ struct HighlightSettingsView: View {
                             .tag(rule.id)
                             .listRowBackground(
                                 Rectangle()
-                                    .fill(Color(NSColor.windowBackgroundColor)) // Opaque full-width fill to hide 100% of the native selection
+                                    .fill(Color(NSColor.windowBackgroundColor)) // Opaque full-width fill to hide 100% of the native selectionr
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 6)
                                             .stroke(editingRuleID == rule.id ? Color.accentColor : Color.clear, lineWidth: 2)
                                     )
                             )
                             .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+                            .alignmentGuide(.listRowSeparatorLeading) { d in d[.leading] - 8 }
+                            .alignmentGuide(.listRowSeparatorTrailing) { d in d[.trailing] + 8 }
                         }
                     }
                     .onMove { fromOffsets, toOffset in
@@ -242,6 +246,29 @@ struct HighlightSettingsView: View {
                     fgColor = rule.foregroundColor
                     bgColor = rule.backgroundColor
                     isCaseSensitive = rule.isCaseSensitive
+                    
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        isPatternFocused = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            NSApp.sendAction(#selector(NSText.moveToEndOfLine(_:)), to: nil, from: nil)
+                        }
+                    }
+                }
+            }
+            .onChange(of: fgColor) { oldValue, newValue in
+                if let id = editingRuleID, let index = viewModel.highlightRules.firstIndex(where: { $0.id == id }) {
+                    var rule = viewModel.highlightRules[index]
+                    rule.foregroundColorHex = newValue.toHex()
+                    rule.updateCachedObjects()
+                    viewModel.highlightRules[index] = rule
+                }
+            }
+            .onChange(of: bgColor) { oldValue, newValue in
+                if let id = editingRuleID, let index = viewModel.highlightRules.firstIndex(where: { $0.id == id }) {
+                    var rule = viewModel.highlightRules[index]
+                    rule.backgroundColorHex = newValue.toHex()
+                    rule.updateCachedObjects()
+                    viewModel.highlightRules[index] = rule
                 }
             }
 
@@ -296,12 +323,12 @@ struct HighlightSettingsView: View {
     }
 
     private func deleteRule(_ rule: HighlightRule) {
-        withAnimation(.easeIn(duration: 0.35)) {
+        withAnimation(.easeIn(duration: 0.15)) {
             _ = deletingRules.insert(rule.id)
         }
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            withAnimation {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            withAnimation(.easeOut(duration: 0.15)) {
                 if editingRuleID == rule.id { clearForm() }
                 viewModel.highlightRules.removeAll { $0.id == rule.id }
                 deletingRules.remove(rule.id)
