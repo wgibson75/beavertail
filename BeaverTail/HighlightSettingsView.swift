@@ -222,7 +222,7 @@ struct HighlightSettingsView: View {
                                 Rectangle()
                                     .fill(Color(NSColor.windowBackgroundColor)) // Opaque full-width fill to hide 100% of the native selection
                                     .overlay(
-                                        RoundedRectangle(cornerRadius: 10)
+                                        RoundedRectangle(cornerRadius: 6)
                                             .stroke(editingRuleID == rule.id ? Color.accentColor : Color.clear, lineWidth: 2)
                                     )
                             )
