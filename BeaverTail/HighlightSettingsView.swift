@@ -95,9 +95,18 @@ struct HighlightSettingsView: View {
     @State private var deletingRules: Set<UUID> = []
     @State private var showingDeleteAllAlert = false
 
+    @State private var originalPattern: String = ""
+    @State private var originalIsCaseSensitive: Bool = false
+    @State private var originalFgColor: Color = Color(red: 1, green: 1, blue: 1)
+    @State private var originalBgColor: Color = Color(red: 1, green: 0.84, blue: 0)
+
+    private var hasMeaningfulChanges: Bool {
+        patternInput != originalPattern || isCaseSensitive != originalIsCaseSensitive
+    }
+
     private var isUniqueRule: Bool {
         !viewModel.highlightRules.contains { rule in
-            rule.pattern == patternInput && rule.isCaseSensitive == isCaseSensitive
+            rule.id != editingRuleID && rule.pattern == patternInput && rule.isCaseSensitive == isCaseSensitive
         }
     }
 
@@ -131,19 +140,15 @@ struct HighlightSettingsView: View {
                     .buttonStyle(.plain)
                     .help("Match Case: when active, the pattern matches case-sensitively")
 
-                    Button(editingRuleID == nil ? "Add" : "Update") {
-                        handleAddOrUpdate(isSecondaryAdd: false)
+                    Button("Add") {
+                        if editingRuleID != nil {
+                            handleAddOrUpdate(isSecondaryAdd: true)
+                        } else {
+                            handleAddOrUpdate(isSecondaryAdd: false)
+                        }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(patternInput.isEmpty)
-
-                    if editingRuleID != nil {
-                        Button("Add") {
-                            handleAddOrUpdate(isSecondaryAdd: true)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(patternInput.isEmpty || !isUniqueRule)
-                    }
+                    .disabled(patternInput.isEmpty || (editingRuleID != nil && (!hasMeaningfulChanges || !isUniqueRule)))
                 }
             }
             .padding(.horizontal, 16)
@@ -202,6 +207,8 @@ struct HighlightSettingsView: View {
 
                                     Spacer()
                                 }
+                                .contentShape(Rectangle())
+                                .simultaneousGesture(TapGesture().onEnded { editingRuleID = rule.id })
                                 .offset(x: deletingRules.contains(rule.id) ? -450 : 0)
                                 .opacity(deletingRules.contains(rule.id) ? 0.0 : 1.0)
                                 .animation(.easeIn(duration: 0.15), value: deletingRules)
@@ -220,7 +227,6 @@ struct HighlightSettingsView: View {
                             .padding(.vertical, 2)
                             .padding(.horizontal, 8)
                             .contentShape(Rectangle())
-                            .simultaneousGesture(TapGesture().onEnded { editingRuleID = rule.id })
                             .tag(rule.id)
                             .listRowBackground(
                                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -233,19 +239,19 @@ struct HighlightSettingsView: View {
                             .alignmentGuide(.listRowSeparatorLeading) { d in d[.leading] - 8 }
                             .alignmentGuide(.listRowSeparatorTrailing) { d in d[.trailing] + 8 }
                             .onDrag {
-                                return NSItemProvider(object: rule.id.uuidString as NSString)
+                                NSItemProvider(object: rule.id.uuidString as NSString)
                             } preview: {
                                 Color.clear
                             }
                         }
                     }
-                    .onInsert(of: [.text]) { insertIndex, itemProviders in
-                        guard let provider = itemProviders.first else { return }
+                    .onInsert(of: [UTType.plainText.identifier]) { index, providers in
+                        guard let provider = providers.first else { return }
                         _ = provider.loadObject(ofClass: NSString.self) { item, _ in
                             guard let idString = item as? String, let ruleID = UUID(uuidString: idString) else { return }
                             DispatchQueue.main.async {
                                 guard let fromIndex = viewModel.highlightRules.firstIndex(where: { $0.id == ruleID }) else { return }
-                                let adjustedIndex = insertIndex > fromIndex ? insertIndex - 1 : insertIndex
+                                let adjustedIndex = index > fromIndex ? index - 1 : index
                                 withAnimation(.default) {
                                     let rule = viewModel.highlightRules.remove(at: fromIndex)
                                     viewModel.highlightRules.insert(rule, at: adjustedIndex)
@@ -264,6 +270,10 @@ struct HighlightSettingsView: View {
                     fgColor = rule.foregroundColor
                     bgColor = rule.backgroundColor
                     isCaseSensitive = rule.isCaseSensitive
+                    originalPattern = rule.pattern
+                    originalIsCaseSensitive = rule.isCaseSensitive
+                    originalFgColor = rule.foregroundColor
+                    originalBgColor = rule.backgroundColor
 
                     // We must force focus back to the text field AFTER the List has claimed first responder.
                     // Doing this unconditionally on the next runloop tick correctly neutralises focus theft.
@@ -272,6 +282,26 @@ struct HighlightSettingsView: View {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                             NSApp.sendAction(#selector(NSText.moveToEndOfLine(_:)), to: nil, from: nil)
                         }
+                    }
+                }
+            }
+            .onChange(of: patternInput) { _, newValue in
+                if let id = editingRuleID, let index = viewModel.highlightRules.firstIndex(where: { $0.id == id }) {
+                    var rule = viewModel.highlightRules[index]
+                    if rule.pattern != newValue {
+                        rule.pattern = newValue
+                        rule.updateCachedObjects()
+                        viewModel.highlightRules[index] = rule
+                    }
+                }
+            }
+            .onChange(of: isCaseSensitive) { _, newValue in
+                if let id = editingRuleID, let index = viewModel.highlightRules.firstIndex(where: { $0.id == id }) {
+                    var rule = viewModel.highlightRules[index]
+                    if rule.isCaseSensitive != newValue {
+                        rule.isCaseSensitive = newValue
+                        rule.updateCachedObjects()
+                        viewModel.highlightRules[index] = rule
                     }
                 }
             }
@@ -357,13 +387,14 @@ struct HighlightSettingsView: View {
     }
 
     private func deleteRule(_ rule: HighlightRule) {
+        if editingRuleID == rule.id { clearForm() }
+
         withAnimation(.easeIn(duration: 0.15)) {
             _ = deletingRules.insert(rule.id)
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             withAnimation(.easeOut(duration: 0.15)) {
-                if editingRuleID == rule.id { clearForm() }
                 viewModel.highlightRules.removeAll { $0.id == rule.id }
                 deletingRules.remove(rule.id)
             }
@@ -375,12 +406,17 @@ struct HighlightSettingsView: View {
 
         if let editingID = editingRuleID {
             if isSecondaryAdd {
-                if let rule = viewModel.highlightRules.first(where: { $0.id == editingID }),
-                   rule.pattern != patternInput || rule.isCaseSensitive != isCaseSensitive {
-                    addNewRule(insertAfter: editingID)
-                } else {
-                    updateExistingRule(id: editingID)
+                // Revert the live-updated changes on the original rule
+                if let index = viewModel.highlightRules.firstIndex(where: { $0.id == editingID }) {
+                    var rule = viewModel.highlightRules[index]
+                    rule.pattern = originalPattern
+                    rule.isCaseSensitive = originalIsCaseSensitive
+                    rule.foregroundColorHex = originalFgColor.toHex()
+                    rule.backgroundColorHex = originalBgColor.toHex()
+                    rule.updateCachedObjects()
+                    viewModel.highlightRules[index] = rule
                 }
+                addNewRule(insertAfter: editingID)
             } else {
                 updateExistingRule(id: editingID)
             }
@@ -427,6 +463,10 @@ struct HighlightSettingsView: View {
         bgColor = Color(red: 1, green: 0.84, blue: 0)
         isCaseSensitive = false
         isPatternFocused = false
+        originalPattern = ""
+        originalIsCaseSensitive = false
+        originalFgColor = Color(red: 1, green: 1, blue: 1)
+        originalBgColor = Color(red: 1, green: 0.84, blue: 0)
     }
 
     private func exportRules() {
