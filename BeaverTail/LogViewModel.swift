@@ -49,8 +49,6 @@ class LogViewModel: ObservableObject {
     var selectedFraction: CGFloat? { currentTab?.selectedFraction ?? nil }
     var minimapImage: NSImage? { currentTab?.minimapImage ?? nil }
 
-    
-    
     @Published var isCaseInsensitive: Bool = true {
         didSet {
             guard !isSyncingTabState else { return }
@@ -62,8 +60,7 @@ class LogViewModel: ObservableObject {
     }
     @Published var isScrubbingMinimap: Bool = false
     let progressTracker = LogProgressTracker()
-    
-    
+
     @Published var currentFilterPattern: String = ""
     /// When true, the view automatically scrolls to follow new lines appended to
     /// the log being viewed (live tailing). Defaults to true.
@@ -338,7 +335,7 @@ class LogViewModel: ObservableObject {
         fullyScannedRuleIDsByTab.removeValue(forKey: id)
         openTabs.remove(at: index)
         if selectedTabID == id { selectedTabID = openTabs.last?.id }
-        
+
         progressTracker.isLoadingFile = openTabs.contains { $0.isCurrentlyStreaming }
         if !progressTracker.isLoadingFile {
             fileLoadTimer?.invalidate()
@@ -538,7 +535,7 @@ class LogViewModel: ObservableObject {
         highlightTasks[tabID]?.cancel()
         guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
         let activeRules = highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }
-        
+
         // Remove rules from fullyScanned that are no longer active, so their cache isn't erroneously reused if re-enabled.
         if let scanned = self.fullyScannedRuleIDsByTab[tabID] {
             let activeIDs = Set(activeRules.map { $0.id })
@@ -548,7 +545,7 @@ class LogViewModel: ObservableObject {
         let oldRuleSignatures = openTabs[index].activeRuleSignatures
         let newRuleIDs = activeRules.map { $0.id }
         let newRuleSignatures = activeRules.map { $0.signature }
-        
+
         guard let content = openTabs[index].content, content.count > 0, !activeRules.isEmpty else {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -568,7 +565,7 @@ class LogViewModel: ObservableObject {
         var newCache: [[Int]] = []
         var matchersToRun: [(globalIndex: Int, matcher: LineMatcher)] = []
         let fullyScanned = self.fullyScannedRuleIDsByTab[tabID] ?? []
-        
+
         for (i, id) in newRuleIDs.enumerated() {
             let sig = newRuleSignatures[i]
             // We match rule definitions to ensure edited rules (same ID) don't falsely reuse cache.
@@ -586,12 +583,12 @@ class LogViewModel: ObservableObject {
                 }
             }
         }
-        
+
         openTabs[index].highlightMatches = newCache
         openTabs[index].activeRuleSignatures = newRuleSignatures
         openTabs[index].activeRuleIDs = newRuleIDs
         openTabs[index].timelineActiveRuleIDs = openTabs[index].timelineActiveRuleIDs.filter { newRuleIDs.contains($0) }
-        
+
         if matchersToRun.isEmpty {
             self.generateMinimapData(for: tabID)
             self.generateTimelineData(for: tabID)
@@ -605,10 +602,10 @@ class LogViewModel: ObservableObject {
                 if Task.isCancelled { return }
                 DispatchQueue.main.async {
                     guard let self = self, let i = self.openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-                    
+
                     var currentCache = self.openTabs[i].highlightMatches
                     guard currentCache.count == newRuleIDs.count else { return }
-                    
+
                     let isFiltered = !self.openTabs[i].filterPattern.isEmpty
                     let filteredIndices = self.openTabs[i].filteredIndices
                     let bSearch: ([Int], Int) -> Int = { arr, el in
@@ -619,14 +616,14 @@ class LogViewModel: ObservableObject {
                         }
                         return low
                     }
-                    
+
                     var discoveredNewRules = false
                     var validTimelineRules: [UUID] = []
-                    
+
                     for (runIdx, partial) in partialMatches.enumerated() {
                         let globalIdx = matchersToRun[runIdx].globalIndex
                         currentCache[globalIdx] = partial
-                        
+
                         if !partial.isEmpty {
                             let ruleID = newRuleIDs[globalIdx]
                             var hasValidMatch = false
@@ -649,9 +646,9 @@ class LogViewModel: ObservableObject {
                             }
                         }
                     }
-                    
+
                     self.openTabs[i].highlightMatches = currentCache
-                    
+
                     if isFinal {
                         var scanned = self.fullyScannedRuleIDsByTab[tabID] ?? []
                         for m in matchersToRun {
@@ -659,7 +656,7 @@ class LogViewModel: ObservableObject {
                         }
                         self.fullyScannedRuleIDsByTab[tabID] = scanned
                     }
-                    
+
                     // Display headings instantly
                     var updatedTimelineIDs = self.openTabs[i].timelineActiveRuleIDs
                     for rID in validTimelineRules {
@@ -670,7 +667,7 @@ class LogViewModel: ObservableObject {
                     if discoveredNewRules {
                         self.openTabs[i].timelineActiveRuleIDs = updatedTimelineIDs
                     }
-                    
+
                     let now = DispatchTime.now()
                     let lastMinimap = self.lastMinimapUpdate[tabID] ?? DispatchTime(uptimeNanoseconds: 0)
                     let diff = now.uptimeNanoseconds - lastMinimap.uptimeNanoseconds
@@ -678,7 +675,7 @@ class LogViewModel: ObservableObject {
                         self.lastMinimapUpdate[tabID] = now
                         self.generateMinimapData(for: tabID)
                     }
-                    
+
                     if isFinal || discoveredNewRules {
                         self.generateTimelineData(for: tabID)
                     }
@@ -727,7 +724,7 @@ class LogViewModel: ObservableObject {
                 if Task.isCancelled { return }
                 let bucketStart = Int(Double(bucket) * Double(totalLines) / Double(imgHeight))
                 if bucketStart >= totalLines { break }
-                
+
                 let bucketEnd = bucket == imgHeight - 1 ? totalLines : Int(Double(bucket + 1) * Double(totalLines) / Double(imgHeight))
                 let linesInBucket = bucketEnd - bucketStart
                 if linesInBucket <= 0 { continue }
@@ -797,7 +794,11 @@ class LogViewModel: ObservableObject {
         let markCGColor = isDark ? CGColor(red: 1, green: 1, blue: 1, alpha: 1) : CGColor(red: 0, green: 0, blue: 0, alpha: 1)
 
         let filterValid = !isFiltered || !filteredIndices.isEmpty
-        guard let content = openTabs[index].content, content.count > 0, !activeRules.isEmpty || hasMarks, filterValid || hasMarks, cache.count == activeRuleIDsCache.count else {
+        guard let content = openTabs[index].content,
+              content.count > 0,
+              !activeRules.isEmpty || hasMarks,
+              filterValid || hasMarks,
+              cache.count == activeRuleIDsCache.count else {
             DispatchQueue.main.async { [weak self] in
                 self?.openTabs[index].timelineImage = nil
                 self?.openTabs[index].isGeneratingTimeline = false
@@ -833,19 +834,27 @@ class LogViewModel: ObservableObject {
                 if Task.isCancelled { return }
                 let bucketStart = Int(Double(bucket) * Double(logTotalLines) / Double(imgHeight))
                 if bucketStart >= logTotalLines { break }
-                let bucketEnd: Int; if bucket == imgHeight - 1 { bucketEnd = logTotalLines } else { let _bd = Double(bucket + 1); let _ld = Double(logTotalLines); let _hd = Double(imgHeight); bucketEnd = Int(_bd * _ld / _hd) }
+                let bucketEnd: Int
+                if bucket == imgHeight - 1 {
+                    bucketEnd = logTotalLines
+                } else {
+                    let bD = Double(bucket + 1)
+                    let lD = Double(logTotalLines)
+                    let hD = Double(imgHeight)
+                    bucketEnd = Int(bD * lD / hD)
+                }
 
                 if isFiltered {
                     let fLower = bSearch(filteredIndices, bucketStart)
                     let fUpper = bSearch(filteredIndices, bucketEnd)
                     let countInBucket = fUpper - fLower
                     if countInBucket == 0 { continue }
-                    
+
                     var matchCounts = [Int](repeating: 0, count: activeRules.count)
                     for (i, cacheIdx) in mappedCacheIndices.enumerated() {
                         let matches = cache[cacheIdx]
                         var count = 0
-                        var firstHitLine: Int? = nil
+                        var firstHitLine: Int?
                         // Fast intersection for this bucket
                         for fIdx in fLower..<fUpper {
                             let lineIdx = filteredIndices[fIdx]

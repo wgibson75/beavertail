@@ -61,6 +61,8 @@ struct ContentView: View {
                             .onDrag {
                                 draggingTabID = tab.id
                                 return NSItemProvider(object: tab.id.uuidString as NSString)
+                            } preview: {
+                                Color.clear
                             }
                             .onDrop(
                                 of: [UTType.plainText],
@@ -652,7 +654,7 @@ private struct FilterBarView: View {
             // Animate the field's position so it slides left to fill the space
             // freed by the vanishing dropdown, and slides right when it reappears.
             .animation(.spring(response: 0.42, dampingFraction: 0.78), value: viewModel.currentTabHasMarks)
-            
+
             Button(action: {
                 let caseSensitive = !viewModel.isCaseInsensitive
                 viewModel.isCaseInsensitive = caseSensitive

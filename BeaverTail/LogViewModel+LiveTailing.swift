@@ -60,7 +60,7 @@ extension LogViewModel {
                     // Log rotated or truncated, OR log file re-created/written to after being deleted.
                     lastKnownSize = 0
                     remainderData = Data()
-                    
+
                     // We need to re-read the file completely. To avoid blocking the tailing thread long,
                     // we can trigger the standard lazy load (which resets content on a background task properly)
                     // and bail this obsolete live tail stream.
@@ -189,7 +189,7 @@ extension LogViewModel {
         guard openTabs[tabIndex].highlightMatches.count == activeRules.count else { return }
 
         var incrementalMatchesForRules = [[Int]](repeating: [], count: activeRules.count)
-        
+
         for (idx, rule) in activeRules.enumerated() {
             guard let regex = rule.compiledRegex else { continue }
             for (offset, line) in newLines.enumerated() {
@@ -199,7 +199,7 @@ extension LogViewModel {
                 }
             }
         }
-        
+
         for idx in 0..<activeRules.count {
             if !incrementalMatchesForRules[idx].isEmpty {
                 openTabs[tabIndex].highlightMatches[idx].append(contentsOf: incrementalMatchesForRules[idx])

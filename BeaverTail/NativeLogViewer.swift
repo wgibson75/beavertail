@@ -955,7 +955,7 @@ struct NativeLogViewer: NSViewRepresentable {
             // Resolve this row's highlight-rule background colour (if any)
             var bgColor = NSColor.clear
             let actualIndex = provider.originalIndex(at: row)
-            
+
             for rule in rules {
                 if let idx = activeRuleIDs.firstIndex(of: rule.id), idx < highlightMatches.count {
                     let matches = highlightMatches[idx]

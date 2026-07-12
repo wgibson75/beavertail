@@ -658,13 +658,15 @@ final class LogContent: LineProvider, @unchecked Sendable {
                         let starts = lineStarts
                         let total = totalBytes
                         nonisolated(unsafe) let nBlob = blobBase
-                        
+
                         starts.withUnsafeBufferPointer { startsBuffer in
                             nonisolated(unsafe) let startsPtr = startsBuffer.baseAddress!
                             partials.withUnsafeMutableBufferPointer { outParam in
                                 nonisolated(unsafe) let out = outParam
                                 DispatchQueue.concurrentPerform(iterations: chunkCount) { chunkIdx in
-                                    let localRx: NSRegularExpression? = params.regex.map { try! NSRegularExpression(pattern: $0.pattern, options: $0.options) }
+                                    let localRx: NSRegularExpression? = params.regex.flatMap {
+                                        try? NSRegularExpression(pattern: $0.pattern, options: $0.options)
+                                    }
                                     let (cs, ce) = ranges[chunkIdx]
                                     var matches: [Int] = []
                                     var startIdx = cs
@@ -672,7 +674,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
                                         autoreleasepool {
                                             let endIdx = min(startIdx + 2048, ce)
                                             var sinceReport = 0
-                                            var cachedLineStr: String? = nil
+                                            var cachedLineStr: String?
                                             for lineIdx in startIdx ..< endIdx {
                                                 let lineStart = startsPtr[lineIdx]
                                                 let rawEnd = (lineIdx + 1 < indexed)
@@ -728,7 +730,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
     /// Optimized extraction of all lines matching multiple matchers in a single parallel pass.
     nonisolated func extractAllMatches(matchers: [LineMatcher], onUpdate: @escaping ([[Int]], Bool) -> Void) {
         let indexed = lineStarts.count
-        guard (indexed > 0 || !appended.isEmpty), !matchers.isEmpty else { onUpdate(Array(repeating: [], count: matchers.count), true); return }
+        guard indexed > 0 || !appended.isEmpty, !matchers.isEmpty else { onUpdate(Array(repeating: [], count: matchers.count), true); return }
 
         let paramsList = matchers.map { Self.buildScanParams(from: $0) }
         var allBlobs: [UInt8] = []
@@ -757,7 +759,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
         var nextChunkToEmit = 0
         var emittedSoFar = [[Int]](repeating: [], count: matchers.count)
         var completeChunks: [Int: [[Int]]] = [:]
-        
+
         var lastEmitTime = DispatchTime.now()
 
         let performUpdates = { (snapshot: [[Int]], force: Bool) in
@@ -767,7 +769,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
             let shouldEmit = force || diff > 150_000_000
             if shouldEmit { lastEmitTime = now }
             outLock.unlock()
-            
+
             if shouldEmit {
                 onUpdate(snapshot, force)
             }
@@ -783,13 +785,15 @@ final class LogContent: LineProvider, @unchecked Sendable {
                         let starts = lineStarts
                         let total = totalBytes
                         nonisolated(unsafe) let nBlob = blobBase
-                        
+
                         nonisolated(unsafe) let nFbs = fbBase
 
                         starts.withUnsafeBufferPointer { startsBuffer in
                             nonisolated(unsafe) let startsPtr = startsBuffer.baseAddress!
                             DispatchQueue.concurrentPerform(iterations: chunkCount) { chunkIdx in
-                                let localRegexes: [NSRegularExpression?] = paramsList.map { p in p.regex.map { try! NSRegularExpression(pattern: $0.pattern, options: $0.options) } }
+                                let localRegexes: [NSRegularExpression?] = paramsList.map { p in
+                                    p.regex.flatMap { try? NSRegularExpression(pattern: $0.pattern, options: $0.options) }
+                                }
                                 let (cs, ce) = ranges[chunkIdx]
                                 var chunkMatches = [[Int]](repeating: [], count: paramsList.count)
                                 var startIdx = cs
@@ -797,7 +801,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
                                     if Task.isCancelled { return }
                                     autoreleasepool {
                                         let endIdx = min(startIdx + 2048, ce)
-                                        var cachedLineStr: String? = nil
+                                        var cachedLineStr: String?
                                         for lineIdx in startIdx ..< endIdx {
                                             if Task.isCancelled { return }
                                             let lineStart = startsPtr[lineIdx]
@@ -819,7 +823,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
                                         startIdx = endIdx
                                     }
                                 }
-                                
+
                                 outLock.lock()
                                 completeChunks[chunkIdx] = chunkMatches
                                 var didEmit = false
@@ -832,7 +836,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
                                 }
                                 let snapshot = emittedSoFar
                                 outLock.unlock()
-                                
+
                                 if didEmit {
                                     performUpdates(snapshot, false)
                                 }
@@ -846,7 +850,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
         outLock.lock()
         var finalMatches = emittedSoFar
         outLock.unlock()
-        
+
         if !appended.isEmpty {
             for (offset, line) in appended.enumerated() {
                 for mIdx in 0..<matchers.count {
@@ -856,7 +860,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
                 }
             }
         }
-        
+
         performUpdates(finalMatches, true)
     }
 
