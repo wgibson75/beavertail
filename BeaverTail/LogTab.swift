@@ -27,6 +27,9 @@ struct LogTab: Identifiable, Equatable, Codable {
 
     var selectedFraction: CGFloat?
     var filterPattern: String = ""
+    /// Per-tab "Set Point in Time" reference timestamp, used to show elapsed time in
+    /// the timestamp bubble. Isolated to this tab so it never affects other tabs.
+    var referenceTimestamp: Date?
     /// Per-tab filter case-insensitivity (Aa toggle). Default: case-insensitive.
     var isCaseInsensitive: Bool = true
     /// Per-tab auto-follow of new log lines (Follow toggle). Default: on.

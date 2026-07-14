@@ -30,11 +30,25 @@ enum FilterDisplayMode: String, CaseIterable, Identifiable {
 
 @MainActor
 class LogViewModel: ObservableObject {
+    /// Shown in the bottom pane when a filter is entered while the file is still
+    /// being indexed; the scan is deferred until loading finishes.
+    static let deferredFilterMessage = "Filtering will begin once the file has finished loading…"
+
     @Published var openTabs: [LogTab] = [] {
         didSet { saveLoadedTabsSession() }
     }
 
-    @Published var referenceTimestamp: Date?
+    /// The "Set Point in Time" reference timestamp for the CURRENTLY selected tab.
+    /// Backed by the tab itself so each open log keeps its own point in time —
+    /// setting or clearing it in one tab never affects any other tab.
+    var referenceTimestamp: Date? {
+        get { currentTab?.referenceTimestamp }
+        set {
+            guard let id = selectedTabID,
+                  let i = openTabs.firstIndex(where: { $0.id == id }) else { return }
+            openTabs[i].referenceTimestamp = newValue
+        }
+    }
 
     @Published var selectedTabID: UUID? {
         didSet {
@@ -42,6 +56,7 @@ class LogViewModel: ObservableObject {
             startLiveTailingForActiveTab()
             saveLoadedTabsSession()
             syncCurrentFilterPattern()
+            reapplyDeferredFilterIfNeeded()
         }
     }
 
@@ -115,6 +130,11 @@ class LogViewModel: ObservableObject {
     private var filterGeneration: Int = 0
     private var filterTimer: Timer?
     var fileLoadTimer: Timer?
+    /// Serial queue for the heavy memory-map index builds. Serialising them ensures
+    /// only ONE all-core scan runs at a time, so a second file load (or a
+    /// restored-session tab lazy-loading) can't saturate every core and stall the
+    /// progressive top-pane display of the file currently being indexed.
+    let indexBuildQueue = DispatchQueue(label: "com.beavertail.indexbuild", qos: .userInitiated)
     private var minimapTasks: [UUID: Task<Void, Never>] = [:]
     private var lastMinimapUpdate: [UUID: DispatchTime] = [:]
     private var timelineTasks: [UUID: Task<Void, Never>] = [:]
@@ -294,11 +314,37 @@ class LogViewModel: ObservableObject {
         RunLoop.main.add(timer, forMode: .common)
         fileLoadTimer = timer
 
-        Task.detached(priority: .userInitiated) { [weak self] in
+        indexBuildQueue.async { [weak self] in
             guard let self else { return }
             do {
-                let content = try LogContent.build(from: url, progress: progress)
-                await MainActor.run { [weak self] in
+                // Map the file (no full read into memory) and index it incrementally,
+                // publishing the growing content after each segment so lines appear in
+                // the top pane as early as possible instead of only once the whole
+                // (potentially multi-GB) file has finished indexing.
+                let content = try LogContent.mappedEmpty(from: url)
+                // Throttle UI publishes so a fast scan of a huge file doesn't flood the
+                // main thread with reloads; the first segment is always published
+                // immediately so lines appear as early as possible.
+                var lastPublish = DispatchTime.now().uptimeNanoseconds
+                var didPublishFirst = false
+                content.buildIndex(progress: progress) { partial in
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    let elapsedMs = (now &- lastPublish) / 1_000_000
+                    guard !didPublishFirst || elapsedMs >= 100 else { return }
+                    didPublishFirst = true
+                    lastPublish = now
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        guard let idx = self.openTabs.firstIndex(where: { $0.id == targetTabID }) else { return }
+                        // Reassigning the (same, growing) content object mutates the
+                        // @Published openTabs array, which re-renders the top pane with
+                        // the newly-indexed lines. The provider decodes each visible line
+                        // on demand from the mmap, so nothing is copied into memory.
+                        self.openTabs[idx].content = partial
+                        self.openTabs[idx].statusLines = []
+                    }
+                }
+                DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
                         self.openTabs[index].content = content
@@ -308,12 +354,19 @@ class LogViewModel: ObservableObject {
                         self.fileLoadTimer = nil
                         self.progressTracker.fileLoadProgress = 1.0
                         self.progressTracker.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        // Now that the whole file is indexed, re-run any filter the user
+                        // applied while it was still streaming — otherwise the bottom pane
+                        // would keep the partial results from the incomplete index.
+                        let activePattern = self.openTabs[index].filterPattern
+                        if !activePattern.isEmpty, self.selectedTabID == targetTabID {
+                            self.applyFilter(with: activePattern)
+                        }
                         self.generateHighlightData(for: targetTabID)
                         if self.selectedTabID == targetTabID { self.startLiveTailingForActiveTab() }
                     }
                 }
             } catch {
-                await MainActor.run { [weak self] in
+                DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.fileLoadTimer?.invalidate()
                     self.fileLoadTimer = nil
@@ -476,6 +529,20 @@ class LogViewModel: ObservableObject {
             return
         }
 
+        // If the file is still being indexed, DEFER the heavy filter scan until
+        // indexing completes. `loadNewTab` / `triggerLazyLoadForTab` re-invoke
+        // `applyFilter` on completion. Running an all-core filter scan alongside the
+        // all-core index build saturates every core and stalls BOTH the progressive
+        // top-pane display and the filter itself, so we hold off and show a hint.
+        if openTabs[tabIndex].isCurrentlyStreaming {
+            filterTimer?.invalidate(); filterTimer = nil
+            progressTracker.isFiltering = false
+            openTabs[tabIndex].filteredIndices = []
+            openTabs[tabIndex].filterMessage = Self.deferredFilterMessage
+            updateDisplayedIndices(for: tabIndex)
+            return
+        }
+
         // Drive the progress bar from a main-thread timer that polls a cheap
         // shared counter, kept fully independent of the worker threads.
         let progress = ScanProgress(total: content.count)
@@ -540,6 +607,19 @@ class LogViewModel: ObservableObject {
                 NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
             }
         }
+    }
+
+    /// Runs a filter that was deferred while its file was still indexing. Called when
+    /// a tab becomes selected, covering the case where the file finished loading while
+    /// a *different* tab was active (so the load-completion re-apply was skipped).
+    func reapplyDeferredFilterIfNeeded() {
+        guard let tabID = selectedTabID,
+              let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        let tab = openTabs[index]
+        guard !tab.isCurrentlyStreaming, tab.content != nil,
+              !tab.filterPattern.isEmpty,
+              tab.filterMessage == Self.deferredFilterMessage else { return }
+        applyFilter(with: tab.filterPattern)
     }
 
     func generateHighlightData(for tabID: UUID) {

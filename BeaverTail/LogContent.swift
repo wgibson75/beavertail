@@ -301,26 +301,45 @@ struct FilteredLineProvider: LineProvider, @unchecked Sendable {
 /// Memory-mapped log file with a lazily-decoded line index.
 final class LogContent: LineProvider, @unchecked Sendable {
     private let data: Data
-    /// Byte offset of the first character of each indexed line.
-    private let lineStarts: ContiguousArray<Int>
+    /// Byte offset of the first character of each indexed line. Populated
+    /// incrementally by `buildIndex` (append-only) so lines can be displayed as
+    /// they are discovered; all access is guarded by `lock`.
+    nonisolated(unsafe) private var lineStarts: ContiguousArray<Int>
     private let totalBytes: Int
     private let lock = NSLock()
+
+    /// True once the full on-disk index has been built. While indexing is still in
+    /// progress the final indexed offset marks the start of a line whose end isn't
+    /// known yet, so that trailing line is hidden from `count` — this guarantees we
+    /// never decode a partially-scanned line that would otherwise span to EOF.
+    /// Guarded by `lock`.
+    nonisolated(unsafe) private var scanComplete: Bool
 
     /// Lines appended at runtime by live-tailing (not part of the mmap index).
     nonisolated(unsafe) private var appended: [String] = []
 
+    /// Number of fully-terminated indexed lines currently visible (must be called
+    /// with `lock` held).
+    private var visibleIndexedCountLocked: Int {
+        scanComplete ? lineStarts.count : Swift.max(0, lineStarts.count - 1)
+    }
+
     /// Number of lines that came from the on-disk index (excludes live-tail appends).
-    nonisolated var indexedCount: Int { lineStarts.count }
+    nonisolated var indexedCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return visibleIndexedCountLocked
+    }
     nonisolated var count: Int {
         lock.lock()
         defer { lock.unlock() }
-        return lineStarts.count + appended.count
+        return visibleIndexedCountLocked + appended.count
     }
 
-    nonisolated init(data: Data, lineStarts: ContiguousArray<Int>, totalBytes: Int) {
+    nonisolated init(data: Data, lineStarts: ContiguousArray<Int>, totalBytes: Int, scanComplete: Bool = true) {
         self.data = data
         self.lineStarts = lineStarts
         self.totalBytes = totalBytes
+        self.scanComplete = scanComplete
     }
 
     /// Appends live-tailed lines that arrived after the file was indexed.
@@ -331,20 +350,35 @@ final class LogContent: LineProvider, @unchecked Sendable {
     }
 
     nonisolated func line(at index: Int) -> String {
+        guard index >= 0 else { return "" }
+        lock.lock()
         let indexed = lineStarts.count
         // Live-tail overflow region
         if index >= indexed {
             let a = index - indexed
-            lock.lock()
-            let apps = appended
+            let result = (a >= 0 && a < appended.count) ? appended[a] : ""
             lock.unlock()
-            return (a >= 0 && a < apps.count) ? apps[a] : ""
+            return result
         }
-        guard index >= 0 else { return "" }
         let start = lineStarts[index]
+        let hasNext = index + 1 < indexed
+        let nextStart = hasNext ? lineStarts[index + 1] : 0
+        let complete = scanComplete
+        lock.unlock()
+
         // The next line's start is one byte past this line's newline, so this
-        // line's content ends at (nextStart - 1).  The final line runs to EOF.
-        let rawEnd = (index + 1 < indexed) ? lineStarts[index + 1] - 1 : totalBytes
+        // line's content ends at (nextStart - 1). The final indexed line runs to
+        // EOF, but only once scanning is complete — while indexing is in progress a
+        // trailing, not-yet-terminated line is hidden by `count`, so we defensively
+        // return empty rather than decode all the way to EOF.
+        let rawEnd: Int
+        if hasNext {
+            rawEnd = nextStart - 1
+        } else if complete {
+            rawEnd = totalBytes
+        } else {
+            return ""
+        }
         let end = max(start, rawEnd)
         return data.withUnsafeBytes { raw -> String in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return "" }
@@ -354,89 +388,201 @@ final class LogContent: LineProvider, @unchecked Sendable {
         }
     }
 
-    // MARK: - Fast parallel index build
+    // MARK: - Fast parallel incremental index build
 
-    /// Memory-maps `url` and builds the line-start index in parallel.
-    nonisolated static func build(from url: URL, progress: ScanProgress? = nil) throws -> LogContent {
+    /// Memory-maps `url` without scanning it. The returned content has an empty
+    /// index (and reports `scanComplete == false`); call `buildIndex` to populate
+    /// it. The file is never read into memory in its entirety — only the OS page
+    /// cache backs the mapping and pages are faulted in on demand.
+    nonisolated static func mappedEmpty(from url: URL) throws -> LogContent {
         let data = try Data(contentsOf: url, options: .alwaysMapped)
         let total = data.count
-        guard total > 0 else {
-            return LogContent(data: data, lineStarts: [], totalBytes: 0)
-        }
-        // Hint the kernel that we'll read the whole mapping sequentially so it does
-        // large readahead instead of slow 4KB demand faults — big win for the full
-        // scans done during indexing and filtering.
-        data.withUnsafeBytes { raw in
-            if let p = raw.baseAddress {
-                madvise(UnsafeMutableRawPointer(mutating: p), raw.count, MADV_SEQUENTIAL)
-            }
-        }
-        let newline: UInt8 = 0x0A
-
-        let lineStarts: ContiguousArray<Int> = data.withUnsafeBytes { rawBuffer in
-            nonisolated(unsafe) let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress!
-            let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
-            let targetChunks = coreCount
-            let approxChunk = max(1, total / targetChunks)
-
-            var ranges: [(start: Int, end: Int)] = []
-            var s = 0
-            while s < total {
-                let e = min(s + approxChunk, total)
-                ranges.append((s, e))
-                s = e
-            }
-
-            let chunkCount = ranges.count
-            var partials = [[Int]](repeating: [], count: chunkCount)
-
-            partials.withUnsafeMutableBufferPointer { outParam in
-                nonisolated(unsafe) let out = outParam
-                DispatchQueue.concurrentPerform(iterations: chunkCount) { i in
-                    let (cs, ce) = ranges[i]
-                    var local: [Int] = []
-                    local.reserveCapacity((ce - cs) / 100)
-
-                    var ptr: UnsafeRawPointer = UnsafeRawPointer(base + cs)
-                    let endPtr: UnsafeRawPointer = UnsafeRawPointer(base + ce)
-
-                    var sinceReport = 0
-                    let reportChunk = max(100_000, (ce - cs) / 20)
-
-                    while ptr < endPtr, let found = memchr(ptr, Int32(newline), ptr.distance(to: endPtr)) {
-                        let foundPtr = found.assumingMemoryBound(to: UInt8.self)
-                        let dist = base.distance(to: foundPtr)
-                        local.append(dist + 1)
-                        let advanced = ptr.distance(to: UnsafeRawPointer(foundPtr + 1))
-                        sinceReport += advanced
-                        ptr = UnsafeRawPointer(foundPtr + 1)
-
-                        if sinceReport >= reportChunk {
-                            progress?.add(sinceReport)
-                            sinceReport = 0
-                        }
-                    }
-
-                    out[i] = local
-                    let left = ptr.distance(to: endPtr)
-                    if left > 0 { sinceReport += left }
-                    if sinceReport > 0 { progress?.add(sinceReport) }
+        if total > 0 {
+            // Hint the kernel that we'll read the whole mapping sequentially so it
+            // does large readahead instead of slow 4KB demand faults — a big win for
+            // the full scans done during indexing and filtering.
+            data.withUnsafeBytes { raw in
+                if let p = raw.baseAddress {
+                    madvise(UnsafeMutableRawPointer(mutating: p), raw.count, MADV_SEQUENTIAL)
                 }
             }
+        }
+        return LogContent(data: data, lineStarts: [], totalBytes: total, scanComplete: false)
+    }
 
-            var totalNewlines = 0
-            for c in partials { totalNewlines += c.count }
+    /// Backwards-compatible one-shot build: maps and fully indexes `url` before
+    /// returning. Used by callers that don't need progressive display.
+    nonisolated static func build(from url: URL, progress: ScanProgress? = nil) throws -> LogContent {
+        let content = try mappedEmpty(from: url)
+        content.buildIndex(progress: progress, onSegment: { _ in })
+        return content
+    }
 
-            var starts = ContiguousArray<Int>()
-            starts.reserveCapacity(totalNewlines + 1)
-            starts.append(0)
-            for c in partials { starts.append(contentsOf: c) }
+    /// Scans the mapped data for line starts, appending them to the index in file
+    /// order. `onSegment` is invoked (on the calling thread) after each segment has
+    /// been indexed, allowing the caller to publish the growing index to the UI so
+    /// lines appear progressively instead of only after the whole file is scanned.
+    ///
+    /// The scan walks the file sequentially in segments (so the earliest lines
+    /// become visible first), while each individual segment is scanned in parallel
+    /// across all cores — preserving the throughput of the original whole-file
+    /// parallel scan. Only byte offsets are ever stored; the file itself is never
+    /// materialised in memory.
+    nonisolated func buildIndex(progress: ScanProgress? = nil, onSegment: (LogContent) -> Void) {
+        let total = totalBytes
+        guard total > 0 else {
+            lock.lock(); scanComplete = true; lock.unlock()
+            onSegment(self)
+            return
+        }
+        let newline: UInt8 = 0x0A
+        let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
 
-            if let last = starts.last, last == total { starts.removeLast() }
-            return starts
+        data.withUnsafeBytes { rawBuffer in
+            nonisolated(unsafe) let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress!
+
+            // The first line always starts at offset 0.
+            appendIndexOffsets([0])
+
+            let ctx = IndexScanContext(
+                base: base, total: total, newline: newline,
+                coreCount: coreCount, progress: progress
+            )
+            var segStart = 0
+            // Start with a small first segment so the first screenful of lines is
+            // indexed and shown almost immediately, then ramp the segment size up to
+            // keep per-segment overhead negligible for the rest of a huge file.
+            var segSize = 4 * 1024 * 1024
+            let maxSegSize = 256 * 1024 * 1024
+
+            while segStart < total {
+                let segEnd = min(segStart + segSize, total)
+                let offsets = Self.scanSegment(ctx, from: segStart, to: segEnd)
+                if !offsets.isEmpty {
+                    appendIndexOffsets(offsets)
+                }
+                onSegment(self)
+                segStart = segEnd
+                segSize = min(segSize * 2, maxSegSize)
+            }
+
+            lock.lock(); scanComplete = true; lock.unlock()
+            onSegment(self)
+        }
+    }
+
+    /// Fixed context shared by every segment scan during an index build.
+    private struct IndexScanContext {
+        let base: UnsafePointer<UInt8>
+        let total: Int
+        let newline: UInt8
+        let coreCount: Int
+        let progress: ScanProgress?
+    }
+
+    /// Scans `[from, to)` for newlines in parallel, returning the resulting line
+    /// start offsets (each one byte past a newline) in ascending order. Any offset
+    /// at or beyond `total` (a trailing EOF newline) is omitted so no phantom empty
+    /// final line is produced.
+    nonisolated private static func scanSegment(
+        _ ctx: IndexScanContext, from: Int, to: Int
+    ) -> [Int] {
+        let base = ctx.base
+        let total = ctx.total
+        let newline = ctx.newline
+        let coreCount = ctx.coreCount
+        let progress = ctx.progress
+        let length = to - from
+        guard length > 0 else { return [] }
+
+        // Split the segment across cores. Cap the number of sub-chunks so tiny early
+        // segments don't spawn excessive parallel work.
+        let targetChunks = max(1, min(coreCount, length / (256 * 1024) + 1))
+        let approxChunk = max(1, length / targetChunks)
+
+        var ranges: [(start: Int, end: Int)] = []
+        var s = from
+        while s < to {
+            let e = min(s + approxChunk, to)
+            ranges.append((s, e))
+            s = e
+        }
+        let chunkCount = ranges.count
+        var partials = [[Int]](repeating: [], count: chunkCount)
+
+        partials.withUnsafeMutableBufferPointer { outParam in
+            nonisolated(unsafe) let out = outParam
+            DispatchQueue.concurrentPerform(iterations: chunkCount) { i in
+                let (cs, ce) = ranges[i]
+                var local: [Int] = []
+                local.reserveCapacity((ce - cs) / 100)
+
+                var ptr: UnsafeRawPointer = UnsafeRawPointer(base + cs)
+                let endPtr: UnsafeRawPointer = UnsafeRawPointer(base + ce)
+
+                var sinceReport = 0
+                let reportChunk = max(100_000, (ce - cs) / 20)
+
+                while ptr < endPtr, let found = memchr(ptr, Int32(newline), ptr.distance(to: endPtr)) {
+                    let foundPtr = found.assumingMemoryBound(to: UInt8.self)
+                    let dist = base.distance(to: foundPtr)
+                    if dist + 1 < total { local.append(dist + 1) }
+                    let advanced = ptr.distance(to: UnsafeRawPointer(foundPtr + 1))
+                    sinceReport += advanced
+                    ptr = UnsafeRawPointer(foundPtr + 1)
+
+                    if sinceReport >= reportChunk {
+                        progress?.add(sinceReport)
+                        sinceReport = 0
+                    }
+                }
+
+                out[i] = local
+                let left = ptr.distance(to: endPtr)
+                if left > 0 { sinceReport += left }
+                if sinceReport > 0 { progress?.add(sinceReport) }
+            }
         }
 
-        return LogContent(data: data, lineStarts: lineStarts, totalBytes: total)
+        var totalNewlines = 0
+        for c in partials { totalNewlines += c.count }
+        var result: [Int] = []
+        result.reserveCapacity(totalNewlines)
+        for c in partials { result.append(contentsOf: c) }
+        return result
+    }
+
+    /// Appends freshly-scanned line-start offsets to the index under lock. The
+    /// index is a single Int per line (~8 bytes); it grows by the standard array
+    /// doubling policy, so its peak footprint matches the original whole-file build
+    /// and no file contents are ever copied.
+    nonisolated private func appendIndexOffsets(_ offsets: [Int]) {
+        lock.lock()
+        lineStarts.append(contentsOf: offsets)
+        lock.unlock()
+    }
+
+    /// Point-in-time snapshot of the indexed line starts for the parallel bulk scanners.
+    private struct IndexSnapshot {
+        let starts: ContiguousArray<Int>
+        let indexed: Int
+        let scanCount: Int
+    }
+
+    /// A stable, point-in-time snapshot of the indexed line starts for the parallel
+    /// bulk scanners. Because the index is append-only, the returned copy-on-write
+    /// buffer is never mutated after this call (a later append copies to a fresh
+    /// buffer), so raw pointers into it stay valid for the scan's duration even if
+    /// indexing is still in progress on another thread. `scanCount` excludes the
+    /// final, not-yet-terminated line while indexing is still running.
+    nonisolated private func indexSnapshot() -> IndexSnapshot {
+        lock.lock()
+        let snapshot = lineStarts
+        let complete = scanComplete
+        lock.unlock()
+        let indexed = snapshot.count
+        let scanCount = complete ? indexed : Swift.max(0, indexed - 1)
+        return IndexSnapshot(starts: snapshot, indexed: indexed, scanCount: scanCount)
     }
 
     // MARK: - Filter scan helpers
@@ -614,16 +760,22 @@ final class LogContent: LineProvider, @unchecked Sendable {
     /// Does not allocate a String per line — searches raw memory-mapped bytes.
     /// Progress is reported into `progress` (polled by the UI timer).
     func filterMatches(matcher: LineMatcher, progress: ScanProgress, onUpdate: @escaping ([Int]) -> Void) {
-        let indexed = lineStarts.count
-        guard indexed > 0 || !appended.isEmpty else { onUpdate([]); return }
+        // Take a stable snapshot so this scan is safe even if the index is still
+        // being built on another thread. `indexed` bounds valid offsets for line-end
+        // computation; `scanCount` excludes any not-yet-terminated trailing line.
+        let snap = indexSnapshot()
+        let starts = snap.starts
+        let indexed = snap.indexed
+        let scanCount = snap.scanCount
+        guard scanCount > 0 || !appended.isEmpty else { onUpdate([]); return }
 
         let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
         let targetChunks = min(coreCount * 8, 128)
-        let chunkSize = max(1, (indexed + targetChunks - 1) / targetChunks)
+        let chunkSize = max(1, (scanCount + targetChunks - 1) / targetChunks)
         var ranges: [(start: Int, end: Int)] = []
         var rangeStart = 0
-        while rangeStart < indexed {
-            let rangeEnd = min(rangeStart + chunkSize, indexed)
+        while rangeStart < scanCount {
+            let rangeEnd = min(rangeStart + chunkSize, scanCount)
             ranges.append((rangeStart, rangeEnd))
             rangeStart = rangeEnd
         }
@@ -655,7 +807,6 @@ final class LogContent: LineProvider, @unchecked Sendable {
                         nonisolated(unsafe) let base = UnsafePointer(
                             rawBuffer.bindMemory(to: UInt8.self).baseAddress!
                         )
-                        let starts = lineStarts
                         let total = totalBytes
                         nonisolated(unsafe) let nBlob = blobBase
 
@@ -729,8 +880,12 @@ final class LogContent: LineProvider, @unchecked Sendable {
 
     /// Optimized extraction of all lines matching multiple matchers in a single parallel pass.
     nonisolated func extractAllMatches(matchers: [LineMatcher], onUpdate: @escaping ([[Int]], Bool) -> Void) {
-        let indexed = lineStarts.count
-        guard indexed > 0 || !appended.isEmpty, !matchers.isEmpty else { onUpdate(Array(repeating: [], count: matchers.count), true); return }
+        // Stable snapshot: safe even if the index is still being built (see filterMatches).
+        let snap = indexSnapshot()
+        let starts = snap.starts
+        let indexed = snap.indexed
+        let scanCount = snap.scanCount
+        guard scanCount > 0 || !appended.isEmpty, !matchers.isEmpty else { onUpdate(Array(repeating: [], count: matchers.count), true); return }
 
         let paramsList = matchers.map { Self.buildScanParams(from: $0) }
         var allBlobs: [UInt8] = []
@@ -745,11 +900,11 @@ final class LogContent: LineProvider, @unchecked Sendable {
 
         let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
         let targetChunks = min(coreCount * 8, 128)
-        let chunkSize = max(1, (indexed + targetChunks - 1) / targetChunks)
+        let chunkSize = max(1, (scanCount + targetChunks - 1) / targetChunks)
         var ranges: [(start: Int, end: Int)] = []
         var rangeStart = 0
-        while rangeStart < indexed {
-            let rangeEnd = min(rangeStart + chunkSize, indexed)
+        while rangeStart < scanCount {
+            let rangeEnd = min(rangeStart + chunkSize, scanCount)
             ranges.append((rangeStart, rangeEnd))
             rangeStart = rangeEnd
         }
@@ -782,7 +937,6 @@ final class LogContent: LineProvider, @unchecked Sendable {
                     let blobBase = blobPtr.baseAddress
                     data.withUnsafeBytes { rawBuffer in
                         nonisolated(unsafe) let base = UnsafePointer(rawBuffer.bindMemory(to: UInt8.self).baseAddress!)
-                        let starts = lineStarts
                         let total = totalBytes
                         nonisolated(unsafe) let nBlob = blobBase
 

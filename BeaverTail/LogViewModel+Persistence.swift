@@ -148,11 +148,29 @@ extension LogViewModel {
         RunLoop.main.add(timer, forMode: .common)
         fileLoadTimer = timer
 
-        Task.detached(priority: .userInitiated) { [weak self] in
+        indexBuildQueue.async { [weak self] in
             guard let self else { return }
             do {
-                let content = try LogContent.build(from: url, progress: progress)
-                await MainActor.run { [weak self] in
+                // Map + incrementally index so a restored tab's lines also appear
+                // progressively, and run on the shared serial queue so it can't
+                // saturate every core alongside another file's index build.
+                let content = try LogContent.mappedEmpty(from: url)
+                var lastPublish = DispatchTime.now().uptimeNanoseconds
+                var didPublishFirst = false
+                content.buildIndex(progress: progress) { partial in
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    let elapsedMs = (now &- lastPublish) / 1_000_000
+                    guard !didPublishFirst || elapsedMs >= 100 else { return }
+                    didPublishFirst = true
+                    lastPublish = now
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        guard let idx = self.openTabs.firstIndex(where: { $0.id == id }) else { return }
+                        self.openTabs[idx].content = partial
+                        self.openTabs[idx].statusLines = []
+                    }
+                }
+                DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
                         self.openTabs[freshIndex].content = content
@@ -174,7 +192,7 @@ extension LogViewModel {
             } catch {
                 // File could not be loaded (moved, deleted, permission denied etc.) —
                 // DO NOT remove the tab so the user can see an error state.
-                await MainActor.run { [weak self] in
+                DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.fileLoadTimer?.invalidate()
                     self.fileLoadTimer = nil
