@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import os
 
 /// A compiled matcher used to test log lines. For plain-substring patterns we use
 /// a fast byte-level search over the memory map (no String allocation, no
@@ -238,7 +239,10 @@ enum LineMatcher {
 /// reporting from the scan so the bar stays smooth even while every core is busy.
 final class ScanProgress: @unchecked Sendable {
     private var _current: Int = 0
-    private let lock = NSLock()
+    // os_unfair_lock (via OSAllocatedUnfairLock) donates the waiter's priority to the
+    // lock holder, avoiding priority inversions when the user-interactive main thread
+    // polls `fraction` while a lower-QoS scan thread is calling `add`.
+    private let lock = OSAllocatedUnfairLock()
     let total: Int
     init(total: Int) { self.total = max(total, 1) }
     func add(_ n: Int) {
@@ -306,7 +310,11 @@ final class LogContent: LineProvider, @unchecked Sendable {
     /// they are discovered; all access is guarded by `lock`.
     nonisolated(unsafe) private var lineStarts: ContiguousArray<Int>
     private let totalBytes: Int
-    private let lock = NSLock()
+    // os_unfair_lock (via OSAllocatedUnfairLock) supports priority inheritance, so the
+    // user-interactive main thread reading `count` / `line(at:)` during rendering
+    // donates its priority to any lower-QoS scan thread holding the lock — avoiding the
+    // priority inversion an NSLock (pthread mutex) would cause.
+    private let lock = OSAllocatedUnfairLock()
 
     /// True once the full on-disk index has been built. While indexing is still in
     /// progress the final indexed offset marks the start of a line whose end isn't
@@ -320,7 +328,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
 
     /// Number of fully-terminated indexed lines currently visible (must be called
     /// with `lock` held).
-    private var visibleIndexedCountLocked: Int {
+    nonisolated private var visibleIndexedCountLocked: Int {
         scanComplete ? lineStarts.count : Swift.max(0, lineStarts.count - 1)
     }
 
@@ -472,7 +480,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
     }
 
     /// Fixed context shared by every segment scan during an index build.
-    private struct IndexScanContext {
+    nonisolated private struct IndexScanContext {
         let base: UnsafePointer<UInt8>
         let total: Int
         let newline: UInt8
@@ -487,7 +495,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
     nonisolated private static func scanSegment(
         _ ctx: IndexScanContext, from: Int, to: Int
     ) -> [Int] {
-        let base = ctx.base
+        nonisolated(unsafe) let base = ctx.base
         let total = ctx.total
         let newline = ctx.newline
         let coreCount = ctx.coreCount
