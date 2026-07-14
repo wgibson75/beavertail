@@ -967,7 +967,17 @@ final class LogContent: LineProvider, @unchecked Sendable {
                                         for lineIdx in startIdx ..< endIdx {
                                             if Task.isCancelled { return }
                                             let lineStart = startsPtr[lineIdx]
-                                            let lineLen = (lineIdx == total - 1) ? Int(totalBytes) - lineStart : startsPtr[lineIdx + 1] - lineStart
+                                            // Bounds-checked line length. `startsPtr[lineIdx + 1]`
+                                            // must only be read when the next offset is actually
+                                            // present in the snapshot (`lineIdx + 1 < indexed`);
+                                            // for the final indexed line clamp to `total`. Reading
+                                            // one element past the snapshot buffer here yielded a
+                                            // garbage length and an out-of-bounds read into the
+                                            // memory-mapped file (EXC_BAD_ACCESS).
+                                            let rawEnd = (lineIdx + 1 < indexed) ? startsPtr[lineIdx + 1] - 1 : total
+                                            var lineEnd = max(lineStart, rawEnd)
+                                            if lineEnd > lineStart, base[lineEnd - 1] == 0x0D { lineEnd -= 1 }
+                                            let lineLen = lineEnd - lineStart
                                             cachedLineStr = nil
                                             for mIdx in 0..<paramsList.count {
                                                 let p = paramsList[mIdx]
