@@ -28,10 +28,13 @@ enum FilterDisplayMode: String, CaseIterable, Identifiable {
     var id: String { self.rawValue }
 }
 
+@MainActor
 class LogViewModel: ObservableObject {
     @Published var openTabs: [LogTab] = [] {
         didSet { saveLoadedTabsSession() }
     }
+
+    @Published var referenceTimestamp: Date?
 
     @Published var selectedTabID: UUID? {
         didSet {
@@ -86,7 +89,9 @@ class LogViewModel: ObservableObject {
     @AppStorage("saved_highlight_rules") var rulesData: String = ""
     @AppStorage("saved_show_minimap") var showMinimap: Bool = true
     @AppStorage("saved_show_line_numbers") var showLineNumbers: Bool = true
-    @Published var showTimeline: Bool = false
+    @AppStorage("saved_show_timestamp_bubble") var showTimestampBubble: Bool = false
+    @AppStorage("saved_show_timeline") var showTimeline: Bool = true
+
     @AppStorage("saved_filter_history_v1") var filterHistoryData: String = ""
     @AppStorage("saved_font_size") var fontSize: Double = 12
     @AppStorage("saved_recent_files_v1") var recentFilesData: String = ""
@@ -227,8 +232,10 @@ class LogViewModel: ObservableObject {
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            self?.flushSaveLoadedTabsSession()
+        ) { _ in
+            Task { @MainActor [weak self] in
+                self?.flushSaveLoadedTabsSession()
+            }
         }
     }
 
@@ -278,9 +285,11 @@ class LogViewModel: ObservableObject {
 
         fileLoadTimer?.invalidate()
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            let f = progress.fraction
-            if f > self.progressTracker.fileLoadProgress { self.progressTracker.fileLoadProgress = f }
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let f = progress.fraction
+                if f > self.progressTracker.fileLoadProgress { self.progressTracker.fileLoadProgress = f }
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         fileLoadTimer = timer
@@ -472,11 +481,13 @@ class LogViewModel: ObservableObject {
         let progress = ScanProgress(total: content.count)
         filterTimer?.invalidate()
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            let f = progress.fraction
-            // Ensure visual progress never shrinks
-            if f > self.progressTracker.filterProgress {
-                self.progressTracker.filterProgress = f
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let f = progress.fraction
+                // Ensure visual progress never shrinks
+                if f > self.progressTracker.filterProgress {
+                    self.progressTracker.filterProgress = f
+                }
             }
         }
         RunLoop.main.add(timer, forMode: .common)

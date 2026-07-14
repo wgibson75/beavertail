@@ -160,6 +160,18 @@ private let helpSections: [HelpSection] = [
         HelpItem(shortcut: nil, description:
             "Toggle Line Numbers, Minimap and Timeline visibility using the highlighted/unhighlighted toolbar icons.")
     ]),
+    HelpSection(title: "Date / Time Stamps", items: [
+        HelpItem(shortcut: nil, description:
+            "Toggle the 'ts' toolbar icon to enable or disable timestamp popups."),
+        HelpItem(shortcut: nil, description:
+            "When enabled, hover your mouse over log lines in either pane to view a formatted date and "
+            + "time bubble if the line begins with a valid timestamp."),
+        HelpItem(shortcut: nil, description:
+            "Right-click on a log line and select 'Set Point in Time' to use its timestamp as a reference. "
+            + "Subsequent timestamp bubbles will show the elapsed time compared to this point in brackets."),
+        HelpItem(shortcut: nil, description:
+            "Right-click on any log line and select 'Clear Point in Time' to remove the active reference point.")
+    ]),
     HelpSection(title: "Text Size", items: [
         HelpItem(shortcut: nil, description:
             "Use the A / A buttons in the toolbar to increase or decrease log text size. "

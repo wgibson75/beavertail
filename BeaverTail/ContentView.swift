@@ -19,7 +19,7 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
 
-            // FILE STREAMING PROGRESS BAR
+            // FILE STREAMING PROGRESS BARr
             FileLoadProgressView(progressTracker: viewModel.progressTracker)
 
             // TAB STRIP
@@ -284,6 +284,12 @@ struct ContentView: View {
             .toggleStyle(.button)
             .help("Show line numbers")
 
+            Toggle(isOn: $viewModel.showTimestampBubble) {
+                Label("Show timestamp labels", image: "tsIcon")
+            }
+            .toggleStyle(.button)
+            .help("Show timestamp labels")
+
             Toggle(isOn: $viewModel.showMinimap) {
                 Label("Minimap", systemImage: "sidebar.right")
             }
@@ -342,12 +348,16 @@ private struct TopPaneView: View {
                     directScrollNotificationName: topPaneDirectScrollNotification,
                     tailScrollNotificationName: topPaneScrollToBottomNotification,
                     showLineNumbers: viewModel.showLineNumbers,
+                    showTimestampBubble: viewModel.showTimestampBubble,
+                    referenceTimestamp: viewModel.referenceTimestamp,
                     fontSize: viewModel.fontSize,
                     markedIndices: viewModel.currentTab?.markedIndices ?? [],
                     isMinimapActiveDrive: viewModel.isScrubbingMinimap,
                     onLineIndexSelected: { viewModel.updateMinimapFromLineIndex($0) },
                     onToggleMark: { viewModel.toggleMarks($0) },
-                    onClearAllMarks: { viewModel.clearAllMarks() }
+                    onClearAllMarks: { viewModel.clearAllMarks() },
+                    onSetReferenceTimestamp: { viewModel.referenceTimestamp = $0 },
+                    onClearReferenceTimestamp: { viewModel.referenceTimestamp = nil }
                 ).id(viewModel.selectedTabID?.uuidString ?? "top")
             }
         }
@@ -532,12 +542,16 @@ private struct BottomPaneView: View {
                             selectedFraction: viewModel.selectedFraction,
                             tailScrollNotificationName: bottomPaneScrollToBottomNotification,
                             showLineNumbers: viewModel.showLineNumbers,
+                            showTimestampBubble: viewModel.showTimestampBubble,
+                            referenceTimestamp: viewModel.referenceTimestamp,
                             fontSize: viewModel.fontSize,
                             markedIndices: viewModel.currentTab?.markedIndices ?? [],
                             onLineIndexSelected: { viewModel.syncSelectionFromFilteredIndex($0) },
                             onRepeatedPlainClick: { viewModel.syncSelectionFromFilteredIndex($0) },
                             onToggleMark: { viewModel.toggleMarks($0) },
-                            onClearAllMarks: { viewModel.clearAllMarks() }
+                            onClearAllMarks: { viewModel.clearAllMarks() },
+                            onSetReferenceTimestamp: { viewModel.referenceTimestamp = $0 },
+                            onClearReferenceTimestamp: { viewModel.referenceTimestamp = nil }
                         )
                         .id(viewModel.selectedTabID?.uuidString ?? "bot")
                     }

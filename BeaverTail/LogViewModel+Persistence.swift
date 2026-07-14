@@ -139,9 +139,11 @@ extension LogViewModel {
 
         fileLoadTimer?.invalidate()
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            let f = progress.fraction
-            if f > self.progressTracker.fileLoadProgress { self.progressTracker.fileLoadProgress = f }
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let f = progress.fraction
+                if f > self.progressTracker.fileLoadProgress { self.progressTracker.fileLoadProgress = f }
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         fileLoadTimer = timer
