@@ -23,6 +23,9 @@ let bottomPaneScrollToBottomNotification = Notification.Name("BeaverTailBottomPa
 let bottomPaneScrollToTopNotification    = Notification.Name("BeaverTailBottomPaneScrollToTop")
 /// Posted to scroll the bottom pane to a specific row index (Int payload via `object:`).
 let bottomPaneScrollToRowNotification    = Notification.Name("BeaverTailBottomPaneScrollToRow")
+/// Posted to scroll the top pane so a specific row sits at the top of the viewport
+/// and is selected (Int row payload via `object:`). Used after "Hide Lines Above".
+let topPaneScrollToRowNotification       = Notification.Name("BeaverTailTopPaneScrollToRow")
 
 enum FilterDisplayMode: String, CaseIterable, Identifiable {
     case marksAndMatches = "Marks & matches"
@@ -448,6 +451,69 @@ class LogViewModel: ObservableObject {
         generateTimelineData(for: tabID)
     }
 
+    // MARK: - Hide / Show Lines
+
+    /// Hides every line before `originalIndex` in the current tab (the selected line
+    /// stays visible), updating the top pane, bottom pane, minimap and timeline.
+    func hideLinesAbove(originalIndex: Int) {
+        guard let tabID = selectedTabID,
+              let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        openTabs[index].visibleLowerBound = originalIndex
+        // Keep the bounds consistent if a "below" hide is already narrower.
+        if let upper = openTabs[index].visibleUpperBound, upper < originalIndex {
+            openTabs[index].visibleUpperBound = originalIndex
+        }
+        applyLineVisibilityChange(for: index, tabID: tabID)
+
+        // The just-hidden line is now the first visible line: row 0 of the top pane
+        // (a RangeLineProvider) and the first visible row of the bottom pane. Re-select
+        // and pin it to the top of both panes so it doesn't appear to jump to a
+        // different line. Deferred so the panes have rebuilt with the new range first.
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: topPaneScrollToRowNotification, object: 0)
+            NotificationCenter.default.post(name: bottomPaneScrollToRowNotification, object: 0)
+        }
+    }
+
+    /// Hides every line after `originalIndex` in the current tab (the selected line
+    /// stays visible), updating the top pane, bottom pane, minimap and timeline.
+    func hideLinesBelow(originalIndex: Int) {
+        guard let tabID = selectedTabID,
+              let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        openTabs[index].visibleUpperBound = originalIndex
+        if let lower = openTabs[index].visibleLowerBound, lower > originalIndex {
+            openTabs[index].visibleLowerBound = originalIndex
+        }
+        applyLineVisibilityChange(for: index, tabID: tabID)
+    }
+
+    /// Reveals any previously-hidden lines in the current tab.
+    func showAllLines() {
+        guard let tabID = selectedTabID,
+              let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        guard openTabs[index].isHidingLines else { return }
+        openTabs[index].visibleLowerBound = nil
+        openTabs[index].visibleUpperBound = nil
+        applyLineVisibilityChange(for: index, tabID: tabID)
+    }
+
+    /// True when the current tab currently has hidden lines (drives the presence of
+    /// the "Show All Lines" context-menu item).
+    var isHidingLinesInCurrentTab: Bool {
+        currentTab?.isHidingLines ?? false
+    }
+
+    private func applyLineVisibilityChange(for index: Int, tabID: UUID) {
+        // Bottom pane: re-clamp the displayed rows to the new visible range.
+        updateDisplayedIndices(for: index)
+        // Minimap & timeline: regenerate so their highlights cover only the
+        // visible range of lines.
+        generateMinimapData(for: tabID)
+        generateTimelineData(for: tabID)
+        // Nudge SwiftUI so the top pane picks up the new lineProvider/lineCount.
+        objectWillChange.send()
+    }
+
     /// Re-evaluates what is shown in the bottom pane for all tabs based on the active mode.
     private func updateAllDisplayedIndices() {
         for index in 0..<openTabs.count {
@@ -458,11 +524,12 @@ class LogViewModel: ObservableObject {
     /// Updates the displayed indices for a specific log tab depending on the current filter mode.
     func updateDisplayedIndices(for tabIndex: Int) {
         let tab = openTabs[tabIndex]
+        var result: [Int]
         switch filterDisplayMode {
         case .matches:
-            openTabs[tabIndex].displayedIndices = tab.filteredIndices
+            result = tab.filteredIndices
         case .marks:
-            openTabs[tabIndex].displayedIndices = Array(tab.markedIndices).sorted()
+            result = Array(tab.markedIndices).sorted()
         case .marksAndMatches:
             let sortedMarks = Array(tab.markedIndices).sorted()
             let filtered = tab.filteredIndices
@@ -489,8 +556,16 @@ class LogViewModel: ObservableObject {
             while i < filtered.count { merged.append(filtered[i]); i += 1 }
             while j < sortedMarks.count { merged.append(sortedMarks[j]); j += 1 }
 
-            openTabs[tabIndex].displayedIndices = merged
+            result = merged
         }
+
+        // Clamp the bottom-pane rows to the visible range when the user has hidden
+        // lines above/below, so hidden lines disappear from the filtered pane too.
+        if let content = tab.content, let bounds = tab.visibleBounds(for: content.count) {
+            result = result.filter { $0 >= bounds.lower && $0 <= bounds.upper }
+        }
+
+        openTabs[tabIndex].displayedIndices = result
     }
 
     /// Keeps currentFilterPattern in sync with the selected tab's saved pattern.
@@ -811,10 +886,16 @@ class LogViewModel: ObservableObject {
         let colors = activeRules.map { $0.nsBackgroundColor.cgColor }
 
         let totalLines = content.count
+        // Restrict the minimap to the visible range when lines are hidden so its
+        // highlights don't reference lines the user has hidden.
+        let vBounds = openTabs[index].visibleBounds(for: totalLines)
+        let rangeStart = vBounds?.lower ?? 0
+        let rangeEnd = vBounds.map { $0.upper + 1 } ?? totalLines
+        let rangeSpan = max(0, rangeEnd - rangeStart)
         minimapTasks[tabID] = Task.detached(priority: .utility) { [weak self] in
             let imgWidth = 30, imgHeight = 1500
             let colorSpace = CGColorSpaceCreateDeviceRGB()
-            guard let ctx = CGContext(
+            guard rangeSpan > 0, let ctx = CGContext(
                 data: nil, width: imgWidth, height: imgHeight,
                 bitsPerComponent: 8, bytesPerRow: imgWidth * 4, space: colorSpace,
                 bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
@@ -835,10 +916,12 @@ class LogViewModel: ObservableObject {
 
             for bucket in 0..<imgHeight {
                 if Task.isCancelled { return }
-                let bucketStart = Int(Double(bucket) * Double(totalLines) / Double(imgHeight))
-                if bucketStart >= totalLines { break }
+                let bucketStart = rangeStart + Int(Double(bucket) * Double(rangeSpan) / Double(imgHeight))
+                if bucketStart >= rangeEnd { break }
 
-                let bucketEnd = bucket == imgHeight - 1 ? totalLines : Int(Double(bucket + 1) * Double(totalLines) / Double(imgHeight))
+                let bucketEnd = bucket == imgHeight - 1
+                    ? rangeEnd
+                    : rangeStart + Int(Double(bucket + 1) * Double(rangeSpan) / Double(imgHeight))
                 let linesInBucket = bucketEnd - bucketStart
                 if linesInBucket <= 0 { continue }
 
@@ -925,6 +1008,11 @@ class LogViewModel: ObservableObject {
         }
 
         let logTotalLines = content.count
+        // Restrict the timeline to the visible range when lines are hidden.
+        let vBounds = openTabs[index].visibleBounds(for: logTotalLines)
+        let rangeStart = vBounds?.lower ?? 0
+        let rangeEnd = vBounds.map { $0.upper + 1 } ?? logTotalLines
+        let rangeSpan = max(0, rangeEnd - rangeStart)
         timelineTasks[tabID] = Task.detached(priority: .utility) { [weak self] in
             let colWidth = 40
             let imgHeight = 6000
@@ -939,23 +1027,24 @@ class LogViewModel: ObservableObject {
                 return low
             }
 
+            // Maps a bucket row to its inclusive-start / exclusive-end original
+            // line indices within the (possibly restricted) visible range.
+            let bucketBounds: (Int) -> (Int, Int) = { bucket in
+                let start = rangeStart + Int(Double(bucket) * Double(rangeSpan) / Double(imgHeight))
+                let end = bucket == imgHeight - 1
+                    ? rangeEnd
+                    : rangeStart + Int(Double(bucket + 1) * Double(rangeSpan) / Double(imgHeight))
+                return (start, end)
+            }
+
             var newTimelineMatches: [[Int]] = Array(repeating: [], count: activeRules.count)
             var bucketMatchCounts = Array(repeating: Array(repeating: 0, count: activeRules.count), count: imgHeight)
             var bucketSampledCounts = [Int](repeating: 0, count: imgHeight)
 
             for bucket in 0..<imgHeight {
                 if Task.isCancelled { return }
-                let bucketStart = Int(Double(bucket) * Double(logTotalLines) / Double(imgHeight))
-                if bucketStart >= logTotalLines { break }
-                let bucketEnd: Int
-                if bucket == imgHeight - 1 {
-                    bucketEnd = logTotalLines
-                } else {
-                    let bD = Double(bucket + 1)
-                    let lD = Double(logTotalLines)
-                    let hD = Double(imgHeight)
-                    bucketEnd = Int(bD * lD / hD)
-                }
+                let (bucketStart, bucketEnd) = bucketBounds(bucket)
+                if bucketStart >= rangeEnd { break }
 
                 if isFiltered {
                     let fLower = bSearch(filteredIndices, bucketStart)
@@ -1040,9 +1129,8 @@ class LogViewModel: ObservableObject {
 
             if hasMarks {
                 for bucket in 0..<imgHeight {
-                    let bucketStart = Int(Double(bucket) * Double(logTotalLines) / Double(imgHeight))
-                    if bucketStart >= logTotalLines { break }
-                    let bucketEnd = bucket == imgHeight - 1 ? logTotalLines : Int(Double(bucket + 1) * Double(logTotalLines) / Double(imgHeight))
+                    let (bucketStart, bucketEnd) = bucketBounds(bucket)
+                    if bucketStart >= rangeEnd { break }
 
                     let mLower = bSearch(sortedMarks, bucketStart)
                     let mUpper = bSearch(sortedMarks, bucketEnd)

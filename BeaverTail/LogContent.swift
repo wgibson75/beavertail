@@ -281,24 +281,86 @@ struct ArrayLineProvider: LineProvider, Sendable {
 /// Provider for filtered results: a list of matching original line indices,
 /// decoded on demand from the underlying memory-mapped content. This avoids
 /// materialising millions of copied strings for large match sets.
+///
+/// When `visibleLowerBound` / `visibleUpperBound` are supplied (because the user
+/// has hidden lines above/below), the exposed window is restricted to matches
+/// inside that inclusive range. `indices` is always sorted ascending, so the
+/// window is found with a binary search and no array is copied — this makes it
+/// structurally impossible to render a line from a hidden region.
 struct FilteredLineProvider: LineProvider, @unchecked Sendable {
     let content: LogContent
     let indices: [Int]
+    private let startOffset: Int
+    private let endOffset: Int
 
-    init(content: LogContent, indices: [Int]) {
+    init(content: LogContent, indices: [Int], visibleLowerBound: Int? = nil, visibleUpperBound: Int? = nil) {
         self.content = content
         self.indices = indices
+        if visibleLowerBound == nil, visibleUpperBound == nil {
+            startOffset = 0
+            endOffset = indices.count
+        } else {
+            let lower = visibleLowerBound ?? Int.min
+            let upper = visibleUpperBound ?? Int.max
+            // First offset with indices[o] >= lower, and first with indices[o] > upper.
+            startOffset = Self.firstOffset(in: indices) { $0 >= lower }
+            endOffset = Self.firstOffset(in: indices) { $0 > upper }
+        }
     }
 
-    var count: Int { indices.count }
+    var count: Int { Swift.max(0, endOffset - startOffset) }
 
     func line(at index: Int) -> String {
-        guard index >= 0, index < indices.count else { return "" }
-        return content.line(at: indices[index])
+        let i = startOffset + index
+        guard index >= 0, i >= 0, i < endOffset else { return "" }
+        return content.line(at: indices[i])
     }
 
     func originalIndex(at index: Int) -> Int {
-        (index >= 0 && index < indices.count) ? indices[index] : index
+        let i = startOffset + index
+        return (index >= 0 && i >= 0 && i < endOffset) ? indices[i] : index
+    }
+
+    /// Returns the first offset in the ascending `arr` for which `predicate` is
+    /// true (a standard lower-bound binary search over a monotone predicate).
+    static func firstOffset(in arr: [Int], where predicate: (Int) -> Bool) -> Int {
+        var low = 0
+        var high = arr.count
+        while low < high {
+            let mid = low + (high - low) / 2
+            if predicate(arr[mid]) { high = mid } else { low = mid + 1 }
+        }
+        return low
+    }
+
+    /// Number of ascending `arr` elements within the inclusive `[lower, upper]` range.
+    static func countInRange(_ arr: [Int], lower: Int, upper: Int) -> Int {
+        let start = firstOffset(in: arr) { $0 >= lower }
+        let end = firstOffset(in: arr) { $0 > upper }
+        return Swift.max(0, end - start)
+    }
+}
+
+/// Provider exposing a contiguous sub-range of a `LogContent`'s lines without
+/// materialising any index array — used when the user hides all lines above
+/// and/or below a selected line. Its footprint is O(1) regardless of how many
+/// lines are visible, so it preserves the memory-mapped design for huge files.
+struct RangeLineProvider: LineProvider, @unchecked Sendable {
+    let content: LogContent
+    /// Inclusive original index of the first visible line.
+    let lowerBound: Int
+    /// Number of visible lines starting at `lowerBound`.
+    let rangeCount: Int
+
+    var count: Int { rangeCount }
+
+    func line(at index: Int) -> String {
+        guard index >= 0, index < rangeCount else { return "" }
+        return content.line(at: lowerBound + index)
+    }
+
+    func originalIndex(at index: Int) -> Int {
+        (index >= 0 && index < rangeCount) ? lowerBound + index : index
     }
 }
 

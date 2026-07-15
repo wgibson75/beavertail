@@ -9,8 +9,16 @@ import SwiftUI
 private final class LogTableView: NSTableView, NSMenuItemValidation {
     /// Closure that returns the display text for a given visible row index.
     var lineTextForRow: ((Int) -> String)?
+    /// Closure mapping a visible row index to its original line index in the file.
+    var originalIndexForRow: ((Int) -> Int)?
     var onToggleMark: ((IndexSet) -> Void)?
     var onClearAllMarks: (() -> Void)?
+    var onHideLinesAbove: ((Int) -> Void)?
+    var onHideLinesBelow: ((Int) -> Void)?
+    var onShowAllLines: (() -> Void)?
+    /// Whether the current tab currently has hidden lines (controls the presence of
+    /// the "Show All Lines" context-menu item).
+    var isHidingLines: Bool = false
     var hasMarks: Bool = false
     var referenceTimestamp: Date? {
         didSet {
@@ -425,13 +433,46 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
                 menu.addItem(setItem)
             }
             if referenceTimestamp != nil {
-                let clearItem = NSMenuItem(title: "Clear Point in Time", action: #selector(clearPointInTimeAction(_:)), keyEquivalent: "")
+                let clearItem = NSMenuItem(title: "Reset", action: #selector(clearPointInTimeAction(_:)), keyEquivalent: "")
                 clearItem.target = self
                 menu.addItem(clearItem)
                 menu.addItem(NSMenuItem.separator())
             }
         }
+        // Hide/Show line-range items, always at the end and separated by a bar.
+        let originalIndex = originalIndexForRow?(clickedRow) ?? clickedRow
+        menu.addItem(NSMenuItem.separator())
+        let hideAboveItem = NSMenuItem(
+            title: "Hide Lines Above", action: #selector(hideLinesAboveAction(_:)), keyEquivalent: ""
+        )
+        hideAboveItem.target = self
+        hideAboveItem.representedObject = originalIndex
+        menu.addItem(hideAboveItem)
+        let hideBelowItem = NSMenuItem(
+            title: "Hide Lines Below", action: #selector(hideLinesBelowAction(_:)), keyEquivalent: ""
+        )
+        hideBelowItem.target = self
+        hideBelowItem.representedObject = originalIndex
+        menu.addItem(hideBelowItem)
+        if isHidingLines {
+            let showAllItem = NSMenuItem(
+                title: "Reset", action: #selector(showAllLinesAction(_:)), keyEquivalent: ""
+            )
+            showAllItem.target = self
+            menu.addItem(showAllItem)
+        }
         return menu
+    }
+    @objc private func hideLinesAboveAction(_ sender: NSMenuItem) {
+        guard let index = sender.representedObject as? Int else { return }
+        onHideLinesAbove?(index)
+    }
+    @objc private func hideLinesBelowAction(_ sender: NSMenuItem) {
+        guard let index = sender.representedObject as? Int else { return }
+        onHideLinesBelow?(index)
+    }
+    @objc private func showAllLinesAction(_ sender: NSMenuItem) {
+        onShowAllLines?()
     }
     @objc private func setPointInTimeAction(_ sender: NSMenuItem) {
         guard let date = sender.representedObject as? Date else { return }
@@ -681,6 +722,11 @@ struct NativeLogViewer: NSViewRepresentable {
     var onClearAllMarks: (() -> Void)?
     var onSetReferenceTimestamp: ((Date) -> Void)?
     var onClearReferenceTimestamp: (() -> Void)?
+    var onHideLinesAbove: ((Int) -> Void)?
+    var onHideLinesBelow: ((Int) -> Void)?
+    var onShowAllLines: (() -> Void)?
+    /// Whether the current tab has hidden lines (drives the "Show All Lines" item).
+    let isHidingLines: Bool
     // THE CURE: Flag that ensures the minimap fraction ONLY overrides scroll positioning during active click-scrubbing
     let isMinimapActiveDrive: Bool
     var onLineIndexSelected: ((Int) -> Void)?
@@ -699,7 +745,11 @@ struct NativeLogViewer: NSViewRepresentable {
         onToggleMark: ((Set<Int>) -> Void)? = nil,
         onClearAllMarks: (() -> Void)? = nil,
         onSetReferenceTimestamp: ((Date) -> Void)? = nil,
-        onClearReferenceTimestamp: (() -> Void)? = nil
+        onClearReferenceTimestamp: (() -> Void)? = nil,
+        isHidingLines: Bool = false,
+        onHideLinesAbove: ((Int) -> Void)? = nil,
+        onHideLinesBelow: ((Int) -> Void)? = nil,
+        onShowAllLines: (() -> Void)? = nil
     ) {
         self.provider = provider
         isFiltered = false
@@ -722,6 +772,10 @@ struct NativeLogViewer: NSViewRepresentable {
         self.onClearAllMarks = onClearAllMarks
         self.onSetReferenceTimestamp = onSetReferenceTimestamp
         self.onClearReferenceTimestamp = onClearReferenceTimestamp
+        self.isHidingLines = isHidingLines
+        self.onHideLinesAbove = onHideLinesAbove
+        self.onHideLinesBelow = onHideLinesBelow
+        self.onShowAllLines = onShowAllLines
     }
     /// Initializer for the Bottom Pane (Filtered Log View)
     init(
@@ -734,7 +788,11 @@ struct NativeLogViewer: NSViewRepresentable {
         onToggleMark: ((Set<Int>) -> Void)? = nil,
         onClearAllMarks: (() -> Void)? = nil,
         onSetReferenceTimestamp: ((Date) -> Void)? = nil,
-        onClearReferenceTimestamp: (() -> Void)? = nil
+        onClearReferenceTimestamp: (() -> Void)? = nil,
+        isHidingLines: Bool = false,
+        onHideLinesAbove: ((Int) -> Void)? = nil,
+        onHideLinesBelow: ((Int) -> Void)? = nil,
+        onShowAllLines: (() -> Void)? = nil
     ) {
         provider = filteredProvider
         isFiltered = true
@@ -757,6 +815,10 @@ struct NativeLogViewer: NSViewRepresentable {
         self.onClearAllMarks = onClearAllMarks
         self.onSetReferenceTimestamp = onSetReferenceTimestamp
         self.onClearReferenceTimestamp = onClearReferenceTimestamp
+        self.isHidingLines = isHidingLines
+        self.onHideLinesAbove = onHideLinesAbove
+        self.onHideLinesBelow = onHideLinesBelow
+        self.onShowAllLines = onShowAllLines
     }
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -783,12 +845,19 @@ struct NativeLogViewer: NSViewRepresentable {
         tableView.lineTextForRow = { [weak coordinator] row in
             coordinator?.textForRow(row) ?? ""
         }
+        tableView.originalIndexForRow = { [weak coordinator] row in
+            coordinator?.provider.originalIndex(at: row) ?? row
+        }
         tableView.onToggleMark = { [weak coordinator] rowIndexes in
             coordinator?.toggleMarks(rowIndexes)
         }
         tableView.onClearAllMarks = { [weak coordinator] in
             coordinator?.clearAllMarks()
         }
+        tableView.isHidingLines = isHidingLines
+        tableView.onHideLinesAbove = onHideLinesAbove
+        tableView.onHideLinesBelow = onHideLinesBelow
+        tableView.onShowAllLines = onShowAllLines
         scrollView.documentView = tableView
         context.coordinator.configureColumns(in: tableView, showLineNumbers: showLineNumbers)
         // SELECTIVE ROW JUMP OBSERVER (From clicking the bottom pane)
@@ -946,31 +1015,37 @@ struct NativeLogViewer: NSViewRepresentable {
         }
         // MARK: BLOCK NAVIGATION – bottom pane only
         if isFiltered {
-            NotificationCenter.default.addObserver(
-                forName: bottomPaneScrollToRowNotification,
-                object: nil,
-                queue: .main
-            ) { notification in
-                guard let row = notification.object as? Int else { return }
-                DispatchQueue.main.async {
-                    let clamped = max(0, min(row, tableView.numberOfRows - 1))
-                    // Scroll so the target row sits at theTOP of the visible area
-                    let rowRect = tableView.rect(ofRow: clamped)
-                    if let clipView = tableView.enclosingScrollView?.contentView {
-                        let topY = max(0, rowRect.minY)
-                        clipView.setBoundsOrigin(NSPoint(x: clipView.bounds.origin.x, y: topY))
-                        tableView.enclosingScrollView?.reflectScrolledClipView(clipView)
-                    }
-                    // Select the row so the highlight is visible
-                    if let coord = tableView.delegate as? NativeLogViewer.Coordinator {
-                        coord.isProgrammaticallySelecting = true
-                        tableView.selectRowIndexes(IndexSet(integer: clamped), byExtendingSelection: false)
-                        coord.isProgrammaticallySelecting = false
-                    }
+            installScrollRowToTopObserver(name: bottomPaneScrollToRowNotification, tableView: tableView)
+        }
+        // SCROLL A ROW TO THE TOP AND SELECT IT – top pane only. Used after
+        // "Hide Lines Above" so the selected line stays selected and sits at the
+        // very top of the pane instead of the stale row index jumping elsewhere.
+        if !isFiltered {
+            installScrollRowToTopObserver(name: topPaneScrollToRowNotification, tableView: tableView)
+        }
+        return scrollView
+    }
+    /// Installs an observer that, when `name` is posted with an `Int` row payload,
+    /// scrolls that row to the top of the pane and selects it.
+    private func installScrollRowToTopObserver(name: Notification.Name, tableView: LogTableView) {
+        NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { notification in
+            guard let row = notification.object as? Int else { return }
+            DispatchQueue.main.async {
+                guard tableView.numberOfRows > 0 else { return }
+                let clamped = max(0, min(row, tableView.numberOfRows - 1))
+                let rowRect = tableView.rect(ofRow: clamped)
+                if let clipView = tableView.enclosingScrollView?.contentView {
+                    let topY = max(0, rowRect.minY)
+                    clipView.setBoundsOrigin(NSPoint(x: clipView.bounds.origin.x, y: topY))
+                    tableView.enclosingScrollView?.reflectScrolledClipView(clipView)
+                }
+                if let coord = tableView.delegate as? NativeLogViewer.Coordinator {
+                    coord.isProgrammaticallySelecting = true
+                    tableView.selectRowIndexes(IndexSet(integer: clamped), byExtendingSelection: false)
+                    coord.isProgrammaticallySelecting = false
                 }
             }
         }
-        return scrollView
     }
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let tableView = nsView.documentView as? LogTableView else { return }
@@ -980,6 +1055,10 @@ struct NativeLogViewer: NSViewRepresentable {
         tableView.referenceTimestamp = referenceTimestamp
         tableView.onSetReferenceTimestamp = onSetReferenceTimestamp
         tableView.onClearReferenceTimestamp = onClearReferenceTimestamp
+        tableView.isHidingLines = isHidingLines
+        tableView.onHideLinesAbove = onHideLinesAbove
+        tableView.onHideLinesBelow = onHideLinesBelow
+        tableView.onShowAllLines = onShowAllLines
         context.coordinator.provider = provider
         context.coordinator.isFiltered = isFiltered
         context.coordinator.defaultTextColor = textColor
@@ -997,6 +1076,9 @@ struct NativeLogViewer: NSViewRepresentable {
         let coordinator = context.coordinator
         tableView.lineTextForRow = { [weak coordinator] row in
             coordinator?.textForRow(row) ?? ""
+        }
+        tableView.originalIndexForRow = { [weak coordinator] row in
+            coordinator?.provider.originalIndex(at: row) ?? row
         }
         context.coordinator.configureColumns(in: tableView, showLineNumbers: showLineNumbers)
         // Preserve the current selection across reloadData (which otherwise drops

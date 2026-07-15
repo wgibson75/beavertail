@@ -138,6 +138,16 @@ private let helpSections: [HelpSection] = [
             "Right-click and select 'Clear All Marks' to remove all marks from the current log. "
             + "Marks are remembered between launches.")
     ]),
+    HelpSection(title: "Hiding Lines", items: [
+        HelpItem(shortcut: nil, description:
+            "Right-click any line and select 'Hide Lines Above' or 'Hide Lines Below' to focus on a "
+            + "region of the log. The selected line stays visible; everything before or after it is hidden."),
+        HelpItem(shortcut: nil, description:
+            "Hidden lines are removed from both panes as well as the minimap and Timeline View, so their "
+            + "highlights only cover the range you are looking at. Use both options together to isolate a slice."),
+        HelpItem(shortcut: nil, description:
+            "Once lines are hidden, right-click and select 'Reset' to reveal them again.")
+    ]),
     HelpSection(title: "Navigation", items: [
         HelpItem(shortcut: "⌘C", description:
             "Right-click selected lines or press ⌘C to copy selected rows. In the upper pane you can also "
@@ -170,7 +180,7 @@ private let helpSections: [HelpSection] = [
             "Right-click on a log line and select 'Set Point in Time' to use its timestamp as a reference. "
             + "Subsequent timestamp bubbles will show the elapsed time compared to this point in brackets."),
         HelpItem(shortcut: nil, description:
-            "Right-click on any log line and select 'Clear Point in Time' to remove the active reference point.")
+            "Right-click on any log line and select 'Reset' to remove the active reference point.")
     ]),
     HelpSection(title: "Text Size", items: [
         HelpItem(shortcut: nil, description:

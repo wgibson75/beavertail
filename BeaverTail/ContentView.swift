@@ -357,7 +357,11 @@ private struct TopPaneView: View {
                     onToggleMark: { viewModel.toggleMarks($0) },
                     onClearAllMarks: { viewModel.clearAllMarks() },
                     onSetReferenceTimestamp: { viewModel.referenceTimestamp = $0 },
-                    onClearReferenceTimestamp: { viewModel.referenceTimestamp = nil }
+                    onClearReferenceTimestamp: { viewModel.referenceTimestamp = nil },
+                    isHidingLines: viewModel.isHidingLinesInCurrentTab,
+                    onHideLinesAbove: { viewModel.hideLinesAbove(originalIndex: $0) },
+                    onHideLinesBelow: { viewModel.hideLinesBelow(originalIndex: $0) },
+                    onShowAllLines: { viewModel.showAllLines() }
                 ).id(viewModel.selectedTabID?.uuidString ?? "top")
             }
         }
@@ -551,7 +555,11 @@ private struct BottomPaneView: View {
                             onToggleMark: { viewModel.toggleMarks($0) },
                             onClearAllMarks: { viewModel.clearAllMarks() },
                             onSetReferenceTimestamp: { viewModel.referenceTimestamp = $0 },
-                            onClearReferenceTimestamp: { viewModel.referenceTimestamp = nil }
+                            onClearReferenceTimestamp: { viewModel.referenceTimestamp = nil },
+                            isHidingLines: viewModel.isHidingLinesInCurrentTab,
+                            onHideLinesAbove: { viewModel.hideLinesAbove(originalIndex: $0) },
+                            onHideLinesBelow: { viewModel.hideLinesBelow(originalIndex: $0) },
+                            onShowAllLines: { viewModel.showAllLines() }
                         )
                         .id(viewModel.selectedTabID?.uuidString ?? "bot")
                     }

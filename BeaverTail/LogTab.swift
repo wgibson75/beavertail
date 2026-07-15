@@ -46,31 +46,79 @@ struct LogTab: Identifiable, Equatable, Codable {
     var isGeneratingTimeline: Bool = false
     var isCurrentlyStreaming: Bool = false
 
+    /// When the user chooses "Hide All Lines Above", the inclusive original line
+    /// index of the first line that should remain visible (`nil` = from the start).
+    var visibleLowerBound: Int?
+    /// When the user chooses "Hide All Lines Below", the inclusive original line
+    /// index of the last line that should remain visible (`nil` = to the end).
+    var visibleUpperBound: Int?
+
+    /// True when either an "above" or "below" hide is currently in effect.
+    var isHidingLines: Bool {
+        visibleLowerBound != nil || visibleUpperBound != nil
+    }
+
+    /// Resolves the inclusive `[lower, upper]` original-line bounds currently
+    /// visible, clamped to `total`. Returns `nil` when nothing is hidden or the
+    /// resulting range would be empty.
+    func visibleBounds(for total: Int) -> (lower: Int, upper: Int)? {
+        guard total > 0, isHidingLines else { return nil }
+        let lower = max(0, visibleLowerBound ?? 0)
+        let upper = min(total - 1, visibleUpperBound ?? (total - 1))
+        guard lower <= upper else { return nil }
+        return (lower, upper)
+    }
+
     /// Random-access provider used by the viewer: real content if loaded,
-    /// otherwise the placeholder/status text.
+    /// otherwise the placeholder/status text. When lines are hidden, only the
+    /// visible sub-range is exposed (without copying any lines into memory).
     var lineProvider: LineProvider {
-        content ?? ArrayLineProvider(lines: statusLines)
+        guard let content else { return ArrayLineProvider(lines: statusLines) }
+        if let bounds = visibleBounds(for: content.count) {
+            return RangeLineProvider(
+                content: content, lowerBound: bounds.lower, rangeCount: bounds.upper - bounds.lower + 1
+            )
+        }
+        return content
     }
 
     /// Total number of displayable lines (content if loaded, else status lines).
     var lineCount: Int {
-        content?.count ?? statusLines.count
+        guard let content else { return statusLines.count }
+        if let bounds = visibleBounds(for: content.count) {
+            return bounds.upper - bounds.lower + 1
+        }
+        return content.count
     }
 
     /// Provider for the filtered (bottom) pane — decodes matched lines on demand.
+    /// When lines are hidden, the provider restricts itself to matches inside the
+    /// visible range so hidden lines can never appear in the bottom pane.
     var filteredProvider: LineProvider {
         if let message = filterMessage {
             return ArrayLineProvider(lines: [message])
         }
         if let content {
-            return FilteredLineProvider(content: content, indices: displayedIndices)
+            let bounds = visibleBounds(for: content.count)
+            return FilteredLineProvider(
+                content: content,
+                indices: displayedIndices,
+                visibleLowerBound: bounds?.lower,
+                visibleUpperBound: bounds?.upper
+            )
         }
         return ArrayLineProvider(lines: [])
     }
 
-    /// Number of filtered matches (or 1 when showing a filter message).
+    /// Number of filtered matches (or 1 when showing a filter message), clamped to
+    /// the visible range when lines are hidden.
     var filteredCount: Int {
-        filterMessage != nil ? 1 : displayedIndices.count
+        if filterMessage != nil { return 1 }
+        guard let content else { return displayedIndices.count }
+        if let bounds = visibleBounds(for: content.count) {
+            return FilteredLineProvider.countInRange(displayedIndices, lower: bounds.lower, upper: bounds.upper)
+        }
+        return displayedIndices.count
     }
 
     init(
