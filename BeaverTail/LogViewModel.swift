@@ -1190,22 +1190,57 @@ class LogViewModel: ObservableObject {
         for tab in openTabs { generateTimelineData(for: tab.id) }
     }
 
+    // MARK: - Hidden-line-aware coordinate mapping
+    //
+    // The minimap and timeline images span only the currently-visible
+    // original-index range [visibleLower, visibleUpper]. `selectedFraction` is a
+    // 0...1 fraction of that image, and the top pane's row indices are relative to
+    // the first visible line (its provider is a `RangeLineProvider` when lines are
+    // hidden). When lines are hidden above the selection an original line index
+    // must therefore be shifted by the visible lower bound before it can be used
+    // as a minimap fraction or a top-pane row — otherwise a click on a coloured
+    // highlight jumps to the wrong line.
+
+    /// Inclusive original index of the first currently-visible line in `tab`.
+    private func visibleLowerBound(of tab: LogTab) -> Int {
+        tab.visibleBounds(for: tab.content?.count ?? 0)?.lower ?? 0
+    }
+
+    /// Converts an original line index to the row used by the top pane's provider
+    /// (identity unless lines are hidden above the selection).
+    private func topPaneRow(forOriginalIndex originalIndex: Int, in tab: LogTab) -> Int {
+        originalIndex - visibleLowerBound(of: tab)
+    }
+
+    /// Converts an original line index to a 0...1 fraction of the minimap/timeline
+    /// image, which spans only the currently-visible original-index range.
+    private func minimapFraction(forOriginalIndex originalIndex: Int, in tab: LogTab) -> CGFloat {
+        let span = tab.lineCount
+        guard span > 1 else { return 0 }
+        return max(0, min(1, CGFloat(originalIndex - visibleLowerBound(of: tab)) / CGFloat(span - 1)))
+    }
+
     func jumpFromTimeline(fraction: CGFloat, ruleIndex: Int) {
         guard let tabID = selectedTabID, let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
         let totalCount = openTabs[index].lineCount
         guard totalCount > 0 else { return }
         guard openTabs[index].content != nil else { return }
 
-        let exactLine = Int(fraction * CGFloat(totalCount - 1))
+        // The timeline image spans only the visible range, so map the click
+        // fraction into original-line space starting at the visible lower bound.
+        let rangeStart = visibleLowerBound(of: openTabs[index])
+        let exactLine = rangeStart + Int(fraction * CGFloat(totalCount - 1))
 
         let hasMarks = !openTabs[index].markedIndices.isEmpty
         let mappedRuleIndex = ruleIndex == -1 ? 0 : (hasMarks ? ruleIndex + 1 : ruleIndex)
 
         let cachedMatches = openTabs[index].timelineMatches
         guard mappedRuleIndex >= 0, mappedRuleIndex < cachedMatches.count, !cachedMatches[mappedRuleIndex].isEmpty else {
-            let finalFraction = max(0, min(1, CGFloat(exactLine) / CGFloat(totalCount - 1)))
-            openTabs[index].selectedFraction = finalFraction
-            NotificationCenter.default.post(name: topPaneDirectScrollNotification, object: exactLine)
+            openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: exactLine, in: openTabs[index])
+            NotificationCenter.default.post(
+                name: topPaneDirectScrollNotification,
+                object: topPaneRow(forOriginalIndex: exactLine, in: openTabs[index])
+            )
             return
         }
 
@@ -1234,22 +1269,25 @@ class LogViewModel: ObservableObject {
             }
         }
 
-        let finalFraction = max(0, min(1, CGFloat(closestVal) / CGFloat(totalCount - 1)))
-
         // We set scrubbing minimap to false because we want it to snap
         isScrubbingMinimap = false
-        openTabs[index].selectedFraction = finalFraction
+        openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: closestVal, in: openTabs[index])
         // Publish the scroll offset immediately.
-        NotificationCenter.default.post(name: topPaneDirectScrollNotification, object: closestVal)
+        NotificationCenter.default.post(
+            name: topPaneDirectScrollNotification,
+            object: topPaneRow(forOriginalIndex: closestVal, in: openTabs[index])
+        )
     }
 
     func syncSelectionFromFilteredIndex(_ originalIndex: Int) {
         guard let tabID = selectedTabID, let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
         let totalCount = openTabs[index].lineCount
         guard totalCount > 0 else { return }
-        let fraction = CGFloat(originalIndex) / CGFloat(totalCount - 1)
-        openTabs[index].selectedFraction = max(0, min(1, fraction))
-        NotificationCenter.default.post(name: topPaneDirectScrollNotification, object: originalIndex)
+        openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: originalIndex, in: openTabs[index])
+        NotificationCenter.default.post(
+            name: topPaneDirectScrollNotification,
+            object: topPaneRow(forOriginalIndex: originalIndex, in: openTabs[index])
+        )
     }
 
     func jumpFromMinimap(fraction: CGFloat) {
@@ -1257,12 +1295,31 @@ class LogViewModel: ObservableObject {
         let totalCount = openTabs[index].lineCount
         guard totalCount > 0 else { return }
         let clampedFraction = max(0, min(1, fraction))
-        let exactLine = Int(clampedFraction * CGFloat(totalCount - 1))
+
+        // The minimap image spans only the currently-visible original-index range
+        // [rangeStart, rangeEnd). Map the click fraction into ORIGINAL-line space so
+        // it is comparable with the highlight-match caches (which are stored as
+        // original indices) — otherwise, when lines are hidden above the selection,
+        // a click on a coloured highlight snaps to the wrong line.
+        let rangeStart = visibleLowerBound(of: openTabs[index])
+        let rangeEndInclusive = rangeStart + totalCount - 1
+        let exactLine = rangeStart + Int(clampedFraction * CGFloat(totalCount - 1))
         var finalExactLine = exactLine
 
         let cache = openTabs[index].highlightMatches
         var globalClosestVal = -1
         var globalMinDiff = Int.max
+
+        // Only consider matches inside the visible range — the minimap never draws
+        // highlights for hidden lines, so we must never snap to one.
+        let consider: (Int) -> Void = { candidate in
+            guard candidate >= rangeStart, candidate <= rangeEndInclusive else { return }
+            let diff = abs(candidate - exactLine)
+            if diff < globalMinDiff {
+                globalMinDiff = diff
+                globalClosestVal = candidate
+            }
+        }
 
         for matches in cache {
             if !matches.isEmpty {
@@ -1273,20 +1330,8 @@ class LogViewModel: ObservableObject {
                     if matches[mid] < exactLine { left = mid + 1 } else { right = mid }
                 }
 
-                if left < matches.count {
-                    let diff = abs(matches[left] - exactLine)
-                    if diff < globalMinDiff {
-                        globalMinDiff = diff
-                        globalClosestVal = matches[left]
-                    }
-                }
-                if left - 1 >= 0 {
-                    let diff = abs(matches[left - 1] - exactLine)
-                    if diff < globalMinDiff {
-                        globalMinDiff = diff
-                        globalClosestVal = matches[left - 1]
-                    }
-                }
+                if left < matches.count { consider(matches[left]) }
+                if left - 1 >= 0 { consider(matches[left - 1]) }
             }
         }
 
@@ -1308,11 +1353,11 @@ class LogViewModel: ObservableObject {
         } ?? false
         lastMinimapSelectedLineByTab[tabID] = finalExactLine
         isScrubbingMinimap = false
-        openTabs[index].selectedFraction = max(0, min(1, CGFloat(finalExactLine) / CGFloat(totalCount - 1)))
+        openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: finalExactLine, in: openTabs[index])
         NotificationCenter.default.post(
             name: topPaneDirectScrollNotification,
             object: TopPaneDirectScrollRequest(
-                lineIndex: finalExactLine,
+                lineIndex: topPaneRow(forOriginalIndex: finalExactLine, in: openTabs[index]),
                 allowsHorizontalScroll: isRepeatedMinimapSelection
             )
         )
@@ -1328,8 +1373,9 @@ class LogViewModel: ObservableObject {
         guard let tabID = selectedTabID, let tabIdx = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
         let totalCount = openTabs[tabIdx].lineCount
         guard totalCount > 0 else { return }
-        let fraction = CGFloat(index) / CGFloat(totalCount - 1)
-        openTabs[tabIdx].selectedFraction = max(0, min(1, fraction))
+        // `index` is an ORIGINAL line index (from `provider.originalIndex(at:)`);
+        // convert it into the minimap image's visible-range fraction.
+        openTabs[tabIdx].selectedFraction = minimapFraction(forOriginalIndex: index, in: openTabs[tabIdx])
     }
 
 }
