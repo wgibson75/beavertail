@@ -926,6 +926,24 @@ struct NativeLogViewer: NSViewRepresentable {
                 }
             }
         }
+        // SCROLL BACK TO TOP HOOK – shows the first matching lines when a filter is
+        // applied while Follow is disabled. Bottom pane only.
+        if isFiltered {
+            NotificationCenter.default.addObserver(
+                forName: bottomPaneScrollToTopNotification,
+                object: nil,
+                queue: .main
+            ) { _ in
+                DispatchQueue.main.async {
+                    if let clipView = tableView.enclosingScrollView?.contentView {
+                        clipView.setBoundsOrigin(NSPoint(x: clipView.bounds.origin.x, y: 0))
+                        tableView.enclosingScrollView?.reflectScrolledClipView(clipView)
+                    } else if tableView.numberOfRows > 0 {
+                        tableView.scrollRowToVisible(0)
+                    }
+                }
+            }
+        }
         // MARK: BLOCK NAVIGATION – bottom pane only
         if isFiltered {
             NotificationCenter.default.addObserver(

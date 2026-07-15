@@ -18,6 +18,9 @@ struct TopPaneDirectScrollRequest {
 // Distinct notification streams for targeting view scroll adjustments independently
 let topPaneScrollToBottomNotification    = Notification.Name("BeaverTailTopPaneScrollToBottom")
 let bottomPaneScrollToBottomNotification = Notification.Name("BeaverTailBottomPaneScrollToBottom")
+/// Posted to scroll the bottom pane back to the top (first matching lines) without
+/// selecting a row. Used when a filter is applied while Follow is disabled.
+let bottomPaneScrollToTopNotification    = Notification.Name("BeaverTailBottomPaneScrollToTop")
 /// Posted to scroll the bottom pane to a specific row index (Int payload via `object:`).
 let bottomPaneScrollToRowNotification    = Notification.Name("BeaverTailBottomPaneScrollToRow")
 
@@ -604,7 +607,13 @@ class LogViewModel: ObservableObject {
                 self.filterTimer = nil
                 self.progressTracker.filterProgress = 1.0
                 self.progressTracker.isFiltering = false
-                NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
+                // When Follow is enabled, jump to the newest matches at the bottom.
+                // Otherwise, show the first set of matching lines at the top.
+                if self.followTail {
+                    NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
+                } else {
+                    NotificationCenter.default.post(name: bottomPaneScrollToTopNotification, object: nil)
+                }
             }
         }
     }
