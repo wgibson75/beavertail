@@ -106,7 +106,11 @@ private let helpSections: [HelpSection] = [
             "Use the Aa button in the filter bar to toggle case-sensitive filtering. "
             + "Highlighted Aa means case-sensitive matching is enabled; unhighlighted means matching ignores case."),
         HelpItem(shortcut: nil, description:
-            "The Aa and Follow settings are kept per tab and remembered between launches.")
+            "The Aa and Follow settings are kept per tab and remembered between launches."),
+        HelpItem(shortcut: nil, description:
+            "Right-click anywhere in the lower pane and select 'Save to File…' to save the currently "
+            + "filtered lines to a text file. A save dialog lets you choose the location and name; the "
+            + "saved file contains only the matching lines, preserving their original order.")
     ]),
     HelpSection(title: "Highlight Filters", items: [
         HelpItem(shortcut: nil, description:

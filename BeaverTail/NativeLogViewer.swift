@@ -16,6 +16,9 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
     var onHideLinesAbove: ((Int) -> Void)?
     var onHideLinesBelow: ((Int) -> Void)?
     var onShowAllLines: (() -> Void)?
+    /// Set only for the filtered (bottom) pane; drives the "Save to File…" item
+    /// which exports the currently-filtered lines to a text file.
+    var onSaveToFile: (() -> Void)?
     /// Whether the current tab currently has hidden lines (controls the presence of
     /// the "Show All Lines" context-menu item).
     var isHidingLines: Bool = false
@@ -401,7 +404,21 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         let clickedRow = row(at: point)
-        guard clickedRow >= 0 else { return super.menu(for: event) }
+        guard clickedRow >= 0 else {
+            // Clicking empty space below the last row: in the filtered (bottom)
+            // pane still offer "Save to File…" so the user can right-click anywhere.
+            if onSaveToFile != nil {
+                let emptyMenu = NSMenu()
+                let saveItem = NSMenuItem(
+                    title: "Save to File…", action: #selector(saveToFileAction(_:)), keyEquivalent: ""
+                )
+                saveItem.target = self
+                saveItem.isEnabled = numberOfRows > 0
+                emptyMenu.addItem(saveItem)
+                return emptyMenu
+            }
+            return super.menu(for: event)
+        }
         // Select the right-clicked row if it isn't already part of the selection
         if !selectedRowIndexes.contains(clickedRow) {
             selectRowIndexes(IndexSet(integer: clickedRow), byExtendingSelection: false)
@@ -461,7 +478,20 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
             showAllItem.target = self
             menu.addItem(showAllItem)
         }
+        // Filtered (bottom) pane only: export the filtered lines to a text file.
+        if onSaveToFile != nil {
+            menu.addItem(NSMenuItem.separator())
+            let saveItem = NSMenuItem(
+                title: "Save to File…", action: #selector(saveToFileAction(_:)), keyEquivalent: ""
+            )
+            saveItem.target = self
+            saveItem.isEnabled = numberOfRows > 0
+            menu.addItem(saveItem)
+        }
         return menu
+    }
+    @objc private func saveToFileAction(_ sender: NSMenuItem) {
+        onSaveToFile?()
     }
     @objc private func hideLinesAboveAction(_ sender: NSMenuItem) {
         guard let index = sender.representedObject as? Int else { return }
@@ -505,6 +535,9 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
         }
         if menuItem.action == #selector(clearAllMarksMenuAction(_:)) {
             return hasMarks
+        }
+        if menuItem.action == #selector(saveToFileAction(_:)) {
+            return numberOfRows > 0
         }
         return true
     }
@@ -725,6 +758,8 @@ struct NativeLogViewer: NSViewRepresentable {
     var onHideLinesAbove: ((Int) -> Void)?
     var onHideLinesBelow: ((Int) -> Void)?
     var onShowAllLines: (() -> Void)?
+    /// Set only for the filtered (bottom) pane; exports the filtered lines to a file.
+    var onSaveToFile: (() -> Void)?
     /// Whether the current tab has hidden lines (drives the "Show All Lines" item).
     let isHidingLines: Bool
     // THE CURE: Flag that ensures the minimap fraction ONLY overrides scroll positioning during active click-scrubbing
@@ -792,7 +827,8 @@ struct NativeLogViewer: NSViewRepresentable {
         isHidingLines: Bool = false,
         onHideLinesAbove: ((Int) -> Void)? = nil,
         onHideLinesBelow: ((Int) -> Void)? = nil,
-        onShowAllLines: (() -> Void)? = nil
+        onShowAllLines: (() -> Void)? = nil,
+        onSaveToFile: (() -> Void)? = nil
     ) {
         provider = filteredProvider
         isFiltered = true
@@ -819,6 +855,7 @@ struct NativeLogViewer: NSViewRepresentable {
         self.onHideLinesAbove = onHideLinesAbove
         self.onHideLinesBelow = onHideLinesBelow
         self.onShowAllLines = onShowAllLines
+        self.onSaveToFile = onSaveToFile
     }
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -858,6 +895,7 @@ struct NativeLogViewer: NSViewRepresentable {
         tableView.onHideLinesAbove = onHideLinesAbove
         tableView.onHideLinesBelow = onHideLinesBelow
         tableView.onShowAllLines = onShowAllLines
+        tableView.onSaveToFile = onSaveToFile
         scrollView.documentView = tableView
         context.coordinator.configureColumns(in: tableView, showLineNumbers: showLineNumbers)
         // SELECTIVE ROW JUMP OBSERVER (From clicking the bottom pane)
@@ -1059,6 +1097,7 @@ struct NativeLogViewer: NSViewRepresentable {
         tableView.onHideLinesAbove = onHideLinesAbove
         tableView.onHideLinesBelow = onHideLinesBelow
         tableView.onShowAllLines = onShowAllLines
+        tableView.onSaveToFile = onSaveToFile
         context.coordinator.provider = provider
         context.coordinator.isFiltered = isFiltered
         context.coordinator.defaultTextColor = textColor

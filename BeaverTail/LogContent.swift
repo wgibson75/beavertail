@@ -256,12 +256,12 @@ final class ScanProgress: @unchecked Sendable {
 
 /// Random-access provider of log lines by index.
 protocol LineProvider: Sendable {
-    var count: Int { get }
-    func line(at index: Int) -> String
+    nonisolated var count: Int { get }
+    nonisolated func line(at index: Int) -> String
     /// Maps a display row back to its original line number in the source file.
     /// For unfiltered providers this is the identity; for filtered providers it
     /// returns the original index of the matched line.
-    func originalIndex(at index: Int) -> Int
+    nonisolated func originalIndex(at index: Int) -> Int
 }
 
 extension LineProvider {
@@ -308,15 +308,15 @@ struct FilteredLineProvider: LineProvider, @unchecked Sendable {
         }
     }
 
-    var count: Int { Swift.max(0, endOffset - startOffset) }
+    nonisolated var count: Int { Swift.max(0, endOffset - startOffset) }
 
-    func line(at index: Int) -> String {
+    nonisolated func line(at index: Int) -> String {
         let i = startOffset + index
         guard index >= 0, i >= 0, i < endOffset else { return "" }
         return content.line(at: indices[i])
     }
 
-    func originalIndex(at index: Int) -> Int {
+    nonisolated func originalIndex(at index: Int) -> Int {
         let i = startOffset + index
         return (index >= 0 && i >= 0 && i < endOffset) ? indices[i] : index
     }
@@ -352,14 +352,14 @@ struct RangeLineProvider: LineProvider, @unchecked Sendable {
     /// Number of visible lines starting at `lowerBound`.
     let rangeCount: Int
 
-    var count: Int { rangeCount }
+    nonisolated var count: Int { rangeCount }
 
-    func line(at index: Int) -> String {
+    nonisolated func line(at index: Int) -> String {
         guard index >= 0, index < rangeCount else { return "" }
         return content.line(at: lowerBound + index)
     }
 
-    func originalIndex(at index: Int) -> Int {
+    nonisolated func originalIndex(at index: Int) -> Int {
         (index >= 0 && index < rangeCount) ? lowerBound + index : index
     }
 }

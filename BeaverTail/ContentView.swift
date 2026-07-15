@@ -559,7 +559,8 @@ private struct BottomPaneView: View {
                             isHidingLines: viewModel.isHidingLinesInCurrentTab,
                             onHideLinesAbove: { viewModel.hideLinesAbove(originalIndex: $0) },
                             onHideLinesBelow: { viewModel.hideLinesBelow(originalIndex: $0) },
-                            onShowAllLines: { viewModel.showAllLines() }
+                            onShowAllLines: { viewModel.showAllLines() },
+                            onSaveToFile: { viewModel.saveFilteredLinesToFile() }
                         )
                         .id(viewModel.selectedTabID?.uuidString ?? "bot")
                     }
