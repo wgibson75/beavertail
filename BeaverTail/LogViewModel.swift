@@ -55,6 +55,8 @@ class LogViewModel: ObservableObject {
 
     @Published var selectedTabID: UUID? {
         didSet {
+            // Give the newly-visible tab's index build priority for the scan slot.
+            scanScheduler.setPriorityTab(selectedTabID)
             stopLiveTailing()
             startLiveTailingForActiveTab()
             saveLoadedTabsSession()
@@ -108,7 +110,7 @@ class LogViewModel: ObservableObject {
     @AppStorage("saved_show_minimap") var showMinimap: Bool = true
     @AppStorage("saved_show_line_numbers") var showLineNumbers: Bool = true
     @AppStorage("saved_show_timestamp_bubble") var showTimestampBubble: Bool = false
-    @AppStorage("saved_show_timeline") var showTimeline: Bool = true
+    @AppStorage("saved_show_timeline") var showTimeline: Bool = false
 
     @AppStorage("saved_filter_history_v1") var filterHistoryData: String = ""
     @AppStorage("saved_font_size") var fontSize: Double = 12
@@ -133,11 +135,17 @@ class LogViewModel: ObservableObject {
     private var filterGeneration: Int = 0
     private var filterTimer: Timer?
     var fileLoadTimer: Timer?
-    /// Serial queue for the heavy memory-map index builds. Serialising them ensures
-    /// only ONE all-core scan runs at a time, so a second file load (or a
-    /// restored-session tab lazy-loading) can't saturate every core and stall the
-    /// progressive top-pane display of the file currently being indexed.
-    let indexBuildQueue = DispatchQueue(label: "com.beavertail.indexbuild", qos: .userInitiated)
+    /// Concurrent queue for the heavy memory-map index builds. Builds may be
+    /// in-flight simultaneously here, but their CPU-heavy segment scans are funnelled
+    /// through `scanScheduler`, which guarantees only ONE all-core scan runs at a
+    /// time (so a second file load or a restored-session tab can't saturate every
+    /// core and stall the progressive top-pane display) while letting the visible
+    /// tab's build preempt background builds at segment boundaries.
+    let indexBuildQueue = DispatchQueue(
+        label: "com.beavertail.indexbuild", qos: .userInitiated, attributes: .concurrent
+    )
+    /// Prioritises the visible tab's index scan over background scans.
+    let scanScheduler = IndexScanScheduler()
     private var minimapTasks: [UUID: Task<Void, Never>] = [:]
     private var lastMinimapUpdate: [UUID: DispatchTime] = [:]
     private var timelineTasks: [UUID: Task<Void, Never>] = [:]
@@ -317,6 +325,7 @@ class LogViewModel: ObservableObject {
         RunLoop.main.add(timer, forMode: .common)
         fileLoadTimer = timer
 
+        let scheduler = scanScheduler
         indexBuildQueue.async { [weak self] in
             guard let self else { return }
             do {
@@ -330,7 +339,11 @@ class LogViewModel: ObservableObject {
                 // immediately so lines appear as early as possible.
                 var lastPublish = DispatchTime.now().uptimeNanoseconds
                 var didPublishFirst = false
-                content.buildIndex(progress: progress) { partial in
+                content.buildIndex(
+                    progress: progress,
+                    onSegmentWillScan: { scheduler.acquire(tabID: targetTabID) },
+                    onSegmentDidScan: { scheduler.release() }
+                ) { partial in
                     let now = DispatchTime.now().uptimeNanoseconds
                     let elapsedMs = (now &- lastPublish) / 1_000_000
                     guard !didPublishFirst || elapsedMs >= 100 else { return }

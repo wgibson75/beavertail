@@ -436,7 +436,17 @@ final class LogContent: LineProvider, @unchecked Sendable {
     /// across all cores — preserving the throughput of the original whole-file
     /// parallel scan. Only byte offsets are ever stored; the file itself is never
     /// materialised in memory.
-    nonisolated func buildIndex(progress: ScanProgress? = nil, onSegment: (LogContent) -> Void) {
+    ///
+    /// `onSegmentWillScan` / `onSegmentDidScan` bracket each segment's CPU-heavy
+    /// parallel scan, letting a caller gate scans through a shared scheduler so
+    /// only one all-core scan runs at a time and the visible tab's build can
+    /// preempt background builds at these segment boundaries.
+    nonisolated func buildIndex(
+        progress: ScanProgress? = nil,
+        onSegmentWillScan: () -> Void = {},
+        onSegmentDidScan: () -> Void = {},
+        onSegment: (LogContent) -> Void
+    ) {
         let total = totalBytes
         guard total > 0 else {
             lock.lock(); scanComplete = true; lock.unlock()
@@ -464,11 +474,15 @@ final class LogContent: LineProvider, @unchecked Sendable {
             let maxSegSize = 256 * 1024 * 1024
 
             while segStart < total {
+                // Acquire the shared scan slot (yielding to the visible tab's
+                // build) so only one all-core scan runs at a time.
+                onSegmentWillScan()
                 let segEnd = min(segStart + segSize, total)
                 let offsets = Self.scanSegment(ctx, from: segStart, to: segEnd)
                 if !offsets.isEmpty {
                     appendIndexOffsets(offsets)
                 }
+                onSegmentDidScan()
                 onSegment(self)
                 segStart = segEnd
                 segSize = min(segSize * 2, maxSegSize)

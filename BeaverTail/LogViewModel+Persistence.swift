@@ -148,16 +148,22 @@ extension LogViewModel {
         RunLoop.main.add(timer, forMode: .common)
         fileLoadTimer = timer
 
+        let scheduler = scanScheduler
         indexBuildQueue.async { [weak self] in
             guard let self else { return }
             do {
                 // Map + incrementally index so a restored tab's lines also appear
-                // progressively, and run on the shared serial queue so it can't
-                // saturate every core alongside another file's index build.
+                // progressively, and gate the scans through the shared scheduler so
+                // this background build can't saturate every core alongside another
+                // file's index build and yields the scan slot to the visible tab.
                 let content = try LogContent.mappedEmpty(from: url)
                 var lastPublish = DispatchTime.now().uptimeNanoseconds
                 var didPublishFirst = false
-                content.buildIndex(progress: progress) { partial in
+                content.buildIndex(
+                    progress: progress,
+                    onSegmentWillScan: { scheduler.acquire(tabID: id) },
+                    onSegmentDidScan: { scheduler.release() }
+                ) { partial in
                     let now = DispatchTime.now().uptimeNanoseconds
                     let elapsedMs = (now &- lastPublish) / 1_000_000
                     guard !didPublishFirst || elapsedMs >= 100 else { return }
