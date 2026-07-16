@@ -218,5 +218,15 @@ private let helpSections: [HelpSection] = [
         HelpItem(shortcut: nil, description:
             "BeaverTail remembers which logs were open and which tab was active when you quit. "
             + "They are restored on next launch. If a file has been moved or deleted its tab is silently removed.")
+    ]),
+    HelpSection(title: "Software Updates", items: [
+        HelpItem(shortcut: nil, description:
+            "BeaverTail checks its GitHub repository for a newer release on launch. If an update is "
+            + "available, a message appears with a link to open the download page."),
+        HelpItem(shortcut: nil, description:
+            "Use the BeaverTail menu → 'Check for Updates…' to check manually at any time."),
+        HelpItem(shortcut: nil, description:
+            "Automatic checks can be turned off via the BeaverTail menu → 'Check for Updates Automatically'. "
+            + "The setting is remembered between launches.")
     ])
 ]

@@ -41,6 +41,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for url in args {
             NotificationCenter.default.post(name: openFileURLNotification, object: url)
         }
+
+        // Check GitHub for a newer release (unless the user has disabled it).
+        // Delayed slightly so the main window is on screen before any alert.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            UpdateChecker.checkAutomatically()
+        }
     }
 
     @objc func handleOpenDocumentsEvent(
@@ -260,6 +266,10 @@ struct BeaverTailApp: App {
     @State private var viewModel = LogViewModel()
     @StateObject private var recentTracker = RecentFilesTracker.shared
 
+    /// Whether BeaverTail checks GitHub for a newer release on launch.
+    /// Defaults to on; the user can disable it from the app menu.
+    @AppStorage(UpdateChecker.autoCheckDefaultsKey) private var autoCheckForUpdates = true
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -277,6 +287,11 @@ struct BeaverTailApp: App {
                 Button("Install btail CLI") {
                     BTailInstaller.install()
                 }
+                Divider()
+                Button("Check for Updates…") {
+                    UpdateChecker.checkManually()
+                }
+                Toggle("Check for Updates Automatically", isOn: $autoCheckForUpdates)
                 Divider()
             }
             CommandGroup(replacing: .newItem) {
