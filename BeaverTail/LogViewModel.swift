@@ -973,7 +973,8 @@ class LogViewModel: ObservableObject {
         guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
 
         DispatchQueue.main.async { [weak self] in
-            self?.openTabs[index].isGeneratingTimeline = true
+            guard let self, let i = self.openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+            self.openTabs[i].isGeneratingTimeline = true
         }
 
         let activeRules = highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }
@@ -996,8 +997,9 @@ class LogViewModel: ObservableObject {
               filterValid || hasMarks,
               cache.count == activeRuleIDsCache.count else {
             DispatchQueue.main.async { [weak self] in
-                self?.openTabs[index].timelineImage = nil
-                self?.openTabs[index].isGeneratingTimeline = false
+                guard let self, let i = self.openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+                self.openTabs[i].timelineImage = nil
+                self.openTabs[i].isGeneratingTimeline = false
             }
             return
         }
