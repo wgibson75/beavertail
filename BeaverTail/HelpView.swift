@@ -222,9 +222,10 @@ private let helpSections: [HelpSection] = [
     HelpSection(title: "Software Updates", items: [
         HelpItem(shortcut: nil, description:
             "BeaverTail checks its GitHub repository for a newer release on launch. If an update is "
-            + "available, a message appears with a link to open the download page."),
+            + "available, a message appears offering to download the latest version (a .dmg disk image) directly."),
         HelpItem(shortcut: nil, description:
-            "Use the BeaverTail menu → 'Check for Updates…' to check manually at any time."),
+            "Use the BeaverTail menu → 'Check for Updates…' to check manually at any time. "
+            + "It reports whether a newer version is available or you are already up to date."),
         HelpItem(shortcut: nil, description:
             "Automatic checks can be turned off via the BeaverTail menu → 'Check for Updates Automatically'. "
             + "The setting is remembered between launches.")
