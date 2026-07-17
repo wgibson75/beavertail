@@ -58,13 +58,27 @@ class LogViewModel: ObservableObject {
 
     @Published var selectedTabID: UUID? {
         didSet {
-            // Give the newly-visible tab's index build priority for the scan slot.
+            // Stop any filter scan still running for the tab we just switched AWAY
+            // from, so a no-longer-visible tab does no background processing.
+            cancelActiveFilterOnTabSwitch()
+            // Likewise stop the previous tab's all-core highlight match scan, which
+            // would otherwise keep saturating every core and delay the newly-visible
+            // tab's processing by several seconds.
+            pauseHighlightGenerationOnTabSwitch(previousTabID: oldValue)
+            // Only the selected tab's index build runs; switching tabs pauses the old
+            // build (at its next segment boundary) and resumes the newly-visible one.
             scanScheduler.setPriorityTab(selectedTabID)
+            // Re-point the global load indicator at the now-visible tab.
+            refreshLoadIndicatorForSelectedTab()
             stopLiveTailing()
             startLiveTailingForActiveTab()
             saveLoadedTabsSession()
             syncCurrentFilterPattern()
             reapplyDeferredFilterIfNeeded()
+            resumeFilterForSelectedTabIfNeeded()
+            // Restart highlight generation for the now-visible tab if it was
+            // interrupted by a previous switch-away (no-op when already complete).
+            resumeHighlightGenerationForSelectedTabIfNeeded()
         }
     }
 
@@ -121,11 +135,18 @@ class LogViewModel: ObservableObject {
     @AppStorage("saved_session_bookmarks_v2") var sessionBookmarksData: String = ""
     @AppStorage("saved_filter_display_mode") private var filterDisplayModeRaw: String = FilterDisplayMode.marksAndMatches.rawValue
 
-    @Published var highlightRules: [HighlightRule] = [] {
-        didSet {
-            saveRules()
-            generateHighlightDataForAllTabs()
-        }
+    /// Backing store for the highlight rules. The Highlight Filters window observes
+    /// this object directly so its drag-and-drop list is not disturbed by unrelated
+    /// `LogViewModel` republishes during minimap / highlight generation.
+    let highlightRulesStore = HighlightRulesStore()
+
+    /// Highlight rules, forwarded to `highlightRulesStore`. All mutations (from here
+    /// or directly on the store via the Highlight Filters window) trigger a save +
+    /// regeneration synchronously through `highlightRulesStore.onRulesChanged`
+    /// (wired up in `init`), matching the original `didSet` timing.
+    var highlightRules: [HighlightRule] {
+        get { highlightRulesStore.rules }
+        set { highlightRulesStore.rules = newValue }
     }
 
     @Published var filterHistory: [String] = []
@@ -136,6 +157,16 @@ class LogViewModel: ObservableObject {
     }
 
     private var filterGeneration: Int = 0
+    /// Cancellation token for the in-flight filter scan, so entering a new pattern
+    /// stops the previous scan's worker threads immediately (not just discards them).
+    private var activeFilterToken: ScanCancellationToken?
+    /// The tab that the in-flight filter scan belongs to (`nil` when none is running).
+    /// Used to stop a scan the moment its tab stops being visible.
+    private var filteringTabID: UUID?
+    /// Tabs whose filter scan was interrupted by switching away mid-scan, so the
+    /// filter is re-run (from scratch — a filter scan isn't resumable) when the tab
+    /// is next shown.
+    private var tabsNeedingFilterRerun: Set<UUID> = []
     private var filterTimer: Timer?
     var fileLoadTimer: Timer?
     /// Concurrent queue for the heavy memory-map index builds. Builds may be
@@ -151,10 +182,19 @@ class LogViewModel: ObservableObject {
     let scanScheduler = IndexScanScheduler()
     private var minimapTasks: [UUID: Task<Void, Never>] = [:]
     private var lastMinimapUpdate: [UUID: DispatchTime] = [:]
-    private var timelineTasks: [UUID: Task<Void, Never>] = [:]
+    /// Per-tab timeline draw task. Internal so `LogViewModel+Timeline.swift` can drive it.
+    var timelineTasks: [UUID: Task<Void, Never>] = [:]
     var liveTailTasks: [UUID: Task<Void, Never>] = [:]
     private var highlightTasks: [UUID: Task<Void, Never>] = [:]
+    /// Per-tab cancellation token for the highlight match scan. Checked inside the
+    /// scan's `concurrentPerform` worker threads (where `Task.isCancelled` is
+    /// unreliable), so switching away from a tab stops its scan within one batch.
+    private var highlightTokens: [UUID: ScanCancellationToken] = [:]
     var fullyScannedRuleIDsByTab: [UUID: Set<UUID>] = [:]
+    /// Per-tab index-build progress, so the global "Loading file…" indicator can be
+    /// re-pointed at whichever tab is selected (a paused background build keeps its
+    /// entry until it completes or its tab is closed).
+    var loadProgressByTab: [UUID: ScanProgress] = [:]
     var sessionSaveDebounceTask: Task<Void, Never>?
     private var activeTailSource: DispatchSourceFileSystemObject?
     private var activeTailFileDescriptor: Int32 = -1
@@ -257,6 +297,21 @@ class LogViewModel: ObservableObject {
     }
 
     init() {
+        // React to highlight-rule changes made via the store, synchronously — the
+        // same timing as the old `highlightRules` didSet. Running immediately (rather
+        // than deferring onto the main queue) ensures a highlight scan starts right
+        // away instead of queuing behind the flood of main-thread work that occurs
+        // while a very large log is still loading. `objectWillChange` keeps this view
+        // model's own observers (e.g. timeline column headers) in sync, while the
+        // Highlight Filters window observes the store directly so its drag-and-drop
+        // is unaffected.
+        highlightRulesStore.onRulesChanged = { [weak self] in
+            guard let self else { return }
+            self.objectWillChange.send()
+            self.saveRules()
+            self.generateHighlightDataForAllTabs()
+        }
+
         loadRules()
         loadFilterHistory()
         loadRecentFiles()
@@ -312,23 +367,12 @@ class LogViewModel: ObservableObject {
 
         addToRecentFiles(url)
 
-        progressTracker.isLoadingFile = true
-        progressTracker.fileLoadProgress = 0.0
-
         let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
         let totalSize = (attr?[.size] as? Int) ?? 1
         let progress = ScanProgress(total: totalSize)
-
-        fileLoadTimer?.invalidate()
-        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                let f = progress.fraction
-                if f > self.progressTracker.fileLoadProgress { self.progressTracker.fileLoadProgress = f }
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        fileLoadTimer = timer
+        loadProgressByTab[targetTabID] = progress
+        // The newly-opened tab is selected, so this shows its load progress.
+        refreshLoadIndicatorForSelectedTab()
 
         let scheduler = scanScheduler
         indexBuildQueue.async { [weak self] in
@@ -367,14 +411,12 @@ class LogViewModel: ObservableObject {
                 }
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
+                    self.loadProgressByTab.removeValue(forKey: targetTabID)
                     if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
                         self.openTabs[index].content = content
                         self.openTabs[index].statusLines = []
                         self.openTabs[index].isCurrentlyStreaming = false
-                        self.fileLoadTimer?.invalidate()
-                        self.fileLoadTimer = nil
-                        self.progressTracker.fileLoadProgress = 1.0
-                        self.progressTracker.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        self.refreshLoadIndicatorForSelectedTab()
                         // Now that the whole file is indexed, re-run any filter the user
                         // applied while it was still streaming — otherwise the bottom pane
                         // would keep the partial results from the incomplete index.
@@ -389,17 +431,16 @@ class LogViewModel: ObservableObject {
             } catch {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    self.fileLoadTimer?.invalidate()
-                    self.fileLoadTimer = nil
+                    self.loadProgressByTab.removeValue(forKey: targetTabID)
                     if isRecent {
                         self.closeTab(id: targetTabID)
                         self.recentFiles.removeAll { $0.name == url.lastPathComponent }
                         self.saveRecentFiles()
-                        self.progressTracker.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        self.refreshLoadIndicatorForSelectedTab()
                     } else if let index = self.openTabs.firstIndex(where: { $0.id == targetTabID }) {
                         self.openTabs[index].statusLines = ["Error opening file: \(error.localizedDescription)"]
                         self.openTabs[index].isCurrentlyStreaming = false
-                        self.progressTracker.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        self.refreshLoadIndicatorForSelectedTab()
                         if self.selectedTabID == targetTabID { self.startLiveTailingForActiveTab() }
                     }
                 }
@@ -409,21 +450,64 @@ class LogViewModel: ObservableObject {
 
     func closeTab(id: UUID) {
         guard let index = openTabs.firstIndex(where: { $0.id == id }) else { return }
+        // Abort any in-flight (or parked) index build for this tab so its background
+        // thread doesn't stay blocked in the scheduler waiting to be reselected.
+        scanScheduler.cancel(tabID: id)
+        loadProgressByTab.removeValue(forKey: id)
         minimapTasks[id]?.cancel()
         minimapTasks.removeValue(forKey: id)
         highlightTasks[id]?.cancel()
         highlightTasks.removeValue(forKey: id)
+        highlightTokens[id]?.cancel()
+        highlightTokens.removeValue(forKey: id)
         timelineTasks[id]?.cancel()
         timelineTasks.removeValue(forKey: id)
         fullyScannedRuleIDsByTab.removeValue(forKey: id)
+        tabsNeedingFilterRerun.remove(id)
+        // If this tab owned the in-flight filter scan, stop it now.
+        if filteringTabID == id {
+            filterGeneration &+= 1
+            activeFilterToken?.cancel()
+            activeFilterToken = nil
+            filteringTabID = nil
+            filterTimer?.invalidate()
+            filterTimer = nil
+            progressTracker.isFiltering = false
+        }
         openTabs.remove(at: index)
         if selectedTabID == id { selectedTabID = openTabs.last?.id }
 
-        progressTracker.isLoadingFile = openTabs.contains { $0.isCurrentlyStreaming }
-        if !progressTracker.isLoadingFile {
-            fileLoadTimer?.invalidate()
-            fileLoadTimer = nil
+        // Keep the load indicator in sync with the (possibly newly-) selected tab.
+        refreshLoadIndicatorForSelectedTab()
+    }
+
+    /// (Re)starts the global "Loading file…" indicator so it tracks the *currently
+    /// selected* tab. Background tabs whose index build is paused don't drive the
+    /// indicator; selecting a paused tab re-points it at that tab's live progress.
+    func refreshLoadIndicatorForSelectedTab() {
+        fileLoadTimer?.invalidate()
+        fileLoadTimer = nil
+
+        guard let id = selectedTabID,
+              openTabs.first(where: { $0.id == id })?.isCurrentlyStreaming == true,
+              let progress = loadProgressByTab[id] else {
+            progressTracker.isLoadingFile = false
+            return
         }
+
+        progressTracker.isLoadingFile = true
+        // Reset to this tab's current fraction (it may be lower than the previously
+        // shown tab's), then let the timer advance it monotonically for this tab.
+        progressTracker.fileLoadProgress = progress.fraction
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let f = progress.fraction
+                if f > self.progressTracker.fileLoadProgress { self.progressTracker.fileLoadProgress = f }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        fileLoadTimer = timer
     }
 
     /// Toggles marks on the provided original line indices for the currently selected tab.
@@ -603,14 +687,21 @@ class LogViewModel: ObservableObject {
 
     func applyFilter(with pattern: String) {
         currentActiveFilterPattern = pattern
-        // Bump the generation so any in-flight filter's result is ignored.
+        // Bump the generation so any in-flight filter's result is ignored, and cancel
+        // its worker threads so a superseded scan of a huge log stops right away
+        // instead of running to completion in the background.
         filterGeneration &+= 1
         let gen = filterGeneration
+        activeFilterToken?.cancel()
+        activeFilterToken = nil
+        filteringTabID = nil
 
         guard let tabID = selectedTabID,
               let tabIndex = openTabs.firstIndex(where: { $0.id == tabID })
         else { return }
         openTabs[tabIndex].filterPattern = pattern
+        // We are (re)running this tab's filter now, so it no longer needs a rerun.
+        tabsNeedingFilterRerun.remove(tabID)
 
         guard !pattern.isEmpty else {
             filterTimer?.invalidate(); filterTimer = nil
@@ -675,10 +766,13 @@ class LogViewModel: ObservableObject {
         // Run the heavy parallel scan on a plain GCD queue (NOT a Swift Task) so
         // the blocking `concurrentPerform` inside cannot stall the Swift
         // concurrency cooperative pool / main-thread progress timer.
+        let token = ScanCancellationToken()
+        activeFilterToken = token
+        filteringTabID = tabID
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let t0 = DispatchTime.now()
             var finalCount = 0
-            content.filterMatches(matcher: matcher, progress: progress) { matches in
+            content.filterMatches(matcher: matcher, progress: progress, cancellation: token) { matches in
                 finalCount = matches.count
                 DispatchQueue.main.async {
                     guard let self = self else { return }
@@ -688,8 +782,12 @@ class LogViewModel: ObservableObject {
                         self.openTabs[freshIndex].filteredIndices = matches
                         self.updateDisplayedIndices(for: freshIndex)
                         self.syncCurrentFilterPattern()
-                        // Regenerate timeline since matches might affect timeline dots
-                        self.generateTimelineData(for: tabID)
+                        // NOTE: the timeline is intentionally NOT regenerated on every
+                        // intermediate update. For a filter matching millions of lines
+                        // its filtered-intersection pass is O(matches × rules) and would
+                        // run ~every 150ms, each cancelling the last — burning CPU that
+                        // should go to the filter scan. It is regenerated once when the
+                        // filter completes (see the completion block below).
                     }
                 }
             }
@@ -714,8 +812,13 @@ class LogViewModel: ObservableObject {
                 guard gen == self.filterGeneration else { return }
                 self.filterTimer?.invalidate()
                 self.filterTimer = nil
+                self.activeFilterToken = nil
+                self.filteringTabID = nil
                 self.progressTracker.filterProgress = 1.0
                 self.progressTracker.isFiltering = false
+                // Regenerate the timeline once, now that the final set of matches is
+                // known — cheaper and faster than doing it on every intermediate update.
+                self.generateTimelineData(for: tabID)
                 // When Follow is enabled, jump to the newest matches at the bottom.
                 // Otherwise, show the first set of matching lines at the top.
                 if self.followTail {
@@ -740,8 +843,76 @@ class LogViewModel: ObservableObject {
         applyFilter(with: tab.filterPattern)
     }
 
+    /// Stops the in-flight filter scan when switching away from the tab it belongs to,
+    /// so a no-longer-visible tab does no background filtering. The interrupted tab is
+    /// flagged so its filter re-runs when it is next shown.
+    private func cancelActiveFilterOnTabSwitch() {
+        // Nothing running, or the filtering tab is still the visible one — leave it be.
+        guard let filteringID = filteringTabID, filteringID != selectedTabID else { return }
+        filterGeneration &+= 1        // ignore any late results from this scan
+        activeFilterToken?.cancel()   // stop its worker threads immediately
+        activeFilterToken = nil
+        filteringTabID = nil
+        filterTimer?.invalidate()
+        filterTimer = nil
+        progressTracker.isFiltering = false
+        // Its results are now partial, so re-run the filter when we return to it.
+        if let i = openTabs.firstIndex(where: { $0.id == filteringID }),
+           !openTabs[i].filterPattern.isEmpty {
+            tabsNeedingFilterRerun.insert(filteringID)
+        }
+    }
+
+    /// Re-applies the filter for the newly-selected tab if its previous scan was
+    /// interrupted by switching away from it while filtering was in progress.
+    func resumeFilterForSelectedTabIfNeeded() {
+        guard let tabID = selectedTabID,
+              tabsNeedingFilterRerun.contains(tabID),
+              let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        let tab = openTabs[index]
+        guard !tab.filterPattern.isEmpty, tab.content != nil, !tab.isCurrentlyStreaming else {
+            tabsNeedingFilterRerun.remove(tabID)
+            return
+        }
+        applyFilter(with: tab.filterPattern)
+    }
+
+    /// Stops the highlight match scan for the tab we are switching AWAY from. That
+    /// scan is an all-core `concurrentPerform` (blocking, inside a detached task); if
+    /// left running for a no-longer-visible tab it starves the cooperative thread pool
+    /// and the newly-visible tab's own processing can be delayed by many seconds.
+    /// Cancelling the token makes the scan's worker threads bail within one batch
+    /// (microseconds). It is restarted when the tab is next shown (a match scan isn't
+    /// resumable). The cheap minimap/timeline *draw* tasks are left to finish on their
+    /// own — they self-terminate in milliseconds and are not core hogs.
+    private func pauseHighlightGenerationOnTabSwitch(previousTabID: UUID?) {
+        guard let previousTabID, previousTabID != selectedTabID else { return }
+        highlightTokens[previousTabID]?.cancel()
+        highlightTokens.removeValue(forKey: previousTabID)
+        highlightTasks[previousTabID]?.cancel()
+        highlightTasks.removeValue(forKey: previousTabID)
+    }
+
+    /// Restarts highlight generation for the newly-selected tab if its previous scan
+    /// was interrupted by switching away mid-scan (i.e. not every active rule has been
+    /// fully scanned). When the tab's highlights are already complete this is a no-op,
+    /// so the cached minimap/timeline shown on switch aren't needlessly redrawn.
+    private func resumeHighlightGenerationForSelectedTabIfNeeded() {
+        guard let tabID = selectedTabID,
+              let index = openTabs.firstIndex(where: { $0.id == tabID }),
+              openTabs[index].content != nil, !openTabs[index].isCurrentlyStreaming else { return }
+        let activeRuleIDs = Set(highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }.map { $0.id })
+        guard !activeRuleIDs.isEmpty else { return }
+        let scanned = fullyScannedRuleIDsByTab[tabID] ?? []
+        if !activeRuleIDs.isSubset(of: scanned) {
+            generateHighlightData(for: tabID)
+        }
+    }
+
     func generateHighlightData(for tabID: UUID) {
         highlightTasks[tabID]?.cancel()
+        highlightTokens[tabID]?.cancel()
+        highlightTokens.removeValue(forKey: tabID)
         guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
         let activeRules = highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }
 
@@ -804,11 +975,32 @@ class LogViewModel: ObservableObject {
             return
         }
 
+        // A highlight change (e.g. reordering filters) can arrive while the initial
+        // scan is still running on a huge log. The matches gathered so far are still
+        // valid — only the colour/priority order changed — and `newCache` already
+        // holds them remapped into the new order. Redraw the minimap and timeline
+        // immediately from that partial data instead of waiting for the next
+        // throttled in-scan update (which could be up to a second away), so the
+        // reordered colours appear instantly. The background scan then continues to
+        // fill in the remainder.
+        if newCache.contains(where: { !$0.isEmpty }) {
+            self.generateMinimapData(for: tabID)
+            self.generateTimelineData(for: tabID)
+        }
+
         let runMatchers = matchersToRun.map { $0.matcher }
 
-        highlightTasks[tabID] = Task.detached(priority: .utility) { [weak self] in
-            content.extractAllMatches(matchers: runMatchers) { partialMatches, isFinal in
-                if Task.isCancelled { return }
+        // Run the highlight match scan at `.userInitiated` (not `.utility`). Applying
+        // highlight colours is a direct user action, and on Apple-silicon machines
+        // `.utility` work is biased onto the slower efficiency cores while
+        // `.userInitiated` uses the performance cores — so this markedly speeds up how
+        // fast the minimap reaches 100%. The main thread runs at the higher
+        // user-interactive QoS, so scrolling/rendering stays responsive meanwhile.
+        let highlightToken = ScanCancellationToken()
+        highlightTokens[tabID] = highlightToken
+        highlightTasks[tabID] = Task.detached(priority: .userInitiated) { [weak self] in
+            content.extractAllMatches(matchers: runMatchers, cancellation: highlightToken) { partialMatches, isFinal in
+                if highlightToken.isCancelled { return }
                 DispatchQueue.main.async {
                     guard let self = self, let i = self.openTabs.firstIndex(where: { $0.id == tabID }) else { return }
 
@@ -987,230 +1179,6 @@ class LogViewModel: ObservableObject {
 
     private func generateHighlightDataForAllTabs() {
         for tab in openTabs { generateHighlightData(for: tab.id) }
-    }
-
-    func generateTimelineData(for tabID: UUID) {
-        timelineTasks[tabID]?.cancel()
-        guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let i = self.openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-            self.openTabs[i].isGeneratingTimeline = true
-        }
-
-        let activeRules = highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }
-        let isFiltered = !openTabs[index].filterPattern.isEmpty
-        let filteredIndices = openTabs[index].filteredIndices
-        let sortedMarks = Array(openTabs[index].markedIndices).sorted()
-        let hasMarks = !sortedMarks.isEmpty
-
-        let cache = openTabs[index].highlightMatches
-        let activeRuleIDsCache = openTabs[index].activeRuleIDs
-        let ruleColors = activeRules.map { $0.nsBackgroundColor.cgColor }
-
-        let isDark = self.isSystemDark
-        let markCGColor = isDark ? CGColor(red: 1, green: 1, blue: 1, alpha: 1) : CGColor(red: 0, green: 0, blue: 0, alpha: 1)
-
-        let filterValid = !isFiltered || !filteredIndices.isEmpty
-        guard let content = openTabs[index].content,
-              content.count > 0,
-              !activeRules.isEmpty || hasMarks,
-              filterValid || hasMarks,
-              cache.count == activeRuleIDsCache.count else {
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let i = self.openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-                self.openTabs[i].timelineImage = nil
-                self.openTabs[i].isGeneratingTimeline = false
-            }
-            return
-        }
-
-        // Map activeRules to the cached indices
-        let mappedCacheIndices = activeRules.compactMap { rule -> Int? in
-            activeRuleIDsCache.firstIndex(of: rule.id)
-        }
-
-        let logTotalLines = content.count
-        // Restrict the timeline to the visible range when lines are hidden.
-        let vBounds = openTabs[index].visibleBounds(for: logTotalLines)
-        let rangeStart = vBounds?.lower ?? 0
-        let rangeEnd = vBounds.map { $0.upper + 1 } ?? logTotalLines
-        let rangeSpan = max(0, rangeEnd - rangeStart)
-        timelineTasks[tabID] = Task.detached(priority: .utility) { [weak self] in
-            let colWidth = 40
-            let imgHeight = 6000
-
-            let bSearch: ([Int], Int) -> Int = { arr, el in
-                var low = 0
-                var high = arr.count
-                while low < high {
-                    let mid = low + (high - low) / 2
-                    if arr[mid] < el { low = mid + 1 } else { high = mid }
-                }
-                return low
-            }
-
-            // Maps a bucket row to its inclusive-start / exclusive-end original
-            // line indices within the (possibly restricted) visible range.
-            let bucketBounds: (Int) -> (Int, Int) = { bucket in
-                let start = rangeStart + Int(Double(bucket) * Double(rangeSpan) / Double(imgHeight))
-                let end = bucket == imgHeight - 1
-                    ? rangeEnd
-                    : rangeStart + Int(Double(bucket + 1) * Double(rangeSpan) / Double(imgHeight))
-                return (start, end)
-            }
-
-            var newTimelineMatches: [[Int]] = Array(repeating: [], count: activeRules.count)
-            var bucketMatchCounts = Array(repeating: Array(repeating: 0, count: activeRules.count), count: imgHeight)
-            var bucketSampledCounts = [Int](repeating: 0, count: imgHeight)
-
-            for bucket in 0..<imgHeight {
-                if Task.isCancelled { return }
-                let (bucketStart, bucketEnd) = bucketBounds(bucket)
-                if bucketStart >= rangeEnd { break }
-
-                if isFiltered {
-                    let fLower = bSearch(filteredIndices, bucketStart)
-                    let fUpper = bSearch(filteredIndices, bucketEnd)
-                    let countInBucket = fUpper - fLower
-                    if countInBucket == 0 { continue }
-
-                    var matchCounts = [Int](repeating: 0, count: activeRules.count)
-                    for (i, cacheIdx) in mappedCacheIndices.enumerated() {
-                        let matches = cache[cacheIdx]
-                        var count = 0
-                        var firstHitLine: Int?
-                        // Fast intersection for this bucket
-                        for fIdx in fLower..<fUpper {
-                            let lineIdx = filteredIndices[fIdx]
-                            let rLower = bSearch(matches, lineIdx)
-                            if rLower < matches.count && matches[rLower] == lineIdx {
-                                count += 1
-                                if firstHitLine == nil { firstHitLine = lineIdx }
-                            }
-                        }
-                        matchCounts[i] = count
-                        if let hit = firstHitLine {
-                            newTimelineMatches[i].append(hit)
-                        }
-                    }
-                    bucketMatchCounts[bucket] = matchCounts
-                    bucketSampledCounts[bucket] = countInBucket
-
-                } else {
-                    let countInBucket = bucketEnd - bucketStart
-                    if countInBucket == 0 { continue }
-
-                    var matchCounts = [Int](repeating: 0, count: activeRules.count)
-                    for (i, cacheIdx) in mappedCacheIndices.enumerated() {
-                        let matches = cache[cacheIdx]
-                        let lower = bSearch(matches, bucketStart)
-                        let upper = bSearch(matches, bucketEnd)
-                        let count = upper - lower
-                        matchCounts[i] = count
-                        if count > 0 {
-                            newTimelineMatches[i].append(matches[lower])
-                        }
-                    }
-                    bucketMatchCounts[bucket] = matchCounts
-                    bucketSampledCounts[bucket] = countInBucket
-                }
-            }
-
-            if Task.isCancelled { return }
-
-            var displayedRuleIndices: [Int] = []
-            for i in 0..<activeRules.count {
-                if !newTimelineMatches[i].isEmpty {
-                    displayedRuleIndices.append(i)
-                }
-            }
-
-            let numColumns = displayedRuleIndices.count + (hasMarks ? 1 : 0)
-            let imgWidth = numColumns * colWidth
-
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            guard let ctx = CGContext(
-                data: nil, width: max(1, imgWidth), height: max(1, imgHeight),
-                bitsPerComponent: 8, bytesPerRow: max(1, imgWidth) * 4, space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-            ) else { return }
-
-            ctx.translateBy(x: 0, y: CGFloat(imgHeight))
-            ctx.scaleBy(x: 1.0, y: -1.0)
-
-            var finalMatchesToSave: [[Int]] = []
-            if hasMarks {
-                finalMatchesToSave.append(sortedMarks)
-            }
-            for i in displayedRuleIndices {
-                finalMatchesToSave.append(newTimelineMatches[i])
-            }
-
-            let activeRuleIDsThatMatched = displayedRuleIndices.map { activeRules[$0].id }
-            let ruleOffset = hasMarks ? 1 : 0
-
-            if hasMarks {
-                for bucket in 0..<imgHeight {
-                    let (bucketStart, bucketEnd) = bucketBounds(bucket)
-                    if bucketStart >= rangeEnd { break }
-
-                    let mLower = bSearch(sortedMarks, bucketStart)
-                    let mUpper = bSearch(sortedMarks, bucketEnd)
-                    if mLower < mUpper {
-                        let dotWidth = CGFloat(colWidth) * 0.8
-                        let dotHeight = 4.0
-                        let rect = CGRect(x: (CGFloat(colWidth) - dotWidth) / 2, y: CGFloat(bucket), width: dotWidth, height: dotHeight)
-                        ctx.setFillColor(markCGColor)
-                        ctx.fillEllipse(in: rect)
-                    }
-                }
-            }
-
-            for bucket in 0..<imgHeight {
-                let totalSampled = bucketSampledCounts[bucket]
-                if totalSampled == 0 { continue }
-
-                let counts = bucketMatchCounts[bucket]
-                for (dispIdx, originalIdx) in displayedRuleIndices.enumerated() {
-                    let count = counts[originalIdx]
-                    if count > 0 {
-                        let density = CGFloat(count) / CGFloat(totalSampled)
-                        let alpha = max(0.45, min(1.0, density * 1.6))
-                        if let scaledColor = ruleColors[originalIdx].copy(alpha: alpha) {
-                            ctx.setFillColor(scaledColor)
-                            let colIdx = dispIdx + ruleOffset
-                            let xOffset = colIdx * colWidth
-                            let dotWidth = CGFloat(colWidth) * 0.8
-                            let dotHeight = 2.0
-                            ctx.fillEllipse(in: CGRect(x: CGFloat(xOffset) + (CGFloat(colWidth) - dotWidth) / 2,
-                                                       y: CGFloat(bucket),
-                                                       width: dotWidth,
-                                                       height: dotHeight))
-                        }
-                    }
-                }
-            }
-
-            guard !Task.isCancelled, let cgImage = ctx.makeImage() else { return }
-            let bitmap = NSImage(cgImage: cgImage, size: NSSize(width: max(1, imgWidth), height: imgHeight))
-
-            let finalTimelineMatches = finalMatchesToSave
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                    self.openTabs[freshIndex].timelineImage = bitmap
-                    self.openTabs[freshIndex].timelineMatches = finalTimelineMatches
-                    self.openTabs[freshIndex].timelineActiveRuleIDs = activeRuleIDsThatMatched
-                    self.openTabs[freshIndex].isGeneratingTimeline = false
-                    self.objectWillChange.send()
-                }
-            }
-        }
-    }
-
-    func generateTimelineDataForAllTabs() {
-        for tab in openTabs { generateTimelineData(for: tab.id) }
     }
 
 }

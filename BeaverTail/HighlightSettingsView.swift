@@ -81,7 +81,7 @@ private struct WheelColorWell: NSViewRepresentable {
 }
 
 struct HighlightSettingsView: View {
-    @ObservedObject var viewModel: LogViewModel
+    @ObservedObject var rulesStore: HighlightRulesStore
     @Environment(\.dismiss) var dismiss
     @Environment(\.colorScheme) var colorScheme
 
@@ -105,7 +105,7 @@ struct HighlightSettingsView: View {
     }
 
     private var isUniqueRule: Bool {
-        !viewModel.highlightRules.contains { rule in
+        !rulesStore.rules.contains { rule in
             rule.id != editingRuleID && rule.pattern == patternInput && rule.isCaseSensitive == isCaseSensitive
         }
     }
@@ -159,14 +159,14 @@ struct HighlightSettingsView: View {
 
             // ── Rules list ──
             List {
-                if viewModel.highlightRules.isEmpty {
+                if rulesStore.rules.isEmpty {
                     ContentUnavailableLabel(
                         text: "No highlight rules yet.",
                         systemImage: "paintbrush"
                     )
                 } else {
-                    ForEach(viewModel.highlightRules) { rule in
-                        if let index = viewModel.highlightRules.firstIndex(where: { $0.id == rule.id }) {
+                    ForEach(rulesStore.rules) { rule in
+                        if let index = rulesStore.rules.firstIndex(where: { $0.id == rule.id }) {
                             HStack(spacing: 10) {
                                 HStack(spacing: 10) {
                                     Text("\(index + 1)")
@@ -177,8 +177,8 @@ struct HighlightSettingsView: View {
                                     Toggle("", isOn: Binding(
                                         get: { rule.isEnabled },
                                         set: { newValue in
-                                            if let idx = viewModel.highlightRules.firstIndex(where: { $0.id == rule.id }) {
-                                                viewModel.highlightRules[idx].isEnabled = newValue
+                                            if let idx = rulesStore.rules.firstIndex(where: { $0.id == rule.id }) {
+                                                rulesStore.rules[idx].isEnabled = newValue
                                             }
                                         }
                                     ))
@@ -250,11 +250,11 @@ struct HighlightSettingsView: View {
                         _ = provider.loadObject(ofClass: NSString.self) { item, _ in
                             guard let idString = item as? String, let ruleID = UUID(uuidString: idString) else { return }
                             DispatchQueue.main.async {
-                                guard let fromIndex = viewModel.highlightRules.firstIndex(where: { $0.id == ruleID }) else { return }
+                                guard let fromIndex = rulesStore.rules.firstIndex(where: { $0.id == ruleID }) else { return }
                                 let adjustedIndex = index > fromIndex ? index - 1 : index
                                 withAnimation(.default) {
-                                    let rule = viewModel.highlightRules.remove(at: fromIndex)
-                                    viewModel.highlightRules.insert(rule, at: adjustedIndex)
+                                    let rule = rulesStore.rules.remove(at: fromIndex)
+                                    rulesStore.rules.insert(rule, at: adjustedIndex)
                                 }
                             }
                         }
@@ -265,7 +265,7 @@ struct HighlightSettingsView: View {
             .tint(Color.clear)
 
             .onChange(of: editingRuleID) { _, newValue in
-                if let id = newValue, let rule = viewModel.highlightRules.first(where: { $0.id == id }) {
+                if let id = newValue, let rule = rulesStore.rules.first(where: { $0.id == id }) {
                     patternInput = rule.pattern
                     fgColor = rule.foregroundColor
                     bgColor = rule.backgroundColor
@@ -286,39 +286,39 @@ struct HighlightSettingsView: View {
                 }
             }
             .onChange(of: patternInput) { _, newValue in
-                if let id = editingRuleID, let index = viewModel.highlightRules.firstIndex(where: { $0.id == id }) {
-                    var rule = viewModel.highlightRules[index]
+                if let id = editingRuleID, let index = rulesStore.rules.firstIndex(where: { $0.id == id }) {
+                    var rule = rulesStore.rules[index]
                     if rule.pattern != newValue {
                         rule.pattern = newValue
                         rule.updateCachedObjects()
-                        viewModel.highlightRules[index] = rule
+                        rulesStore.rules[index] = rule
                     }
                 }
             }
             .onChange(of: isCaseSensitive) { _, newValue in
-                if let id = editingRuleID, let index = viewModel.highlightRules.firstIndex(where: { $0.id == id }) {
-                    var rule = viewModel.highlightRules[index]
+                if let id = editingRuleID, let index = rulesStore.rules.firstIndex(where: { $0.id == id }) {
+                    var rule = rulesStore.rules[index]
                     if rule.isCaseSensitive != newValue {
                         rule.isCaseSensitive = newValue
                         rule.updateCachedObjects()
-                        viewModel.highlightRules[index] = rule
+                        rulesStore.rules[index] = rule
                     }
                 }
             }
             .onChange(of: fgColor) { _, newValue in
-                if let id = editingRuleID, let index = viewModel.highlightRules.firstIndex(where: { $0.id == id }) {
-                    var rule = viewModel.highlightRules[index]
+                if let id = editingRuleID, let index = rulesStore.rules.firstIndex(where: { $0.id == id }) {
+                    var rule = rulesStore.rules[index]
                     rule.foregroundColorHex = newValue.toHex()
                     rule.updateCachedObjects()
-                    viewModel.highlightRules[index] = rule
+                    rulesStore.rules[index] = rule
                 }
             }
             .onChange(of: bgColor) { _, newValue in
-                if let id = editingRuleID, let index = viewModel.highlightRules.firstIndex(where: { $0.id == id }) {
-                    var rule = viewModel.highlightRules[index]
+                if let id = editingRuleID, let index = rulesStore.rules.firstIndex(where: { $0.id == id }) {
+                    var rule = rulesStore.rules[index]
                     rule.backgroundColorHex = newValue.toHex()
                     rule.updateCachedObjects()
-                    viewModel.highlightRules[index] = rule
+                    rulesStore.rules[index] = rule
                 }
             }
 
@@ -328,7 +328,7 @@ struct HighlightSettingsView: View {
             HStack {
                 Button("Import...") { importRules() }
                 Button("Export...") { exportRules() }
-                if !viewModel.highlightRules.isEmpty {
+                if !rulesStore.rules.isEmpty {
                     Button("Remove All...") { showingDeleteAllAlert = true }
                 }
                 Spacer()
@@ -341,7 +341,7 @@ struct HighlightSettingsView: View {
                 Button("Remove All", role: .destructive) {
                     withAnimation {
                         clearForm()
-                        viewModel.highlightRules.removeAll()
+                        rulesStore.rules.removeAll()
                     }
                 }
             } message: {
@@ -395,7 +395,7 @@ struct HighlightSettingsView: View {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             withAnimation(.easeOut(duration: 0.15)) {
-                viewModel.highlightRules.removeAll { $0.id == rule.id }
+                rulesStore.rules.removeAll { $0.id == rule.id }
                 deletingRules.remove(rule.id)
             }
         }
@@ -407,14 +407,14 @@ struct HighlightSettingsView: View {
         if let editingID = editingRuleID {
             if isSecondaryAdd {
                 // Revert the live-updated changes on the original rule
-                if let index = viewModel.highlightRules.firstIndex(where: { $0.id == editingID }) {
-                    var rule = viewModel.highlightRules[index]
+                if let index = rulesStore.rules.firstIndex(where: { $0.id == editingID }) {
+                    var rule = rulesStore.rules[index]
                     rule.pattern = originalPattern
                     rule.isCaseSensitive = originalIsCaseSensitive
                     rule.foregroundColorHex = originalFgColor.toHex()
                     rule.backgroundColorHex = originalBgColor.toHex()
                     rule.updateCachedObjects()
-                    viewModel.highlightRules[index] = rule
+                    rulesStore.rules[index] = rule
                 }
                 addNewRule(insertAfter: editingID)
             } else {
@@ -426,14 +426,14 @@ struct HighlightSettingsView: View {
     }
 
     private func updateExistingRule(id: UUID) {
-        if let index = viewModel.highlightRules.firstIndex(where: { $0.id == id }) {
-            var rule = viewModel.highlightRules[index]
+        if let index = rulesStore.rules.firstIndex(where: { $0.id == id }) {
+            var rule = rulesStore.rules[index]
             rule.pattern = patternInput
             rule.foregroundColorHex = fgColor.toHex()
             rule.backgroundColorHex = bgColor.toHex()
             rule.isCaseSensitive = isCaseSensitive
             rule.updateCachedObjects()
-            viewModel.highlightRules[index] = rule
+            rulesStore.rules[index] = rule
         }
         clearForm()
     }
@@ -448,10 +448,10 @@ struct HighlightSettingsView: View {
         rule.updateCachedObjects()
 
         if let existingID = existingID,
-           let index = viewModel.highlightRules.firstIndex(where: { $0.id == existingID }) {
-            viewModel.highlightRules.insert(rule, at: index + 1)
+           let index = rulesStore.rules.firstIndex(where: { $0.id == existingID }) {
+            rulesStore.rules.insert(rule, at: index + 1)
         } else {
-            viewModel.highlightRules.insert(rule, at: 0)
+            rulesStore.rules.insert(rule, at: 0)
         }
         clearForm()
     }
@@ -478,7 +478,7 @@ struct HighlightSettingsView: View {
             do {
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = .prettyPrinted
-                let data = try encoder.encode(viewModel.highlightRules)
+                let data = try encoder.encode(rulesStore.rules)
                 try data.write(to: url)
             } catch {
                 let alert = NSAlert()
@@ -505,7 +505,7 @@ struct HighlightSettingsView: View {
                 for i in rules.indices {
                     rules[i].updateCachedObjects()
                 }
-                viewModel.highlightRules = rules
+                rulesStore.rules = rules
             } catch {
                 let alert = NSAlert()
                 alert.messageText = "Import Failed"

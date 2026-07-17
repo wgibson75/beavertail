@@ -129,24 +129,14 @@ extension LogViewModel {
         guard tab.content == nil, !tab.isCurrentlyStreaming else { return }
 
         openTabs[index].isCurrentlyStreaming = true
-        progressTracker.isLoadingFile = true
-        progressTracker.fileLoadProgress = 0.0
 
         let url = tab.fileURL
         let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
         let totalSize = (attr?[.size] as? Int) ?? 1
         let progress = ScanProgress(total: totalSize)
-
-        fileLoadTimer?.invalidate()
-        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                let f = progress.fraction
-                if f > self.progressTracker.fileLoadProgress { self.progressTracker.fileLoadProgress = f }
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        fileLoadTimer = timer
+        loadProgressByTab[id] = progress
+        // This tab was just selected, so drive the global indicator from its progress.
+        refreshLoadIndicatorForSelectedTab()
 
         let scheduler = scanScheduler
         indexBuildQueue.async { [weak self] in
@@ -178,14 +168,12 @@ extension LogViewModel {
                 }
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
+                    self.loadProgressByTab.removeValue(forKey: id)
                     if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
                         self.openTabs[freshIndex].content = content
                         self.openTabs[freshIndex].statusLines = []
                         self.openTabs[freshIndex].isCurrentlyStreaming = false
-                        self.fileLoadTimer?.invalidate()
-                        self.fileLoadTimer = nil
-                        self.progressTracker.fileLoadProgress = 1.0
-                        self.progressTracker.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        self.refreshLoadIndicatorForSelectedTab()
                         let savedPattern = self.openTabs[freshIndex].filterPattern
                         if !savedPattern.isEmpty && self.selectedTabID == id {
                             self.applyFilter(with: savedPattern)
@@ -200,12 +188,11 @@ extension LogViewModel {
                 // DO NOT remove the tab so the user can see an error state.
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    self.fileLoadTimer?.invalidate()
-                    self.fileLoadTimer = nil
+                    self.loadProgressByTab.removeValue(forKey: id)
                     if let freshIndex = self.openTabs.firstIndex(where: { $0.id == id }) {
                         self.openTabs[freshIndex].statusLines = ["Unable to open file... File may have been deleted or moved."]
                         self.openTabs[freshIndex].isCurrentlyStreaming = false
-                        self.progressTracker.isLoadingFile = self.openTabs.contains { $0.isCurrentlyStreaming }
+                        self.refreshLoadIndicatorForSelectedTab()
                         if self.selectedTabID == id { self.startLiveTailingForActiveTab() }
                     }
                 }

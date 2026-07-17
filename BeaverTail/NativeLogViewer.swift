@@ -54,6 +54,11 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
     /// Reloading mid-scroll causes a one-time visible hitch, so the reload is held
     /// until the scroll finishes (or is paused) and then flushed.
     private var hasDeferredReload = false
+    /// Poll timer used to flush a reload that was deferred because the user was
+    /// actively selecting text in a cell (top pane). It fires the held-back reload
+    /// as soon as the text selection is released, even if no further SwiftUI update
+    /// arrives (e.g. after loading/filtering has finished).
+    private var selectionReloadWatcher: Timer?
     // MARK: - Date Tooltip State
     var activeTimestampRow: Int = -1 {
         didSet {
@@ -88,6 +93,7 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
     deinit {
         // Ensure to close window to prevent memory leaks or dangling windows if the table view is destroyed
         dateWindow.close()
+        selectionReloadWatcher?.invalidate()
     }
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         super.viewWillMove(toWindow: newWindow)
@@ -97,6 +103,11 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
         layoutObservers.removeAll()
         if newWindow == nil {
             dateWindow.orderOut(nil)
+            selectionReloadWatcher?.invalidate()
+            selectionReloadWatcher = nil
+            dateWindow.orderOut(nil)
+            selectionReloadWatcher?.invalidate()
+            selectionReloadWatcher = nil
         }
     }
     override func viewDidMoveToWindow() {
@@ -281,6 +292,13 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
     func reloadDeferringDuringHorizontalScroll() {
         if isHorizontalScrollActive {
             hasDeferredReload = true
+        } else if hasActiveTextSelection {
+            // The user is dragging to select / has selected part of a line in the
+            // top pane. reloadData() would recycle the cell and destroy the field
+            // editor's selection before they can copy it, so hold the reload back
+            // and flush it the moment the selection is released.
+            hasDeferredReload = true
+            ensureSelectionReloadWatcher()
         } else {
             reloadPreservingSelection()
         }
@@ -289,6 +307,36 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
         guard hasDeferredReload else { return }
         hasDeferredReload = false
         reloadPreservingSelection()
+    }
+    /// True while a top-pane cell's field editor currently has an active text
+    /// selection (or the user is mid-drag with the mouse button held down). Used to
+    /// defer reloads so an in-progress selection isn't wiped by reloadData while the
+    /// log is being filtered or is still loading.
+    var hasActiveTextSelection: Bool {
+        guard let editor = window?.firstResponder as? NSTextView, editor.isFieldEditor
+        else { return false }
+        // While a cell is being edited the shared field editor is inserted into that
+        // cell's view hierarchy, so it is a descendant of THIS table. This precisely
+        // excludes selections in unrelated fields (e.g. the filter box), whose field
+        // editor lives outside the table.
+        guard editor.isDescendant(of: self) else { return false }
+        if editor.selectedRange().length > 0 { return true }
+        // Still count an in-progress drag (button down, selection not yet grown).
+        return (NSEvent.pressedMouseButtons & 0x1) != 0
+    }
+    /// Starts a lightweight poll (if not already running) that flushes a
+    /// selection-deferred reload once the text selection is released.
+    private func ensureSelectionReloadWatcher() {
+        guard selectionReloadWatcher == nil else { return }
+        let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            guard !self.hasActiveTextSelection, !self.isHorizontalScrollActive else { return }
+            timer.invalidate()
+            self.selectionReloadWatcher = nil
+            self.flushDeferredReloadIfNeeded()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        selectionReloadWatcher = timer
     }
     var isHorizontalScrollActive: Bool {
         horizontalScrollLink != nil
@@ -548,92 +596,6 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
             .joined(separator: "\n")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-    }
-}
-// MARK: - LogRowView
-// Custom row view that paints the highlight-rule background AND a faint
-// selection tint layered on top of it, so selection is visible on every row
-// regardless of whether a highlight rule colours that row.
-private final class LogRowView: NSTableRowView {
-    var ruleBackgroundColor: NSColor = .clear {
-        didSet { needsDisplay = true }
-    }
-    // Redraw whenever the selection state changes
-    override var isSelected: Bool {
-        didSet { needsDisplay = true }
-    }
-    // Always treat the row as emphasized so the selection tint stays at full
-    // strength even when the table view is not the first responder. Without this
-    // AppKit fades/greys the selection once focus moves away after a click.
-    override var isEmphasized: Bool {
-        get { true }
-        set { }
-    }
-    var isMarked: Bool = false {
-        didSet { needsDisplay = true }
-    }
-    override func drawBackground(in dirtyRect: NSRect) {
-        super.drawBackground(in: dirtyRect)
-        if ruleBackgroundColor != .clear {
-            ruleBackgroundColor.setFill()
-            dirtyRect.fill()
-        }
-        if isMarked {
-            let diameter: CGFloat = 6.0
-            let circleRect = NSRect(x: 4.0, y: (bounds.height - diameter) / 2.0, width: diameter, height: diameter)
-            let path = NSBezierPath(ovalIn: circleRect)
-            NSColor.systemYellow.setStroke()
-            path.lineWidth = 1.5
-            path.stroke()
-            NSColor(red: 0.0, green: 0.2, blue: 0.7, alpha: 1.0).setFill()
-            path.fill()
-        }
-    }
-    override func drawSelection(in dirtyRect: NSRect) {
-        guard isSelected else { return }
-        // Faint translucent tint so any rule colour beneath still shows through
-        let selectionColor = NSColor.selectedContentBackgroundColor
-        selectionColor.withAlphaComponent(0.35).setFill()
-        bounds.fill()
-        NSColor.controlAccentColor.setStroke()
-        let path = NSBezierPath()
-        path.lineWidth = 2.0
-        let minX = bounds.minX + 1.0
-        let maxX = bounds.maxX - 1.0
-        let topY = !isPreviousRowSelected ? bounds.minY + 1.0 : bounds.minY
-        let bottomY = !isNextRowSelected ? bounds.maxY - 1.0 : bounds.maxY
-        path.move(to: NSPoint(x: minX, y: bottomY))
-        path.line(to: NSPoint(x: minX, y: topY))
-        if !isPreviousRowSelected {
-            path.line(to: NSPoint(x: maxX, y: topY))
-        } else {
-            path.move(to: NSPoint(x: maxX, y: topY))
-        }
-        path.line(to: NSPoint(x: maxX, y: bottomY))
-        if !isNextRowSelected {
-            path.line(to: NSPoint(x: minX, y: bottomY))
-        }
-        path.stroke()
-    }
-    func shimmer() {
-        self.wantsLayer = true
-        let flashLayer = CALayer()
-        flashLayer.frame = self.bounds
-        flashLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-        flashLayer.backgroundColor = NSColor.controlAccentColor.cgColor
-        flashLayer.opacity = 0.0
-        self.layer?.addSublayer(flashLayer)
-        let anim = CABasicAnimation(keyPath: "opacity")
-        anim.timingFunction = CAMediaTimingFunction(name: .linear)
-        anim.fromValue = 0.0
-        anim.toValue = 0.9
-        anim.duration = 1.6
-        anim.autoreverses = true
-        anim.repeatCount = 5
-        flashLayer.add(anim, forKey: "shimmer")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 16.0) {
-            flashLayer.removeFromSuperlayer()
-        }
     }
 }
 private class LogTextField: NSTextField {

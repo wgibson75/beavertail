@@ -234,6 +234,20 @@ enum LineMatcher {
     return false
 }
 
+/// A one-shot, thread-safe cancellation flag for the parallel scans (filter and
+/// highlight). The scan workers poll `isCancelled` between batches; setting it (when
+/// a newer scan supersedes this one, or the scan's tab stops being visible) makes
+/// every worker bail out promptly instead of scanning the rest of a multi-GB file.
+///
+/// This is checked *explicitly* rather than via `Task.isCancelled`, because the scan
+/// runs on `DispatchQueue.concurrentPerform` worker threads which have no Swift task
+/// context — so `Task.isCancelled` reads `false` on them and cannot stop the scan.
+final class ScanCancellationToken: @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock(initialState: false)
+    nonisolated func cancel() { lock.withLock { $0 = true } }
+    nonisolated var isCancelled: Bool { lock.withLock { $0 } }
+}
+
 /// Thread-safe progress counter. Worker threads bump `current` cheaply; the UI
 /// reads `fraction` from a timer on the main thread. This decouples progress
 /// reporting from the scan so the bar stays smooth even while every core is busy.
@@ -505,7 +519,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
     /// preempt background builds at these segment boundaries.
     nonisolated func buildIndex(
         progress: ScanProgress? = nil,
-        onSegmentWillScan: () -> Void = {},
+        onSegmentWillScan: () -> Bool = { true },
         onSegmentDidScan: () -> Void = {},
         onSegment: (LogContent) -> Void
     ) {
@@ -533,12 +547,20 @@ final class LogContent: LineProvider, @unchecked Sendable {
             // indexed and shown almost immediately, then ramp the segment size up to
             // keep per-segment overhead negligible for the rest of a huge file.
             var segSize = 4 * 1024 * 1024
-            let maxSegSize = 256 * 1024 * 1024
+            // Cap kept deliberately small so the shared scan slot is handed off
+            // frequently: `onSegmentWillScan` is only re-checked at segment
+            // boundaries, so this bounds how long a newly-selected tab waits for the
+            // previously-active tab's in-flight segment before its own build can
+            // start. A large cap (e.g. 256 MB) meant switching to a small-log tab
+            // could stall ~1s behind a big tab's segment; 32 MB makes the handoff
+            // feel instant while adding no measurable overhead to single-file loads.
+            let maxSegSize = 32 * 1024 * 1024
 
             while segStart < total {
-                // Acquire the shared scan slot (yielding to the visible tab's
-                // build) so only one all-core scan runs at a time.
-                onSegmentWillScan()
+                // Acquire the shared scan slot (only the visible tab's build proceeds;
+                // background builds park here). A `false` result means this build was
+                // cancelled (its tab was closed) — stop indexing and return.
+                guard onSegmentWillScan() else { return }
                 let segEnd = min(segStart + segSize, total)
                 let offsets = Self.scanSegment(ctx, from: segStart, to: segEnd)
                 if !offsets.isEmpty {
@@ -734,71 +756,83 @@ final class LogContent: LineProvider, @unchecked Sendable {
         )
     }
 
+    /// Single-pass "does this line contain any of the needles?" test, shared by the
+    /// multi-literal match AND the regex pre-filter. It walks the line ONCE, using the
+    /// combined first-byte acceptance table (`fbBase`) to cheaply skip bytes that can't
+    /// begin any needle, and only then compares candidate needles. Crucially this is
+    /// independent of the needle count — a non-matching line is scanned once no matter
+    /// how many alternatives/pre-filters there are, instead of one full pass per needle.
+    /// `caseInsensitive` is a compile-time constant at every call site, so `@inline`
+    /// lets the compiler drop the per-byte case-folding branch where it isn't needed.
     // swiftlint:disable:next function_parameter_count
-    private static func lineMatchesScan(
+    @inline(__always) private static func containsAnyNeedleFast(
+        base: UnsafePointer<UInt8>, start: Int, len: Int,
+        caseInsensitive: Bool, needleCount: Int,
+        offsetsPtr: UnsafePointer<Int>?, lengthsPtr: UnsafePointer<Int>?,
+        fbBase: UnsafePointer<Bool>, blobBase: UnsafePointer<UInt8>?
+    ) -> Bool {
+        guard let blob = blobBase, let offs = offsetsPtr, let lens = lengthsPtr else { return false }
+        var pos = 0
+        while pos < len {
+            if fbBase[Int(base[start + pos])] {
+                var ki = 0
+                while ki < needleCount {
+                    let nl = lens[ki]
+                    if nl <= len - pos {
+                        let no = offs[ki]
+                        var ji = 0
+                        while ji < nl {
+                            var ch = base[start + pos + ji]
+                            if caseInsensitive, ch >= 65 && ch <= 90 { ch += 32 }
+                            if ch != blob[no + ji] { break }
+                            ji += 1
+                        }
+                        if ji == nl { return true }
+                    }
+                    ki += 1
+                }
+            }
+            pos += 1
+        }
+        return false
+    }
+
+    /// Pointer-only variant of `lineMatchesScan` used by the hot per-line filter
+    /// loop. Taking the needle offset/length tables as raw `UnsafePointer`s (rather
+    /// than reading `params.offsets` / `params.lengths` per call) avoids an ARC
+    /// retain/release of those arrays on every one of the (potentially hundreds of
+    /// millions of) lines, and `@inline(__always)` lets the compiler fold the whole
+    /// match test into the chunk scan loop — a big win on short log lines where the
+    /// per-line overhead, not the byte compare, dominates.
+    // swiftlint:disable:next function_parameter_count
+    @inline(__always) private static func lineMatchesScanFast(
         base: UnsafePointer<UInt8>,
         start: Int, len: Int,
-        params: ScanParams,
+        mode: ScanMode,
+        needleCount: Int,
+        offsetsPtr: UnsafePointer<Int>?,
+        lengthsPtr: UnsafePointer<Int>?,
         fbBase: UnsafePointer<Bool>,
         blobBase: UnsafePointer<UInt8>?,
         cachedLineStr: inout String?,
         localRegex: NSRegularExpression?
     ) -> Bool {
-        let needleCount = params.offsets.count
-        let offsLet = params.offsets
-        let lensLet = params.lengths
-        switch params.mode {
+        switch mode {
         case .litSensitive:
-            let nl = lensLet[0]
+            let nl = lengthsPtr![0]
             return nl <= len && memmem(base + start, len, blobBase, nl) != nil
         case .litInsensitive:
-            return asciiInsensitiveContainsPtr(base + start, len, blobBase, lensLet[0])
+            return asciiInsensitiveContainsPtr(base + start, len, blobBase, lengthsPtr![0])
         case .multiLitSensitive:
-            var pos = 0
-            while pos < len {
-                if fbBase[Int(base[start + pos])] {
-                    var ki = 0
-                    while ki < needleCount {
-                        let nl = lensLet[ki]
-                        if nl <= len - pos {
-                            let no = offsLet[ki]
-                            var ji = 0
-                            while ji < nl {
-                                if base[start + pos + ji] != blobBase![no + ji] { break }
-                                ji += 1
-                            }
-                            if ji == nl { return true }
-                        }
-                        ki += 1
-                    }
-                }
-                pos += 1
-            }
-            return false
+            return containsAnyNeedleFast(
+                base: base, start: start, len: len, caseInsensitive: false, needleCount: needleCount,
+                offsetsPtr: offsetsPtr, lengthsPtr: lengthsPtr, fbBase: fbBase, blobBase: blobBase
+            )
         case .multiLitInsensitive:
-            var pos = 0
-            while pos < len {
-                if fbBase[Int(base[start + pos])] {
-                    var ki = 0
-                    while ki < needleCount {
-                        let nl = lensLet[ki]
-                        if nl <= len - pos {
-                            let no = offsLet[ki]
-                            var ji = 0
-                            while ji < nl {
-                                var ch = base[start + pos + ji]
-                                if ch >= 65 && ch <= 90 { ch += 32 }
-                                if ch != blobBase![no + ji] { break }
-                                ji += 1
-                            }
-                            if ji == nl { return true }
-                        }
-                        ki += 1
-                    }
-                }
-                pos += 1
-            }
-            return false
+            return containsAnyNeedleFast(
+                base: base, start: start, len: len, caseInsensitive: true, needleCount: needleCount,
+                offsetsPtr: offsetsPtr, lengthsPtr: lengthsPtr, fbBase: fbBase, blobBase: blobBase
+            )
         case .regexOnly:
             if cachedLineStr == nil {
                 cachedLineStr = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
@@ -807,14 +841,12 @@ final class LogContent: LineProvider, @unchecked Sendable {
             let range = NSRange(location: 0, length: lineStr.utf16.count)
             return localRegex!.firstMatch(in: lineStr, options: [], range: range) != nil
         case .regexPreSensitive:
-            var hit = false
-            var ki = 0
-            while ki < needleCount {
-                let nl = lensLet[ki]
-                if nl <= len, memmem(base + start, len, blobBase! + offsLet[ki], nl) != nil { hit = true; break }
-                ki += 1
-            }
-            guard hit else { return false }
+            // Single-pass pre-filter over all literals; only decode + run the (expensive)
+            // regex engine on the few lines that actually contain a required literal.
+            guard containsAnyNeedleFast(
+                base: base, start: start, len: len, caseInsensitive: false, needleCount: needleCount,
+                offsetsPtr: offsetsPtr, lengthsPtr: lengthsPtr, fbBase: fbBase, blobBase: blobBase
+            ) else { return false }
             if cachedLineStr == nil {
                 cachedLineStr = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
             }
@@ -822,15 +854,10 @@ final class LogContent: LineProvider, @unchecked Sendable {
             let range = NSRange(location: 0, length: lineStr.utf16.count)
             return localRegex!.firstMatch(in: lineStr, options: [], range: range) != nil
         case .regexPreInsensitive:
-            var hit = false
-            var ki = 0
-            while ki < needleCount {
-                if asciiInsensitiveContainsPtr(base + start, len, blobBase! + offsLet[ki], lensLet[ki]) {
-                    hit = true; break
-                }
-                ki += 1
-            }
-            guard hit else { return false }
+            guard containsAnyNeedleFast(
+                base: base, start: start, len: len, caseInsensitive: true, needleCount: needleCount,
+                offsetsPtr: offsetsPtr, lengthsPtr: lengthsPtr, fbBase: fbBase, blobBase: blobBase
+            ) else { return false }
             if cachedLineStr == nil {
                 cachedLineStr = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
             }
@@ -842,8 +869,14 @@ final class LogContent: LineProvider, @unchecked Sendable {
 
     /// Parallel scan returning indices of lines that match `matcher`.
     /// Does not allocate a String per line — searches raw memory-mapped bytes.
-    /// Progress is reported into `progress` (polled by the UI timer).
-    func filterMatches(matcher: LineMatcher, progress: ScanProgress, onUpdate: @escaping ([Int]) -> Void) {
+    /// Progress is reported into `progress` (polled by the UI timer). `cancellation`
+    /// is polled between line batches so a superseded filter stops scanning at once.
+    func filterMatches(
+        matcher: LineMatcher,
+        progress: ScanProgress,
+        cancellation: ScanCancellationToken? = nil,
+        onUpdate: @escaping ([Int]) -> Void
+    ) {
         // Take a stable snapshot so this scan is safe even if the index is still
         // being built on another thread. `indexed` bounds valid offsets for line-end
         // computation; `scanCount` excludes any not-yet-terminated trailing line.
@@ -883,65 +916,83 @@ final class LogContent: LineProvider, @unchecked Sendable {
         }
 
         if chunkCount > 0 {
+            // Hoist everything the per-line hot loop needs so nothing is retained or
+            // recomputed per line: the scan mode, needle count, and raw pointers to
+            // the needle offset/length tables (in addition to the byte tables below).
+            let scanMode = params.mode
+            let needleCount = params.offsets.count
+            let regexTemplate = params.regex
             params.firstByteTable.withUnsafeBufferPointer { fbPtr in
                 let fbBase = fbPtr.baseAddress!
                 params.blob.withUnsafeBufferPointer { blobPtr in
                     let blobBase = blobPtr.baseAddress
-                    data.withUnsafeBytes { rawBuffer in
-                        nonisolated(unsafe) let base = UnsafePointer(
-                            rawBuffer.bindMemory(to: UInt8.self).baseAddress!
-                        )
-                        let total = totalBytes
-                        nonisolated(unsafe) let nBlob = blobBase
+                    params.offsets.withUnsafeBufferPointer { offPtr in
+                        params.lengths.withUnsafeBufferPointer { lenPtr in
+                            nonisolated(unsafe) let offBase = offPtr.baseAddress
+                            nonisolated(unsafe) let lenBase = lenPtr.baseAddress
+                            data.withUnsafeBytes { rawBuffer in
+                                nonisolated(unsafe) let base = UnsafePointer(
+                                    rawBuffer.bindMemory(to: UInt8.self).baseAddress!
+                                )
+                                let total = totalBytes
+                                nonisolated(unsafe) let nBlob = blobBase
 
-                        starts.withUnsafeBufferPointer { startsBuffer in
-                            nonisolated(unsafe) let startsPtr = startsBuffer.baseAddress!
-                            partials.withUnsafeMutableBufferPointer { outParam in
-                                nonisolated(unsafe) let out = outParam
-                                DispatchQueue.concurrentPerform(iterations: chunkCount) { chunkIdx in
-                                    let localRx: NSRegularExpression? = params.regex.flatMap {
-                                        try? NSRegularExpression(pattern: $0.pattern, options: $0.options)
-                                    }
-                                    let (cs, ce) = ranges[chunkIdx]
-                                    var matches: [Int] = []
-                                    var startIdx = cs
-                                    while startIdx < ce {
-                                        autoreleasepool {
-                                            let endIdx = min(startIdx + 2048, ce)
-                                            var sinceReport = 0
-                                            var cachedLineStr: String?
-                                            for lineIdx in startIdx ..< endIdx {
-                                                let lineStart = startsPtr[lineIdx]
-                                                let rawEnd = (lineIdx + 1 < indexed)
-                                                    ? startsPtr[lineIdx + 1] - 1 : total
-                                                var lineEnd = max(lineStart, rawEnd)
-                                                if lineEnd > lineStart, base[lineEnd - 1] == 0x0D { lineEnd -= 1 }
-                                                let lineLen = lineEnd - lineStart
-                                                cachedLineStr = nil
-                                                if Self.lineMatchesScan(
-                                                    base: base, start: lineStart, len: lineLen,
-                                                    params: params, fbBase: fbBase, blobBase: nBlob,
-                                                    cachedLineStr: &cachedLineStr,
-                                                    localRegex: localRx
-                                                ) { matches.append(lineIdx) }
-                                                sinceReport += 1
+                                starts.withUnsafeBufferPointer { startsBuffer in
+                                    nonisolated(unsafe) let startsPtr = startsBuffer.baseAddress!
+                                    partials.withUnsafeMutableBufferPointer { outParam in
+                                        nonisolated(unsafe) let out = outParam
+                                        DispatchQueue.concurrentPerform(iterations: chunkCount) { chunkIdx in
+                                            let localRx: NSRegularExpression? = regexTemplate.flatMap {
+                                                try? NSRegularExpression(pattern: $0.pattern, options: $0.options)
                                             }
-                                            if sinceReport > 0 { progress.add(sinceReport) }
-                                            startIdx = endIdx
+                                            let (cs, ce) = ranges[chunkIdx]
+                                            var matches: [Int] = []
+                                            var startIdx = cs
+                                            while startIdx < ce {
+                                                // Bail out of this worker immediately if a newer filter
+                                                // has superseded this scan (checked once per 2048-line
+                                                // batch, not per line, so it costs almost nothing).
+                                                if cancellation?.isCancelled == true { return }
+                                                autoreleasepool {
+                                                    let endIdx = min(startIdx + 2048, ce)
+                                                    var sinceReport = 0
+                                                    var cachedLineStr: String?
+                                                    for lineIdx in startIdx ..< endIdx {
+                                                        let lineStart = startsPtr[lineIdx]
+                                                        let rawEnd = (lineIdx + 1 < indexed)
+                                                            ? startsPtr[lineIdx + 1] - 1 : total
+                                                        var lineEnd = max(lineStart, rawEnd)
+                                                        if lineEnd > lineStart, base[lineEnd - 1] == 0x0D { lineEnd -= 1 }
+                                                        let lineLen = lineEnd - lineStart
+                                                        cachedLineStr = nil
+                                                        if Self.lineMatchesScanFast(
+                                                            base: base, start: lineStart, len: lineLen,
+                                                            mode: scanMode, needleCount: needleCount,
+                                                            offsetsPtr: offBase, lengthsPtr: lenBase,
+                                                            fbBase: fbBase, blobBase: nBlob,
+                                                            cachedLineStr: &cachedLineStr,
+                                                            localRegex: localRx
+                                                        ) { matches.append(lineIdx) }
+                                                        sinceReport += 1
+                                                    }
+                                                    if sinceReport > 0 { progress.add(sinceReport) }
+                                                    startIdx = endIdx
+                                                }
+                                            }
+                                            out[chunkIdx] = matches
+                                            outLock.lock()
+                                            completeChunks[chunkIdx] = matches
+                                            var didEmit = false
+                                            while let ready = completeChunks.removeValue(forKey: nextChunkToEmit) {
+                                                emittedSoFar.append(contentsOf: ready)
+                                                nextChunkToEmit += 1
+                                                didEmit = true
+                                            }
+                                            let snapshot = emittedSoFar
+                                            outLock.unlock()
+                                            if didEmit { performUpdates(snapshot, false) }
                                         }
                                     }
-                                    out[chunkIdx] = matches
-                                    outLock.lock()
-                                    completeChunks[chunkIdx] = matches
-                                    var didEmit = false
-                                    while let ready = completeChunks.removeValue(forKey: nextChunkToEmit) {
-                                        emittedSoFar.append(contentsOf: ready)
-                                        nextChunkToEmit += 1
-                                        didEmit = true
-                                    }
-                                    let snapshot = emittedSoFar
-                                    outLock.unlock()
-                                    if didEmit { performUpdates(snapshot, false) }
                                 }
                             }
                         }
@@ -949,6 +1000,10 @@ final class LogContent: LineProvider, @unchecked Sendable {
                 }
             }
         }
+
+        // If a newer filter superseded this one mid-scan, don't publish the (partial,
+        // now-irrelevant) results at all.
+        if cancellation?.isCancelled == true { return }
 
         outLock.lock()
         var finalMatches: [Int] = emittedSoFar
@@ -963,7 +1018,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
     }
 
     /// Optimized extraction of all lines matching multiple matchers in a single parallel pass.
-    nonisolated func extractAllMatches(matchers: [LineMatcher], onUpdate: @escaping ([[Int]], Bool) -> Void) {
+    nonisolated func extractAllMatches(matchers: [LineMatcher], cancellation: ScanCancellationToken? = nil, onUpdate: @escaping ([[Int]], Bool) -> Void) {
         // Stable snapshot: safe even if the index is still being built (see filterMatches).
         let snap = indexSnapshot()
         let starts = snap.starts
@@ -974,12 +1029,23 @@ final class LogContent: LineProvider, @unchecked Sendable {
         let paramsList = matchers.map { Self.buildScanParams(from: $0) }
         var allBlobs: [UInt8] = []
         var allFbs: [Bool] = []
-        var offsets = [(blobOff: Int, fbOff: Int)]()
+        var allOffsets: [Int] = []
+        var allLengths: [Int] = []
+        // Per-matcher metadata + start offsets into the concatenated tables. Stored as
+        // plain value tuples (no reference types) so the hot per-line loop can index
+        // them with zero ARC traffic.
+        var meta = [(blobOff: Int, fbOff: Int, offOff: Int, lenOff: Int, needleCount: Int, mode: ScanMode)]()
 
         for p in paramsList {
-            offsets.append((blobOff: allBlobs.count, fbOff: allFbs.count))
+            meta.append((
+                blobOff: allBlobs.count, fbOff: allFbs.count,
+                offOff: allOffsets.count, lenOff: allLengths.count,
+                needleCount: p.offsets.count, mode: p.mode
+            ))
             allBlobs.append(contentsOf: p.blob)
             allFbs.append(contentsOf: p.firstByteTable)
+            allOffsets.append(contentsOf: p.offsets)
+            allLengths.append(contentsOf: p.lengths)
         }
 
         let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
@@ -1019,74 +1085,92 @@ final class LogContent: LineProvider, @unchecked Sendable {
                 let fbBase = fbPtr.baseAddress!
                 allBlobs.withUnsafeBufferPointer { blobPtr in
                     let blobBase = blobPtr.baseAddress
-                    data.withUnsafeBytes { rawBuffer in
-                        nonisolated(unsafe) let base = UnsafePointer(rawBuffer.bindMemory(to: UInt8.self).baseAddress!)
-                        let total = totalBytes
-                        nonisolated(unsafe) let nBlob = blobBase
+                    allOffsets.withUnsafeBufferPointer { offAllPtr in
+                        allLengths.withUnsafeBufferPointer { lenAllPtr in
+                            nonisolated(unsafe) let offAllBase = offAllPtr.baseAddress
+                            nonisolated(unsafe) let lenAllBase = lenAllPtr.baseAddress
+                            data.withUnsafeBytes { rawBuffer in
+                                nonisolated(unsafe) let base = UnsafePointer(rawBuffer.bindMemory(to: UInt8.self).baseAddress!)
+                                let total = totalBytes
+                                nonisolated(unsafe) let nBlob = blobBase
+                                nonisolated(unsafe) let nFbs = fbBase
 
-                        nonisolated(unsafe) let nFbs = fbBase
-
-                        starts.withUnsafeBufferPointer { startsBuffer in
-                            nonisolated(unsafe) let startsPtr = startsBuffer.baseAddress!
-                            DispatchQueue.concurrentPerform(iterations: chunkCount) { chunkIdx in
-                                let localRegexes: [NSRegularExpression?] = paramsList.map { p in
-                                    p.regex.flatMap { try? NSRegularExpression(pattern: $0.pattern, options: $0.options) }
-                                }
-                                let (cs, ce) = ranges[chunkIdx]
-                                var chunkMatches = [[Int]](repeating: [], count: paramsList.count)
-                                var startIdx = cs
-                                while startIdx < ce {
-                                    if Task.isCancelled { return }
-                                    autoreleasepool {
-                                        let endIdx = min(startIdx + 2048, ce)
-                                        var cachedLineStr: String?
-                                        for lineIdx in startIdx ..< endIdx {
-                                            if Task.isCancelled { return }
-                                            let lineStart = startsPtr[lineIdx]
-                                            // Bounds-checked line length. `startsPtr[lineIdx + 1]`
-                                            // must only be read when the next offset is actually
-                                            // present in the snapshot (`lineIdx + 1 < indexed`);
-                                            // for the final indexed line clamp to `total`. Reading
-                                            // one element past the snapshot buffer here yielded a
-                                            // garbage length and an out-of-bounds read into the
-                                            // memory-mapped file (EXC_BAD_ACCESS).
-                                            let rawEnd = (lineIdx + 1 < indexed) ? startsPtr[lineIdx + 1] - 1 : total
-                                            var lineEnd = max(lineStart, rawEnd)
-                                            if lineEnd > lineStart, base[lineEnd - 1] == 0x0D { lineEnd -= 1 }
-                                            let lineLen = lineEnd - lineStart
-                                            cachedLineStr = nil
-                                            for mIdx in 0..<paramsList.count {
-                                                let p = paramsList[mIdx]
-                                                let off = offsets[mIdx]
-                                                if Self.lineMatchesScan(
-                                                    base: base, start: lineStart, len: lineLen,
-                                                    params: p, fbBase: nFbs + off.fbOff, blobBase: nBlob != nil ? nBlob! + off.blobOff : nil,
-                                                    cachedLineStr: &cachedLineStr,
-                                                    localRegex: localRegexes[mIdx]
-                                                ) {
-                                                    chunkMatches[mIdx].append(lineIdx)
+                                starts.withUnsafeBufferPointer { startsBuffer in
+                                    nonisolated(unsafe) let startsPtr = startsBuffer.baseAddress!
+                                    DispatchQueue.concurrentPerform(iterations: chunkCount) { chunkIdx in
+                                        // Compile a thread-local NSRegularExpression per chunk.
+                                        // NSRegularExpression is thread-safe but serialises
+                                        // concurrent matches on a SHARED instance (ICU matcher
+                                        // contention), so giving each parallel chunk its own
+                                        // instance is essential to keep all cores busy.
+                                        let localRegexes: [NSRegularExpression?] = paramsList.map { p in
+                                            p.regex.flatMap { try? NSRegularExpression(pattern: $0.pattern, options: $0.options) }
+                                        }
+                                        let (cs, ce) = ranges[chunkIdx]
+                                        var chunkMatches = [[Int]](repeating: [], count: meta.count)
+                                        var startIdx = cs
+                                            while startIdx < ce {
+                                                // Poll the explicit token (not Task.isCancelled, which
+                                                // reads false on these GCD worker threads). Lets a
+                                                // switched-away tab's scan stop within one batch.
+                                                if cancellation?.isCancelled == true { return }
+                                                autoreleasepool {
+                                                    let endIdx = min(startIdx + 2048, ce)
+                                                    var cachedLineStr: String?
+                                                    for lineIdx in startIdx ..< endIdx {
+                                                        let lineStart = startsPtr[lineIdx]
+                                                    // Bounds-checked line length. `startsPtr[lineIdx + 1]`
+                                                    // must only be read when the next offset is actually
+                                                    // present in the snapshot (`lineIdx + 1 < indexed`);
+                                                    // for the final indexed line clamp to `total`. Reading
+                                                    // one element past the snapshot buffer here yielded a
+                                                    // garbage length and an out-of-bounds read into the
+                                                    // memory-mapped file (EXC_BAD_ACCESS).
+                                                    let rawEnd = (lineIdx + 1 < indexed) ? startsPtr[lineIdx + 1] - 1 : total
+                                                    var lineEnd = max(lineStart, rawEnd)
+                                                    if lineEnd > lineStart, base[lineEnd - 1] == 0x0D { lineEnd -= 1 }
+                                                    let lineLen = lineEnd - lineStart
+                                                    cachedLineStr = nil
+                                                    for mIdx in 0..<meta.count {
+                                                        // `m` is a value tuple, so indexing/copying it
+                                                        // costs no ARC — unlike copying the ScanParams
+                                                        // struct (5 arrays) per line as before.
+                                                        let m = meta[mIdx]
+                                                        if Self.lineMatchesScanFast(
+                                                            base: base, start: lineStart, len: lineLen,
+                                                            mode: m.mode, needleCount: m.needleCount,
+                                                            offsetsPtr: offAllBase.map { $0 + m.offOff },
+                                                            lengthsPtr: lenAllBase.map { $0 + m.lenOff },
+                                                            fbBase: nFbs + m.fbOff,
+                                                            blobBase: nBlob != nil ? nBlob! + m.blobOff : nil,
+                                                            cachedLineStr: &cachedLineStr,
+                                                            localRegex: localRegexes[mIdx]
+                                                        ) {
+                                                            chunkMatches[mIdx].append(lineIdx)
+                                                        }
+                                                    }
                                                 }
+                                                startIdx = endIdx
                                             }
                                         }
-                                        startIdx = endIdx
-                                    }
-                                }
 
-                                outLock.lock()
-                                completeChunks[chunkIdx] = chunkMatches
-                                var didEmit = false
-                                while let ready = completeChunks.removeValue(forKey: nextChunkToEmit) {
-                                    for mIdx in 0..<matchers.count {
-                                        emittedSoFar[mIdx].append(contentsOf: ready[mIdx])
-                                    }
-                                    nextChunkToEmit += 1
-                                    didEmit = true
-                                }
-                                let snapshot = emittedSoFar
-                                outLock.unlock()
+                                        outLock.lock()
+                                        completeChunks[chunkIdx] = chunkMatches
+                                        var didEmit = false
+                                        while let ready = completeChunks.removeValue(forKey: nextChunkToEmit) {
+                                            for mIdx in 0..<matchers.count {
+                                                emittedSoFar[mIdx].append(contentsOf: ready[mIdx])
+                                            }
+                                            nextChunkToEmit += 1
+                                            didEmit = true
+                                        }
+                                        let snapshot = emittedSoFar
+                                        outLock.unlock()
 
-                                if didEmit {
-                                    performUpdates(snapshot, false)
+                                        if didEmit {
+                                            performUpdates(snapshot, false)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1098,6 +1182,10 @@ final class LogContent: LineProvider, @unchecked Sendable {
         outLock.lock()
         var finalMatches = emittedSoFar
         outLock.unlock()
+
+        // If the scan was cancelled (e.g. its tab was switched away from), don't emit
+        // the partial final result — the tab is re-scanned from scratch when reselected.
+        if cancellation?.isCancelled == true { return }
 
         if !appended.isEmpty {
             for (offset, line) in appended.enumerated() {

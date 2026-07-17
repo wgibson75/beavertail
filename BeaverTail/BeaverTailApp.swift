@@ -337,7 +337,7 @@ struct BeaverTailApp: App {
         // freely movable and resizable, and SwiftUI automatically persists its size
         // and position across launches (keyed by the scene id).
         Window("Highlight Filters", id: highlightFiltersWindowID) {
-            HighlightSettingsView(viewModel: viewModel)
+            HighlightSettingsView(rulesStore: viewModel.highlightRulesStore)
                 .onAppear { viewModel.isHighlightWindowOpen = true }
                 .onDisappear { viewModel.isHighlightWindowOpen = false }
         }
