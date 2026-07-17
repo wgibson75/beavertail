@@ -120,7 +120,7 @@ private let helpSections: [HelpSection] = [
             "Each rule takes a regex pattern, a text colour, a background colour, "
             + "an optional Aa (match-case) toggle, and an enable/disable toggle. Disabled filters are ignored and appear dimmed."),
         HelpItem(shortcut: nil, description:
-            "Use the ▲▼ arrows or drag and drop rules to change priority order. "
+            "Drag and drop filters to change the order in which they are applied. "
             + "Changes are reflected instantly without re-running the filter."),
         HelpItem(shortcut: nil, description:
             "Use the Import/Export buttons to save and load highlight filters. The enabled/disabled state is persisted when exporting to JSON."),
@@ -155,31 +155,31 @@ private let helpSections: [HelpSection] = [
     HelpSection(title: "Navigation", items: [
         HelpItem(shortcut: "⌘C", description:
             "Right-click selected lines or press ⌘C to copy selected rows. In the upper pane you can also "
-            + "drag to highlight a portion of a line and use 'Copy Selection' from the right-click menu, "
+            + "click to highlight a portion of a line and use 'Copy' from the right-click menu, "
             + "or ⌘C to copy only the highlighted text."),
         HelpItem(shortcut: nil, description:
             "Click a single line in the lower pane to jump to the corresponding line in the upper pane. "
             + "Multi-selecting lines for copying does not move the upper pane."),
         HelpItem(shortcut: nil, description:
-            "Jumped-to lines in the upper pane are selected, outlined and shimmer briefly so they are easier to find."),
+            "Jumped-to lines in the upper pane are selected and outlined so they are easier to see."),
         HelpItem(shortcut: nil, description:
-            "If the selected upper-pane line is wider than the window, click it a second time in the upper pane, "
-            + "or select the same lower-pane, timeline or minimap entry again, to smoothly scroll the line "
-            + "horizontally. Click the line again while it is scrolling to pause; click again to continue "
-            + "in the same direction."),
+            "If a line that has been selected in either the bottom pane or minimap is wider than the window, "
+            + "clicking the entry a second time will smoothly scroll the line horizontally in the upper pane "
+            + "to show the complete line. Click the entry again while it is scrolling to pause; click again "
+            + "to continue scrolling in the same direction."),
         HelpItem(shortcut: nil, description:
             "Use the minimap on the right edge to scrub quickly through large files. "
-            + "Coloured bands show where highlight rules match. A second selection of the same minimap entry "
-            + "enables horizontal scrolling for long selected lines."),
+            + "Coloured bands show where highlight rules match."),
         HelpItem(shortcut: nil, description:
-            "Toggle Line Numbers, Minimap and Timeline visibility using the highlighted/unhighlighted toolbar icons.")
+            "Toggle Line Numbers, Timestamp Labels; Minimap and Timeline View visibility using the "
+            + "icons in the top right of the application window.")
     ]),
     HelpSection(title: "Date / Time Stamps", items: [
         HelpItem(shortcut: nil, description:
             "Toggle the 'ts' toolbar icon to enable or disable timestamp popups."),
         HelpItem(shortcut: nil, description:
-            "When enabled, hover your mouse over log lines in either pane to view a formatted date and "
-            + "time bubble if the line begins with a valid timestamp."),
+            "When enabled, select a log line to see a formatted date and time bubble in the top pane if the "
+            + "line begins with a valid timestamp."),
         HelpItem(shortcut: nil, description:
             "Right-click on a log line and select 'Set Point in Time' to use its timestamp as a reference. "
             + "Subsequent timestamp bubbles will show the elapsed time compared to this point in brackets."),
@@ -191,10 +191,10 @@ private let helpSections: [HelpSection] = [
             "Use the A / A buttons in the toolbar to increase or decrease log text size. "
             + "The setting is remembered between launches.")
     ]),
-    HelpSection(title: "Timeline", items: [
+    HelpSection(title: "Timeline View", items: [
         HelpItem(shortcut: nil, description:
-            "Toggle the Timeline view (clock icon, top-right) to replace the lower pane with a visual "
-            + "representation of highlight matches and marks."),
+            "Toggle the Timeline View (clock icon, top-right) to replace the lower pane with a visual "
+            + "representation of highlight filters that have matched lines as well as marked lines."),
         HelpItem(shortcut: nil, description:
             "The timeline respects the current filter pattern: highlight columns only appear when that rule "
             + "matches at least one currently filtered log line. "
@@ -203,8 +203,9 @@ private let helpSections: [HelpSection] = [
             "Hover over timeline column headers to view full regex patterns. "
             + "Highlight rule columns are positioned from highest priority (left) to lowest (right)."),
         HelpItem(shortcut: nil, description:
-            "Click any coloured dot or mark in the timeline to snap the upper pane directly to the corresponding "
-            + "log line. Selecting the same timeline entry again can horizontally scroll long selected lines.")
+            "Click any coloured mark in the Timeline View to snap the upper pane directly to the corresponding "
+            + "log line. Selecting the same timeline entry again will horizontally scroll any long line in the "
+            + "top pane.")
     ]),
     HelpSection(title: "Live Tailing", items: [
         HelpItem(shortcut: nil, description:
@@ -225,7 +226,7 @@ private let helpSections: [HelpSection] = [
             + "available, a message appears offering to download the latest version (a .dmg disk image) directly."),
         HelpItem(shortcut: nil, description:
             "Use the BeaverTail menu → 'Check for Updates…' to check manually at any time. "
-            + "It reports whether a newer version is available or you are already up to date."),
+            + "It reports whether a newer version is available or if you are already up to date."),
         HelpItem(shortcut: nil, description:
             "Automatic checks can be turned off via the BeaverTail menu → 'Check for Updates Automatically'. "
             + "The setting is remembered between launches.")
