@@ -12,6 +12,8 @@ struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @State private var showHelp = false
+    /// Section of the Help window to scroll to when opened from the Help menu search.
+    @State private var helpInitialSection: String?
     @State private var showFilterDropdown = false
     @State private var draggingTabID: UUID?
     @State private var isFileDropTargeted = false
@@ -170,9 +172,10 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.2), value: viewModel.showMinimap)
         .animation(.easeInOut(duration: 0.15), value: viewModel.openTabs.count)
         .sheet(isPresented: $showHelp) {
-            HelpView()
+            HelpView(initialSectionTitle: helpInitialSection)
         }
-        .onReceive(NotificationCenter.default.publisher(for: showHelpNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: showHelpNotification)) { note in
+            helpInitialSection = note.object as? String
             showHelp = true
         }
         .onChange(of: colorScheme) { _, newScheme in

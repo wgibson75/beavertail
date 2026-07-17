@@ -21,7 +21,15 @@ let highlightFiltersWindowID = "highlight-filters"
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
+    /// Strongly-held handler that feeds the Help menu "Search" field with results
+    /// from the app's own Help text.
+    private let helpSearchHandler = HelpSearchHandler()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Register a search handler so the standard Help ▸ Search field searches
+        // BeaverTail's Help text and opens the Help window at the chosen topic.
+        NSApp.registerUserInterfaceItemSearchHandler(helpSearchHandler)
+
         // Register for kAEOpenDocuments Apple Events — this fires reliably
         // when `open -a BeaverTail file.log` is used, both on fresh launch
         // and when the app is already running.
