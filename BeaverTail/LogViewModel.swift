@@ -563,6 +563,8 @@ class LogViewModel: ObservableObject {
     func hideLinesAbove(originalIndex: Int) {
         guard let tabID = selectedTabID,
               let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        // Record the current range so a right-click can step back to it.
+        pushVisibleBoundsHistory(for: index)
         openTabs[index].visibleLowerBound = originalIndex
         // Keep the bounds consistent if a "below" hide is already narrower.
         if let upper = openTabs[index].visibleUpperBound, upper < originalIndex {
@@ -587,6 +589,8 @@ class LogViewModel: ObservableObject {
     func hideLinesBelow(originalIndex: Int) {
         guard let tabID = selectedTabID,
               let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        // Record the current range so a right-click can step back to it.
+        pushVisibleBoundsHistory(for: index)
         openTabs[index].visibleUpperBound = originalIndex
         if let lower = openTabs[index].visibleLowerBound, lower > originalIndex {
             openTabs[index].visibleLowerBound = originalIndex
@@ -594,6 +598,44 @@ class LogViewModel: ObservableObject {
         // The just-hidden line becomes the last visible line, so keep the current-line
         // indicator pinned to it within the regenerated minimap.
         applyLineVisibilityChange(for: index, tabID: tabID, selectedOriginalIndex: originalIndex)
+    }
+
+    /// Restricts both panes to a time period marked out on the minimap by a
+    /// click-drag-release, hiding every line that falls outside the dragged range.
+    /// `fromFraction` and `toFraction` are the 0...1 minimap positions where the
+    /// drag began and ended (order-independent). Uses the same hide/show plumbing
+    /// as `hideLinesAbove`/`hideLinesBelow`, so the "Reset" context-menu item
+    /// becomes available in both panes and restores all lines when chosen.
+    func selectTimePeriod(fromFraction: CGFloat, toFraction: CGFloat) {
+        guard let tabID = selectedTabID,
+              let index = openTabs.firstIndex(where: { $0.id == tabID }),
+              openTabs[index].content != nil else { return }
+
+        // Map both ends of the drag into original-line space using the same band
+        // bucketing as the rendered minimap image. When lines are already hidden
+        // this maps within the current visible range, so the period can be
+        // narrowed further.
+        let lineA = originalIndex(forFraction: fromFraction, in: openTabs[index])
+        let lineB = originalIndex(forFraction: toFraction, in: openTabs[index])
+        let lower = min(lineA, lineB)
+        let upper = max(lineA, lineB)
+        guard lower <= upper else { return }
+
+        // Record the current range so a right-click can step back to it.
+        pushVisibleBoundsHistory(for: index)
+        openTabs[index].visibleLowerBound = lower
+        openTabs[index].visibleUpperBound = upper
+
+        // Pin the current-line indicator to the first visible line of the period.
+        applyLineVisibilityChange(for: index, tabID: tabID, selectedOriginalIndex: lower)
+
+        // The first line of the selected period becomes row 0 of both panes; scroll
+        // them there so the new range starts at the top. Deferred so the panes have
+        // rebuilt with the new range first.
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: topPaneScrollToRowNotification, object: 0)
+            NotificationCenter.default.post(name: bottomPaneScrollToRowNotification, object: 0)
+        }
     }
 
     /// Reveals any previously-hidden lines in the current tab.
@@ -606,7 +648,51 @@ class LogViewModel: ObservableObject {
         let previouslySelected = selectedOriginalIndex(in: openTabs[index])
         openTabs[index].visibleLowerBound = nil
         openTabs[index].visibleUpperBound = nil
+        // Fully revealing the log discards the tracked time-period history.
+        openTabs[index].visibleBoundsHistory.removeAll()
         applyLineVisibilityChange(for: index, tabID: tabID, selectedOriginalIndex: previouslySelected)
+    }
+
+    /// Steps back to the previously-defined time period — one level of "zoom out".
+    /// Each narrowing operation (minimap selection, Hide Lines Above/Below) records
+    /// the prior visible range, so repeated right-clicks walk back through them.
+    /// Once the full log is visible again the tracked history is cleared.
+    func stepBackTimePeriod() {
+        guard let tabID = selectedTabID,
+              let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        guard !openTabs[index].visibleBoundsHistory.isEmpty else {
+            // Nothing tracked: fall back to fully revealing the log if needed.
+            if openTabs[index].isHidingLines { showAllLines() }
+            return
+        }
+        // Keep the currently-selected real line so it stays in view after zoom-out.
+        let previouslySelected = selectedOriginalIndex(in: openTabs[index])
+        let previous = openTabs[index].visibleBoundsHistory.removeLast()
+        openTabs[index].visibleLowerBound = previous.lower
+        openTabs[index].visibleUpperBound = previous.upper
+        // Returning to the full range clears any remaining history.
+        if !openTabs[index].isHidingLines {
+            openTabs[index].visibleBoundsHistory.removeAll()
+        }
+        applyLineVisibilityChange(for: index, tabID: tabID, selectedOriginalIndex: previouslySelected)
+        // Scroll the panes so the previously-selected line stays visible as the
+        // wider range is restored. Deferred so the panes have rebuilt first.
+        if let selected = previouslySelected {
+            DispatchQueue.main.async { [weak self] in
+                self?.syncSelectionFromFilteredIndex(selected)
+            }
+        }
+    }
+
+    /// Pushes the tab's current visible range onto its history stack, so it can be
+    /// restored later by `stepBackTimePeriod`.
+    private func pushVisibleBoundsHistory(for index: Int) {
+        openTabs[index].visibleBoundsHistory.append(
+            VisibleRange(
+                lower: openTabs[index].visibleLowerBound,
+                upper: openTabs[index].visibleUpperBound
+            )
+        )
     }
 
     /// True when the current tab currently has hidden lines (drives the presence of

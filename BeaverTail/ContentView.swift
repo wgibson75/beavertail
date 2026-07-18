@@ -26,6 +26,7 @@ struct ContentView: View {
 
             // TAB STRIP
             if !viewModel.openTabs.isEmpty {
+                HStack(spacing: 0) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 2) {
                         ForEach(viewModel.openTabs) { tab in
@@ -101,6 +102,31 @@ struct ContentView: View {
                     // Belt-and-braces: the scroll content fills the full clip width
                     // so the Spacer always stretches to the right edge.
                     .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                }
+
+                    // Reset control, on the same row as the log tabs and centred
+                    // over the minimap column at the trailing edge. Shown only when
+                    // lines are hidden in the current tab, so it never occupies
+                    // space that belongs to the minimap. Clicking it reveals all
+                    // hidden lines again.
+                    if viewModel.isHidingLinesInCurrentTab {
+                        Button {
+                            viewModel.showAllLines()
+                        } label: {
+                            Image(systemName: "arrow.counterclockwise")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 18, height: 18)
+                                .background(Circle().fill(Color.secondary.opacity(0.12)))
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Show all hidden lines")
+                        // Match the minimap column width so the icon sits centred
+                        // directly above the minimap.
+                        .frame(width: 30)
+                        .transition(.opacity.combined(with: .scale))
+                    }
                 }
                 .background(Color(NSColor.windowBackgroundColor))
                 Divider()

@@ -5,6 +5,14 @@
 
 import AppKit
 
+/// A snapshot of a tab's visible-line range (inclusive original indices, `nil` =
+/// open-ended). Used to track the history of narrowed time periods so a right-click
+/// on the minimap can step back to the previous one.
+struct VisibleRange: Equatable {
+    var lower: Int?
+    var upper: Int?
+}
+
 /// Struct tracking individual workspace parameters per loaded file tab node
 struct LogTab: Identifiable, Equatable, Codable {
     let id: UUID
@@ -52,6 +60,12 @@ struct LogTab: Identifiable, Equatable, Codable {
     /// When the user chooses "Hide All Lines Below", the inclusive original line
     /// index of the last line that should remain visible (`nil` = to the end).
     var visibleUpperBound: Int?
+
+    /// Stack of previously-visible ranges, pushed each time the visible range is
+    /// narrowed (minimap time-period selection, or Hide Lines Above/Below). A
+    /// right-click on the minimap pops the top entry to step back one zoom level.
+    /// Cleared whenever the full log is revealed again. Transient (not persisted).
+    var visibleBoundsHistory: [VisibleRange] = []
 
     /// True when either an "above" or "below" hide is currently in effect.
     var isHidingLines: Bool {

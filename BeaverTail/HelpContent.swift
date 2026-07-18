@@ -90,7 +90,15 @@ enum HelpContent {
                 "Hidden lines are removed from both panes as well as the minimap and Timeline View, so their "
                 + "highlights only cover the range you are looking at. Use both options together to isolate a slice."),
             HelpItem(shortcut: nil, description:
-                "Once lines are hidden, right-click and select 'Reset' to reveal them again.")
+                "You can also mark out a time period directly on the minimap: click and drag over the region you "
+                + "want, then release. Every line outside that period is hidden from both panes."),
+            HelpItem(shortcut: nil, description:
+                "Marked-out time periods are tracked, so you can zoom in repeatedly by dragging within the "
+                + "minimap. Right-click the minimap to step back to the previous time period one level at a time."),
+            HelpItem(shortcut: nil, description:
+                "Once lines are hidden, right-click a line and select 'Reset' — or click the reset icon that "
+                + "appears above the minimap, on the same row as the log tabs — to reveal all hidden lines in both "
+                + "panes again. This also clears the tracked time periods.")
         ]),
         HelpSection(title: "Navigation", items: [
             HelpItem(shortcut: "⌘ + C", description:
@@ -108,8 +116,12 @@ enum HelpContent {
                 + "to show the complete line. Click the entry again while it is scrolling to pause; click again "
                 + "to continue scrolling in the same direction."),
             HelpItem(shortcut: nil, description:
-                "Use the minimap on the right edge to scrub quickly through large files. "
-                + "Coloured bands show where highlight rules match."),
+                "Use the minimap on the right edge to navigate large files: click to jump to a line (snapping to "
+                + "the nearest highlight), or click and drag over a region to mark out a time period and hide "
+                + "everything outside it. Coloured bands show where highlight rules match."),
+            HelpItem(shortcut: nil, description:
+                "Right-click the minimap to step back through previously marked time periods, one level at a time. "
+                + "Moving the pointer over the minimap briefly highlights your current position in the log."),
             HelpItem(shortcut: nil, description:
                 "Toggle Line Numbers, Timestamp Labels; Minimap and Timeline View visibility using the "
                 + "icons in the top right of the application window.")
@@ -153,7 +165,10 @@ enum HelpContent {
             HelpItem(shortcut: nil, description:
                 "Use the Follow button in the filter bar to control auto-scrolling. New logs start with Follow off. "
                 + "Turn it on to make both panes follow new lines to the bottom; turn it off to keep your scroll "
-                + "position while new lines are still appended in the background.")
+                + "position while new lines are still appended in the background."),
+            HelpItem(shortcut: nil, description:
+                "Even with Follow on, scrolling up in the lower pane temporarily pauses following so you can read "
+                + "earlier lines. Scroll back to the bottom to resume following automatically.")
         ]),
         HelpSection(title: "Sessions", items: [
             HelpItem(shortcut: nil, description:
