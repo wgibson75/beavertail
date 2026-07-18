@@ -239,5 +239,8 @@ extension LogViewModel {
         // `index` is an ORIGINAL line index (from `provider.originalIndex(at:)`);
         // convert it into the minimap image's visible-range fraction.
         openTabs[tabIdx].selectedFraction = minimapFraction(forOriginalIndex: index, in: openTabs[tabIdx])
+        // Flash the current-position indicator so a top-pane line click is reflected
+        // by the minimap's glow/shimmer at the new position.
+        triggerMinimapShimmer()
     }
 }
