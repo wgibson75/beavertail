@@ -143,6 +143,10 @@ extension LogViewModel {
             name: topPaneDirectScrollNotification,
             object: topPaneRow(forOriginalIndex: originalIndex, in: openTabs[index])
         )
+        // Flash the current-position indicator so the new position stands out. Covers
+        // bottom-pane filtered-line clicks, mark-block navigation and zoom step-back,
+        // all of which route through here.
+        triggerMinimapShimmer()
     }
 
     func jumpFromMinimap(fraction: CGFloat) {
@@ -218,6 +222,8 @@ extension LogViewModel {
                 allowsHorizontalScroll: isRepeatedMinimapSelection
             )
         )
+        // Flash the current-position indicator so the jumped-to line stands out.
+        triggerMinimapShimmer()
     }
 
     func jumpToFraction(_ fraction: CGFloat) {

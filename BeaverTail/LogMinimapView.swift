@@ -23,6 +23,18 @@ struct LogMinimapView: View {
     /// out a time period rather than a click-to-navigate.
     private let rangeSelectThreshold: CGFloat = 5
 
+    /// Plays the momentary glow/shimmer of the current-position indicator: flash to
+    /// full glow immediately, then let it gently fade back out. Shared by the mouse
+    /// hover and the programmatic position-change triggers.
+    private func playShimmer() {
+        withAnimation(.easeOut(duration: 0.12)) {
+            glowIntensity = 1.0
+        }
+        withAnimation(.easeIn(duration: 0.9).delay(0.12)) {
+            glowIntensity = 0.0
+        }
+    }
+
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .topLeading) {
@@ -83,13 +95,13 @@ struct LogMinimapView: View {
             .contentShape(Rectangle())
             .onHover { isInside in
                 guard isInside else { return }
-                // Flash to full glow immediately, then let it gently fade back out.
-                withAnimation(.easeOut(duration: 0.12)) {
-                    glowIntensity = 1.0
-                }
-                withAnimation(.easeIn(duration: 0.9).delay(0.12)) {
-                    glowIntensity = 0.0
-                }
+                playShimmer()
+            }
+            // Also shimmer when the position changes programmatically — mark-block
+            // navigation (up/down arrows) and left-click jumps on the minimap both
+            // bump this trigger so the new current position momentarily glows.
+            .onChange(of: viewModel.minimapShimmerTrigger) { _, _ in
+                playShimmer()
             }
             .gesture(
                 DragGesture(minimumDistance: 0)

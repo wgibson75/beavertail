@@ -111,6 +111,17 @@ class LogViewModel: ObservableObject {
         }
     }
     @Published var isScrubbingMinimap: Bool = false
+    /// Incremented whenever the minimap's current-position indicator should play its
+    /// momentary glow/shimmer animation as a result of a programmatic position change
+    /// (mark-block navigation, or a left-click jump on the minimap). The minimap view
+    /// observes this and runs the same animation it uses on mouse hover.
+    @Published var minimapShimmerTrigger: Int = 0
+
+    /// Requests the minimap current-position indicator to play its glow/shimmer.
+    func triggerMinimapShimmer() {
+        minimapShimmerTrigger &+= 1
+    }
+
     let progressTracker = LogProgressTracker()
 
     @Published var currentFilterPattern: String = ""
