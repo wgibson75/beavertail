@@ -32,6 +32,13 @@ let bottomPaneScrollToRowNotification    = Notification.Name("BeaverTailBottomPa
 /// and is selected (Int row payload via `object:`). Used after "Hide Lines Above".
 let topPaneScrollToRowNotification       = Notification.Name("BeaverTailTopPaneScrollToRow")
 
+/// Height (in pixels/buckets) of the rendered minimap image. Shared between the
+/// image generation (`generateMinimapData`) and the current-position indicator
+/// mapping (`minimapFraction`) so the indicator lands on the exact pixel a line's
+/// highlight is drawn into — critical when very few lines are visible and each
+/// line maps to a single, bottom-of-band pixel.
+let minimapImageHeight = 1500
+
 enum FilterDisplayMode: String, CaseIterable, Identifiable {
     case marksAndMatches = "Marks & matches"
     case marks = "Marks"
@@ -1118,7 +1125,7 @@ class LogViewModel: ObservableObject {
         let rangeEnd = vBounds.map { $0.upper + 1 } ?? totalLines
         let rangeSpan = max(0, rangeEnd - rangeStart)
         minimapTasks[tabID] = Task.detached(priority: .utility) { [weak self] in
-            let imgWidth = 30, imgHeight = 1500
+            let imgWidth = 30, imgHeight = minimapImageHeight
             let colorSpace = CGColorSpaceCreateDeviceRGB()
             guard rangeSpan > 0, let ctx = CGContext(
                 data: nil, width: imgWidth, height: imgHeight,

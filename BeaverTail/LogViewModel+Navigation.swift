@@ -33,10 +33,35 @@ extension LogViewModel {
 
     /// Converts an original line index to a 0...1 fraction of the minimap/timeline
     /// image, which spans only the currently-visible original-index range.
+    ///
+    /// This returns the centre of the exact pixel the minimap image draws the line
+    /// into. The image places visible line `r` in bucket `ceil((r+1)·H/N) - 1`
+    /// (where `H` is the image height and `N` the visible count — see
+    /// `generateMinimapData`), which sits at the bottom edge of the line's band, not
+    /// its middle. Matching that bucket keeps the hover indicator exactly on the
+    /// highlight even when only a handful of lines are visible; for large logs it is
+    /// identical to the drawn pixel and so remains correct there too.
     func minimapFraction(forOriginalIndex originalIndex: Int, in tab: LogTab) -> CGFloat {
         let span = tab.lineCount
-        guard span > 1 else { return 0 }
-        return max(0, min(1, CGFloat(originalIndex - visibleLowerBound(of: tab)) / CGFloat(span - 1)))
+        guard span > 0 else { return 0 }
+        let relative = max(0, min(span - 1, originalIndex - visibleLowerBound(of: tab)))
+        let height = minimapImageHeight
+        let bucket = min(height - 1,
+                         Int(ceil(Double(relative + 1) * Double(height) / Double(span))) - 1)
+        return max(0, min(1, (CGFloat(bucket) + 0.5) / CGFloat(height)))
+    }
+
+    /// Converts a 0...1 minimap/timeline click fraction to an original line index,
+    /// using the SAME `visibleCount`-band bucketing as the rendered image so a click
+    /// on a coloured highlight resolves to exactly the line that band represents.
+    /// The result is clamped to the visible range.
+    func originalIndex(forFraction fraction: CGFloat, in tab: LogTab) -> Int {
+        let span = tab.lineCount
+        let lower = visibleLowerBound(of: tab)
+        guard span > 0 else { return lower }
+        let clamped = max(0, min(1, fraction))
+        let offset = min(span - 1, Int(clamped * CGFloat(span)))
+        return lower + offset
     }
 
     /// Inverse of `minimapFraction`: maps the tab's stored `selectedFraction` back to
@@ -46,7 +71,8 @@ extension LogViewModel {
         guard let fraction = tab.selectedFraction else { return nil }
         let span = tab.lineCount
         guard span > 0 else { return nil }
-        let offset = Int((fraction * CGFloat(span - 1)).rounded())
+        // Inverse of the centred `(r + 0.5)/N` mapping: floor(fraction * N).
+        let offset = min(span - 1, max(0, Int(fraction * CGFloat(span))))
         return visibleLowerBound(of: tab) + offset
     }
 
@@ -57,9 +83,8 @@ extension LogViewModel {
         guard openTabs[index].content != nil else { return }
 
         // The timeline image spans only the visible range, so map the click
-        // fraction into original-line space starting at the visible lower bound.
-        let rangeStart = visibleLowerBound(of: openTabs[index])
-        let exactLine = rangeStart + Int(fraction * CGFloat(totalCount - 1))
+        // fraction into original-line space using the image's band bucketing.
+        let exactLine = originalIndex(forFraction: fraction, in: openTabs[index])
 
         let hasMarks = !openTabs[index].markedIndices.isEmpty
         let mappedRuleIndex = ruleIndex == -1 ? 0 : (hasMarks ? ruleIndex + 1 : ruleIndex)
@@ -130,10 +155,12 @@ extension LogViewModel {
         // [rangeStart, rangeEnd). Map the click fraction into ORIGINAL-line space so
         // it is comparable with the highlight-match caches (which are stored as
         // original indices) — otherwise, when lines are hidden above the selection,
-        // a click on a coloured highlight snaps to the wrong line.
+        // a click on a coloured highlight snaps to the wrong line. The mapping uses
+        // the same band bucketing as the rendered image so the clicked highlight
+        // resolves to exactly the line that band represents.
         let rangeStart = visibleLowerBound(of: openTabs[index])
         let rangeEndInclusive = rangeStart + totalCount - 1
-        let exactLine = rangeStart + Int(clampedFraction * CGFloat(totalCount - 1))
+        let exactLine = originalIndex(forFraction: clampedFraction, in: openTabs[index])
         var finalExactLine = exactLine
 
         let cache = openTabs[index].highlightMatches

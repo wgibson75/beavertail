@@ -1135,7 +1135,9 @@ struct NativeLogViewer: NSViewRepresentable {
         // Only auto-scroll the top pane if the user is actively dragging their cursor across the minimap bar!
         if !isFiltered, isMinimapActiveDrive, let fraction = selectedFraction,
            provider.count > 0 {
-            let targetRow = Int(CGFloat(provider.count - 1) * fraction)
+            // Use the same band bucketing as the minimap image (floor(fraction · N))
+            // so the drag-preview row matches where a click ultimately lands.
+            let targetRow = min(provider.count - 1, Int(CGFloat(provider.count) * fraction))
             if targetRow >= 0, targetRow < tableView.numberOfRows {
                 DispatchQueue.main.async {
                     if tableView.selectedRow != targetRow {
