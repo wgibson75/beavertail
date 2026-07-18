@@ -18,6 +18,11 @@ struct TopPaneDirectScrollRequest {
 // Distinct notification streams for targeting view scroll adjustments independently
 let topPaneScrollToBottomNotification    = Notification.Name("BeaverTailTopPaneScrollToBottom")
 let bottomPaneScrollToBottomNotification = Notification.Name("BeaverTailBottomPaneScrollToBottom")
+/// Passed as the `object` of a scroll-to-bottom notification to force the pane to
+/// the bottom and clear any user-driven "scrolled up" follow suspension. Used when
+/// Follow is toggled on and when a filter completes. Live-tail appends post with a
+/// nil object instead, so a user who has scrolled up is not yanked back down.
+let forceScrollToBottomMarker = "BeaverTailForceScrollToBottom"
 /// Posted to scroll the bottom pane back to the top (first matching lines) without
 /// selecting a row. Used when a filter is applied while Follow is disabled.
 let bottomPaneScrollToTopNotification    = Notification.Name("BeaverTailBottomPaneScrollToTop")
@@ -115,8 +120,8 @@ class LogViewModel: ObservableObject {
                 flushSaveLoadedTabsSession()
                 if followTail {
                     DispatchQueue.main.async {
-                        NotificationCenter.default.post(name: topPaneScrollToBottomNotification, object: nil)
-                        NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
+                        NotificationCenter.default.post(name: topPaneScrollToBottomNotification, object: forceScrollToBottomMarker)
+                        NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: forceScrollToBottomMarker)
                     }
                 }
             }
@@ -829,7 +834,7 @@ class LogViewModel: ObservableObject {
                 // When Follow is enabled, jump to the newest matches at the bottom.
                 // Otherwise, show the first set of matching lines at the top.
                 if self.followTail {
-                    NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
+                    NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: forceScrollToBottomMarker)
                 } else {
                     NotificationCenter.default.post(name: bottomPaneScrollToTopNotification, object: nil)
                 }

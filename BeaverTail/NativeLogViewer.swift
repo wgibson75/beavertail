@@ -23,6 +23,21 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
     /// the "Show All Lines" context-menu item).
     var isHidingLines: Bool = false
     var hasMarks: Bool = false
+    /// Set when the user has scrolled up away from the bottom while Follow is on, so
+    /// live-tail auto-scroll stops yanking the view back to the newest line. Cleared
+    /// automatically when the user scrolls back to the bottom (see the live-scroll
+    /// observers in viewDidMoveToWindow) or when a forced scroll-to-bottom occurs.
+    var followSuspendedByScroll: Bool = false
+    /// Whether the last row is currently fully visible at the bottom of the pane.
+    /// Used to decide whether user scrolling should suspend or resume follow.
+    var isScrolledToBottom: Bool {
+        let rowCount = numberOfRows
+        guard rowCount > 0 else { return true }
+        let lastRowRect = rect(ofRow: rowCount - 1)
+        // Purely vertical test (rows can be far wider than the viewport when
+        // horizontally scrolled, so a full-rect containment check is unreliable).
+        return visibleRect.maxY >= lastRowRect.maxY - 2.0
+    }
     var referenceTimestamp: Date? {
         didSet {
             if activeTimestampRow >= 0 && showTimestampBubble {
@@ -132,6 +147,24 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
                     queue: .main
                 ) { [weak self] _ in self?.updatePopoverPosition() }
             )
+            // Follow-tail suspension: live-scroll notifications fire only for
+            // user-initiated scrolling (wheel/trackpad/scroller), never for
+            // programmatic scrolls or content growth. So they let us tell when the
+            // user has deliberately scrolled up (suspend follow) versus scrolled
+            // back to the bottom (resume follow), without breaking active following.
+            for name in [NSScrollView.didLiveScrollNotification,
+                         NSScrollView.didEndLiveScrollNotification] {
+                layoutObservers.append(
+                    NotificationCenter.default.addObserver(
+                        forName: name,
+                        object: scrollView,
+                        queue: .main
+                    ) { [weak self] _ in
+                        guard let self = self else { return }
+                        self.followSuspendedByScroll = !self.isScrolledToBottom
+                    }
+                )
+            }
         }
         self.postsFrameChangedNotifications = true
         layoutObservers.append(
@@ -987,7 +1020,18 @@ struct NativeLogViewer: NSViewRepresentable {
             forName: tailScrollNotificationName,
             object: nil,
             queue: .main
-        ) { _ in
+        ) { [weak tableView] notification in
+            guard let tableView = tableView else { return }
+            // A "force" post (Follow toggled on / filter completed) always snaps to
+            // the bottom and clears any user scroll-up suspension. A plain live-tail
+            // append post (nil object) is ignored while the user has scrolled up, so
+            // they can read older lines without being pulled back to the newest line.
+            let force = (notification.object as? String) == forceScrollToBottomMarker
+            if force {
+                tableView.followSuspendedByScroll = false
+            } else if tableView.followSuspendedByScroll {
+                return
+            }
             let lastRow = tableView.numberOfRows - 1
             if lastRow >= 0 {
                 DispatchQueue.main.async {
