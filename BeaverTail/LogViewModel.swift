@@ -37,7 +37,7 @@ let topPaneScrollToRowNotification       = Notification.Name("BeaverTailTopPaneS
 /// mapping (`minimapFraction`) so the indicator lands on the exact pixel a line's
 /// highlight is drawn into — critical when very few lines are visible and each
 /// line maps to a single, bottom-of-band pixel.
-let minimapImageHeight = 1500
+nonisolated let minimapImageHeight = 1500
 
 enum FilterDisplayMode: String, CaseIterable, Identifiable {
     case marksAndMatches = "Marks & matches"
