@@ -109,7 +109,10 @@ class LogViewModel: ObservableObject {
             guard !isSyncingTabState else { return }
             if let i = openTabs.firstIndex(where: { $0.id == selectedTabID }) {
                 openTabs[i].followTail = followTail
-                saveLoadedTabsSession()
+                // Persist immediately (not debounced): toggling Follow is an
+                // infrequent, discrete action, and flushing now guarantees the
+                // state survives even if the app is closed right afterwards.
+                flushSaveLoadedTabsSession()
                 if followTail {
                     DispatchQueue.main.async {
                         NotificationCenter.default.post(name: topPaneScrollToBottomNotification, object: nil)
@@ -323,8 +326,12 @@ class LogViewModel: ObservableObject {
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
-        ) { _ in
-            Task { @MainActor [weak self] in
+        ) { [weak self] _ in
+            // The observer fires on the main thread during termination. Flush
+            // synchronously (not via Task) so the debounced session — including the
+            // per-tab Follow state — is written to disk before the concurrency
+            // runtime shuts down and cancels the pending debounce task.
+            MainActor.assumeIsolated {
                 self?.flushSaveLoadedTabsSession()
             }
         }
