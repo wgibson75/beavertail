@@ -82,6 +82,26 @@ extension LogViewModel {
                 return (start, end)
             }
 
+            // Determine, per active rule, the lines it *actually* colours. When a
+            // line matches several rules, only the highest-priority rule (earliest
+            // in `activeRules`) colours it — matching the row renderer, which stops
+            // at the first matching rule. Each rule therefore only "owns" lines not
+            // already claimed by a higher-priority rule, so a rule whose matches are
+            // entirely covered by higher-priority rules (e.g. "mc-running" when
+            // "mc-run" is above it) owns no lines and gets no timeline column.
+            var claimedLines = Set<Int>()
+            var effectiveMatches: [[Int]] = Array(repeating: [], count: activeRules.count)
+            for (i, cacheIdx) in mappedCacheIndices.enumerated() {
+                let matches = cache[cacheIdx]
+                var owned: [Int] = []
+                owned.reserveCapacity(matches.count)
+                // `matches` is sorted, so `owned` stays sorted for the binary search.
+                for line in matches where claimedLines.insert(line).inserted {
+                    owned.append(line)
+                }
+                effectiveMatches[i] = owned
+            }
+
             var newTimelineMatches: [[Int]] = Array(repeating: [], count: activeRules.count)
             var bucketMatchCounts = Array(repeating: Array(repeating: 0, count: activeRules.count), count: imgHeight)
             var bucketSampledCounts = [Int](repeating: 0, count: imgHeight)
@@ -98,8 +118,8 @@ extension LogViewModel {
                     if countInBucket == 0 { continue }
 
                     var matchCounts = [Int](repeating: 0, count: activeRules.count)
-                    for (i, cacheIdx) in mappedCacheIndices.enumerated() {
-                        let matches = cache[cacheIdx]
+                    for i in mappedCacheIndices.indices {
+                        let matches = effectiveMatches[i]
                         var count = 0
                         var firstHitLine: Int?
                         // Fast intersection for this bucket
@@ -124,8 +144,8 @@ extension LogViewModel {
                     if countInBucket == 0 { continue }
 
                     var matchCounts = [Int](repeating: 0, count: activeRules.count)
-                    for (i, cacheIdx) in mappedCacheIndices.enumerated() {
-                        let matches = cache[cacheIdx]
+                    for i in mappedCacheIndices.indices {
+                        let matches = effectiveMatches[i]
                         let lower = bSearch(matches, bucketStart)
                         let upper = bSearch(matches, bucketEnd)
                         let count = upper - lower
