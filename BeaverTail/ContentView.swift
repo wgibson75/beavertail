@@ -31,6 +31,7 @@ struct ContentView: View {
                     HStack(spacing: 2) {
                         ForEach(viewModel.openTabs) { tab in
                             let isSelected = viewModel.selectedTabID == tab.id
+                            let isDragging = draggingTabID == tab.id
                             HStack(spacing: 5) {
                                 Text(tab.name)
                                     .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
@@ -45,18 +46,41 @@ struct ContentView: View {
                                         .foregroundStyle(.tertiary)
                                 }
                                 .buttonStyle(.plain)
+                                .opacity(isDragging ? 0 : 1)
                             }
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
                             .background {
-                                if isSelected {
-                                    RoundedRectangle(cornerRadius: 5)
-                                        .fill(Color(NSColor.controlBackgroundColor))
-                                        .shadow(color: .black.opacity(0.08), radius: 1, y: 1)
+                                ZStack {
+                                    // Selected-tab card (hidden while this tab is
+                                    // being dragged so the origin reads as a gap).
+                                    if isSelected && !isDragging {
+                                        RoundedRectangle(cornerRadius: 5)
+                                            .fill(Color(NSColor.controlBackgroundColor))
+                                            .shadow(color: .black.opacity(0.08), radius: 1, y: 1)
+                                    }
+                                    // Placeholder "slot" shown at the dragged tab's
+                                    // current position: a soft, dashed outline that
+                                    // clearly marks where the tab will land.
+                                    if isDragging {
+                                        RoundedRectangle(cornerRadius: 5)
+                                            .fill(Color.accentColor.opacity(0.10))
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 5)
+                                                    .strokeBorder(
+                                                        Color.accentColor.opacity(0.55),
+                                                        style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                                                    )
+                                            )
+                                    }
                                 }
                             }
                             .contentShape(Rectangle())
-                            .opacity(draggingTabID == tab.id ? 0.4 : 1.0)
+                            // Collapse the dragged tab into a slim placeholder so the
+                            // surrounding tabs visibly open up a gap for it.
+                            .opacity(isDragging ? 0.5 : 1.0)
+                            .scaleEffect(isDragging ? 0.92 : 1.0, anchor: .center)
+                            .animation(.spring(response: 0.28, dampingFraction: 0.72), value: isDragging)
                             .onTapGesture {
                                 viewModel.selectedTabID = tab.id
                                 viewModel.triggerLazyLoadForTab(id: tab.id)
@@ -65,7 +89,9 @@ struct ContentView: View {
                                 draggingTabID = tab.id
                                 return NSItemProvider(object: tab.id.uuidString as NSString)
                             } preview: {
-                                Color.clear
+                                // A floating "lifted" card that follows the pointer,
+                                // so the user can clearly see the tab being moved.
+                                TabDragPreview(name: tab.name)
                             }
                             .onDrop(
                                 of: [UTType.plainText],
@@ -87,7 +113,7 @@ struct ContentView: View {
                                 guard let draggingID = draggingTabID,
                                       let fromIndex = viewModel.openTabs.firstIndex(where: { $0.id == draggingID })
                                 else { draggingTabID = nil; return false }
-                                withAnimation(.easeInOut(duration: 0.18)) {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.74)) {
                                     viewModel.openTabs.move(
                                         fromOffsets: IndexSet(integer: fromIndex),
                                         toOffset: viewModel.openTabs.count
@@ -768,7 +794,7 @@ private struct TabDropDelegate: DropDelegate {
             let toIndex   = tabs.firstIndex(where: { $0.id == targetTab.id })
         else { return }
 
-        withAnimation(.easeInOut(duration: 0.18)) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.74)) {
             tabs.move(
                 fromOffsets: IndexSet(integer: fromIndex),
                 toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
@@ -781,10 +807,37 @@ private struct TabDropDelegate: DropDelegate {
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        draggingTabID = nil
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.74)) {
+            draggingTabID = nil
+        }
         return true
     }
 }
+
+/// The floating card shown under the pointer while a log tab is being dragged,
+/// giving a tactile "lifted" feel instead of the tab simply vanishing.
+private struct TabDragPreview: View {
+    let name: String
+
+    var body: some View {
+        Text(name)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(Color.primary)
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color(NSColor.controlBackgroundColor))
+                    .shadow(color: .black.opacity(0.28), radius: 6, y: 2)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1)
+            )
+    }
+}
+
 // Wraps a custom NSTextField subclass to provide reliable focus/blur/change
 // callbacks inside AppKit-backed containers such as VSplitView.
 // becomeFirstResponder fires on every click, unlike controlTextDidBeginEditing
