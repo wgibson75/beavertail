@@ -105,6 +105,21 @@ struct LogTab: Identifiable, Equatable, Codable {
         return content.count
     }
 
+    /// Total number of lines in the loaded log, ignoring any line hiding. Falls
+    /// back to the status-line count when no content is loaded.
+    var totalLineCount: Int {
+        content?.count ?? statusLines.count
+    }
+
+    /// When lines are hidden, the number of lines hidden above and below the
+    /// current visible range. Returns `nil` when nothing is hidden.
+    var hiddenLineCounts: (above: Int, below: Int)? {
+        guard let content, let bounds = visibleBounds(for: content.count) else { return nil }
+        let above = bounds.lower
+        let below = (content.count - 1) - bounds.upper
+        return (above, below)
+    }
+
     /// Provider for the filtered (bottom) pane — decodes matched lines on demand.
     /// When lines are hidden, the provider restricts itself to matches inside the
     /// visible range so hidden lines can never appear in the bottom pane.

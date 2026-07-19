@@ -96,6 +96,11 @@ class LogViewModel: ObservableObject {
 
     var lineProvider: LineProvider { currentTab?.lineProvider ?? ArrayLineProvider(lines: []) }
     var lineCount: Int { currentTab?.lineCount ?? 0 }
+    /// Total number of lines in the current tab's log, ignoring any line hiding.
+    var totalLineCount: Int { currentTab?.totalLineCount ?? 0 }
+    /// When lines are hidden in the current tab, the number hidden above and below
+    /// the visible range (else `nil`).
+    var hiddenLineCounts: (above: Int, below: Int)? { currentTab?.hiddenLineCounts }
     var filteredProvider: LineProvider { currentTab?.filteredProvider ?? ArrayLineProvider(lines: []) }
     var filteredCount: Int { currentTab?.filteredCount ?? 0 }
     var selectedFraction: CGFloat? { currentTab?.selectedFraction ?? nil }

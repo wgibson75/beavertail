@@ -338,10 +338,28 @@ struct ContentView: View {
 
 private struct TopPaneView: View {
     @ObservedObject var viewModel: LogViewModel
+
+    /// The line-count summary shown at the top-left of the upper pane. When lines
+    /// are hidden it is extended to report how many lines are shown and how many
+    /// are hidden above/below. A hidden-above/below clause is omitted when its
+    /// count is zero. Numbers use a thousands separator (e.g. "1,000,000").
+    private var lineCountSummary: String {
+        let total = viewModel.totalLineCount
+        guard let hidden = viewModel.hiddenLineCounts, hidden.above + hidden.below > 0 else {
+            return "\(total.formatted()) lines"
+        }
+        let shown = viewModel.lineCount
+        var clauses: [String] = []
+        if hidden.above > 0 { clauses.append("\(hidden.above.formatted()) hidden above") }
+        if hidden.below > 0 { clauses.append("\(hidden.below.formatted()) hidden below") }
+        return "\(shown.formatted()) out of \(total.formatted()) lines "
+            + "(\(clauses.joined(separator: ", ")))"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Label("\(viewModel.lineCount) lines", systemImage: "doc.text")
+                Label(lineCountSummary, systemImage: "doc.text")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
