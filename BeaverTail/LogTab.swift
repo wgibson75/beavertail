@@ -52,6 +52,10 @@ struct LogTab: Identifiable, Equatable, Codable {
     var timelineMatches: [[Int]] = []
     var timelineActiveRuleIDs: [UUID] = []
     var isGeneratingTimeline: Bool = false
+    /// True while the highlight-rule scan is running against the log (after the
+    /// file finishes loading, before match results are ready). Drives the
+    /// "Processing highlight filters…" message in the Timeline pane.
+    var isProcessingHighlights: Bool = false
     var isCurrentlyStreaming: Bool = false
 
     /// When the user chooses "Hide All Lines Above", the inclusive original line
@@ -171,8 +175,7 @@ struct LogTab: Identifiable, Equatable, Codable {
         timelineActiveRuleIDs: [UUID] = [],
         isGeneratingTimeline: Bool = false,
         isCurrentlyStreaming: Bool = false,
-        filterPattern: String = "",
-        isCaseInsensitive: Bool = true,
+        filterPattern: String = "",        isCaseInsensitive: Bool = true,
         followTail: Bool = true
     ) {
         self.id = id

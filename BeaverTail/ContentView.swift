@@ -640,9 +640,16 @@ private struct TimelinePaneView: View {
                                                 }
                                                 .frame(width: 0, height: 0)
                                             }
-                                        } else if viewModel.currentTab?.isGeneratingTimeline == true {
-                                            Color.clear
-                                                .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+                                        } else if viewModel.currentTab?.isProcessingHighlights == true
+                                                    || viewModel.currentTab?.isGeneratingTimeline == true {
+                                            VStack(spacing: 10) {
+                                                ProgressView()
+                                                    .controlSize(.small)
+                                                Text("Processing highlight filters…")
+                                                    .font(.callout)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            .frame(maxWidth: .infinity, minHeight: geometry.size.height)
                                         } else if viewModel.highlightRules.isEmpty && !hasMarks {
                                             VStack(spacing: 8) {
                                                 Image(systemName: "paintbrush")

@@ -1078,6 +1078,7 @@ class LogViewModel: ObservableObject {
                     self.openTabs[i].activeRuleIDs = []
                     self.openTabs[i].activeRuleSignatures = []
                     self.openTabs[i].timelineActiveRuleIDs = []
+                    self.openTabs[i].isProcessingHighlights = false
                     self.fullyScannedRuleIDsByTab[tabID] = []
                     self.generateMinimapData(for: tabID)
                     self.generateTimelineData(for: tabID)
@@ -1112,6 +1113,10 @@ class LogViewModel: ObservableObject {
         openTabs[index].activeRuleSignatures = newRuleSignatures
         openTabs[index].activeRuleIDs = newRuleIDs
         openTabs[index].timelineActiveRuleIDs = openTabs[index].timelineActiveRuleIDs.filter { newRuleIDs.contains($0) }
+
+        // Flag that a highlight scan is (about to be) running so the Timeline pane can
+        // show a "Processing highlight filters…" message until results are ready.
+        openTabs[index].isProcessingHighlights = !matchersToRun.isEmpty
 
         if matchersToRun.isEmpty {
             self.generateMinimapData(for: tabID)
@@ -1200,6 +1205,9 @@ class LogViewModel: ObservableObject {
                             scanned.insert(newRuleIDs[m.globalIndex])
                         }
                         self.fullyScannedRuleIDsByTab[tabID] = scanned
+                        // Scan complete — clear the "processing" flag so the Timeline
+                        // pane shows the entries (or "No Highlight Rules matched").
+                        self.openTabs[i].isProcessingHighlights = false
                     }
 
                     // Display headings instantly
