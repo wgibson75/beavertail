@@ -72,7 +72,7 @@ enum UpdateService {
 // MARK: - Release model
 
 /// Subset of the GitHub release JSON that we care about.
-private struct ReleaseInfo: Decodable {
+private nonisolated struct ReleaseInfo: Decodable {
     let tagName: String
     let htmlURL: String
     let assets: [ReleaseAsset]
@@ -92,7 +92,7 @@ private struct ReleaseInfo: Decodable {
 }
 
 /// A single downloadable file attached to a GitHub release.
-private struct ReleaseAsset: Decodable {
+private nonisolated struct ReleaseAsset: Decodable {
     let name: String
     let browserDownloadURL: String
 
