@@ -153,11 +153,24 @@ enum HelpContent {
                 + "Marks appear in their own far-left column when present."),
             HelpItem(shortcut: nil, description:
                 "Hover over timeline column headers to view full regex patterns. "
-                + "Highlight rule columns are positioned from highest priority (left) to lowest (right)."),
+                + "Highlight rule columns are positioned from highest priority (left) to lowest (right). "
+                + "Headers glow in their column's colour when hovered to show they are clickable."),
+            HelpItem(shortcut: nil, description:
+                "Click a column header to jump to the next matching entry for that filter. The lower pane "
+                + "scrolls down to centre the entry, the upper pane and minimap jump to the same line, and the "
+                + "entry briefly glows. Clicking the same header again steps down through its entries, looping "
+                + "back to the first after the last."),
+            HelpItem(shortcut: nil, description:
+                "Switching to a different header always navigates downward to that filter's next entry from your "
+                + "current position in the lower pane — it never jumps back to the top. Scrolling the lower pane "
+                + "changes where the next click resumes from."),
+            HelpItem(shortcut: nil, description:
+                "Right-click a column header to go back to the previous entry for that filter (looping to the "
+                + "last after the first)."),
             HelpItem(shortcut: nil, description:
                 "Click any coloured mark in the Timeline View to snap the upper pane directly to the corresponding "
-                + "log line. Selecting the same timeline entry again will horizontally scroll any long line in the "
-                + "top pane.")
+                + "log line and briefly glow that entry. Selecting the same timeline entry again will horizontally "
+                + "scroll any long line in the top pane.")
         ]),
         HelpSection(title: "Live Tailing", items: [
             HelpItem(shortcut: nil, description:

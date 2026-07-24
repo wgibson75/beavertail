@@ -15,26 +15,12 @@ extension LogViewModel {
     }
 
     func flushSaveLoadedTabsSession() {
-        struct SavedTabMetadata: Codable {
-            let bookmarkBase64: String
-            let filterPattern: String
-            let isSelected: Bool
-            let markedIndices: [Int]?
-            let isCaseInsensitive: Bool?
-            let followTail: Bool?
-        }
         var serializedMetadata: [SavedTabMetadata] = []
         for tab in openTabs {
             do {
-                // Use minimal options — security-scoped bookmarks require App Sandbox
-                // which this app does not use.
-                let bm = try tab.fileURL.bookmarkData(
-                    options: [],
-                    includingResourceValuesForKeys: nil,
-                    relativeTo: nil
-                )
+                let bookmarkBase64 = try SessionStore.makeBookmark(for: tab.fileURL)
                 serializedMetadata.append(SavedTabMetadata(
-                    bookmarkBase64: bm.base64EncodedString(),
+                    bookmarkBase64: bookmarkBase64,
                     filterPattern: tab.filterPattern,
                     isSelected: tab.id == selectedTabID,
                     markedIndices: Array(tab.markedIndices),
@@ -43,8 +29,7 @@ extension LogViewModel {
                 ))
             } catch { print("Failed to save bookmark for \(tab.name): \(error)") }
         }
-        if let data = try? JSONEncoder().encode(serializedMetadata),
-           let string = String(data: data, encoding: .utf8) {
+        if let string = SessionStore.encode(serializedMetadata) {
             sessionBookmarksData = string
             // Force an immediate UserDefaults flush so the data is on disk
             // before the process exits (async batching would lose it otherwise).
@@ -53,65 +38,41 @@ extension LogViewModel {
     }
 
     func loadSavedTabsSession() {
-        struct SavedTabMetadata: Codable {
-            let bookmarkBase64: String
-            let filterPattern: String
-            let isSelected: Bool?   // nil for entries saved before this field existed
-            let markedIndices: [Int]?
-            let isCaseInsensitive: Bool?
-            let followTail: Bool?
-        }
-        guard !sessionBookmarksData.isEmpty,
-              let data = sessionBookmarksData.data(using: .utf8),
-              let metadataArray = try? JSONDecoder().decode([SavedTabMetadata].self, from: data)
-        else { return }
+        let metadataArray = SessionStore.decode(from: sessionBookmarksData)
+        guard !metadataArray.isEmpty else { return }
 
         var restoredSelectedID: UUID?
 
         for metadata in metadataArray {
-            guard let bookmarkData = Data(base64Encoded: metadata.bookmarkBase64) else { continue }
-            do {
-                var isStale = false
-                let restoredURL = try URL(
-                    resolvingBookmarkData: bookmarkData,
-                    options: [],
-                    relativeTo: nil,
-                    bookmarkDataIsStale: &isStale
-                )
+            guard let restoredURL = SessionStore.resolveBookmark(metadata.bookmarkBase64) else {
+                print("Session restore: bookmark unresolved or file missing, skipping")
+                continue
+            }
 
-                // Skip if the file no longer exists on disk
-                guard FileManager.default.fileExists(atPath: restoredURL.path) else {
-                    print("Session restore: file no longer exists, skipping – \(restoredURL.lastPathComponent)")
-                    continue
-                }
+            guard !openTabs.contains(where: { $0.fileURL == restoredURL }) else { continue }
 
-                guard !openTabs.contains(where: { $0.fileURL == restoredURL }) else { continue }
+            let newID = UUID()
+            let lazyTab = LogTab(
+                id: newID,
+                name: restoredURL.lastPathComponent,
+                fileURL: restoredURL,
+                content: nil,
+                statusLines: [],
+                filteredIndices: [],
+                markedIndices: Set(metadata.markedIndices ?? []),
+                displayedIndices: (metadata.markedIndices ?? []).sorted(),
+                filterMessage: nil,
+                selectedFraction: nil,
+                minimapImage: nil,
+                isCurrentlyStreaming: false,
+                filterPattern: metadata.filterPattern,
+                isCaseInsensitive: metadata.isCaseInsensitive ?? true,
+                followTail: metadata.followTail ?? true
+            )
+            openTabs.append(lazyTab)
 
-                let newID = UUID()
-                let lazyTab = LogTab(
-                    id: newID,
-                    name: restoredURL.lastPathComponent,
-                    fileURL: restoredURL,
-                    content: nil,
-                    statusLines: [],
-                    filteredIndices: [],
-                    markedIndices: Set(metadata.markedIndices ?? []),
-                    displayedIndices: (metadata.markedIndices ?? []).sorted(),
-                    filterMessage: nil,
-                    selectedFraction: nil,
-                    minimapImage: nil,
-                    isCurrentlyStreaming: false,
-                    filterPattern: metadata.filterPattern,
-                    isCaseInsensitive: metadata.isCaseInsensitive ?? true,
-                    followTail: metadata.followTail ?? true
-                )
-                openTabs.append(lazyTab)
-
-                if metadata.isSelected == true {
-                    restoredSelectedID = newID
-                }
-            } catch {
-                print("Session restore failed: \(error.localizedDescription)")
+            if metadata.isSelected == true {
+                restoredSelectedID = newID
             }
         }
 

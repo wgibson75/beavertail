@@ -25,45 +25,14 @@ extension LogViewModel {
         panel.canCreateDirectories = true
         panel.allowedContentTypes = [.plainText]
         panel.title = "Save Filtered Lines"
-        panel.nameFieldStringValue = Self.suggestedFilteredExportName(for: tab)
+        panel.nameFieldStringValue = FileExportService.suggestedFilteredExportName(forTabNamed: tab.name)
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
+        // Hand the disk I/O off to the service layer — the view model only
+        // orchestrates the user-facing save panel.
         Task.detached(priority: .userInitiated) {
-            Self.writeLines(from: provider, count: count, to: url)
-        }
-    }
-
-    /// Suggests a default export filename derived from the tab's name, e.g.
-    /// `server.log` → `server-filtered.txt`.
-    nonisolated private static func suggestedFilteredExportName(for tab: LogTab) -> String {
-        let base = (tab.name as NSString).deletingPathExtension
-        let cleanBase = base.isEmpty ? "log" : base
-        return "\(cleanBase)-filtered.txt"
-    }
-
-    /// Streams `count` lines from `provider` to `url`, batching writes so peak
-    /// memory stays bounded regardless of how many lines matched the filter.
-    nonisolated private static func writeLines(from provider: LineProvider, count: Int, to url: URL) {
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-        guard let handle = try? FileHandle(forWritingTo: url) else { return }
-        defer { try? handle.close() }
-
-        let flushThreshold = 1 << 20 // ~1 MB
-        var buffer = Data()
-        buffer.reserveCapacity(flushThreshold + 4096)
-        let newline = Data([0x0A])
-
-        for i in 0..<count {
-            buffer.append(Data(provider.line(at: i).utf8))
-            buffer.append(newline)
-            if buffer.count >= flushThreshold {
-                try? handle.write(contentsOf: buffer)
-                buffer.removeAll(keepingCapacity: true)
-            }
-        }
-        if !buffer.isEmpty {
-            try? handle.write(contentsOf: buffer)
+            FileExportService.writeLines(from: provider, count: count, to: url)
         }
     }
 }

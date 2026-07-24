@@ -127,6 +127,16 @@ class LogViewModel: ObservableObject {
         minimapShimmerTrigger &+= 1
     }
 
+    /// Bumped whenever a timeline heading (or column) click changes the selected
+    /// entry, so the Timeline pane can scroll its own tall (6000pt) image to bring
+    /// the newly-selected entry into view, centred, when it isn't already visible.
+    @Published var timelineJumpTrigger: Int = 0
+
+    /// Requests the Timeline pane scroll the selected entry into view.
+    func triggerTimelineJump() {
+        timelineJumpTrigger &+= 1
+    }
+
     let progressTracker = LogProgressTracker()
 
     @Published var currentFilterPattern: String = ""
@@ -233,6 +243,19 @@ class LogViewModel: ObservableObject {
     /// Tracks the last minimap-selected line per tab (used to detect repeated
     /// selections). Accessed from `LogViewModel+Navigation.swift`.
     var lastMinimapSelectedLineByTab: [UUID: Int] = [:]
+    /// The last line jumped to via the timeline (per tab), regardless of which
+    /// heading was clicked. Clicking any heading advances from here to that rule's
+    /// next occurrence in the log, so navigation moves forward continuously even
+    /// when switching headings, only wrapping to the start when nothing is further
+    /// on. Keyed `[tabID: originalLineIndex]`.
+    var timelineCurrentLineByTab: [UUID: Int] = [:]
+    /// The highlight rule whose timeline column is currently selected, so the
+    /// current-position indicator can be drawn spanning only that column's width
+    /// rather than the whole timeline. `nil` when the marks column is selected or
+    /// nothing is selected.
+    @Published var timelineSelectedRuleID: UUID?
+    /// `true` when the currently-selected timeline column is the marks column.
+    @Published var timelineSelectionIsMarks: Bool = false
     /// Guards the Aa/Follow published vars from writing back into the tab while
     /// they are being mirrored *from* the newly-selected tab.
     private var isSyncingTabState: Bool = false

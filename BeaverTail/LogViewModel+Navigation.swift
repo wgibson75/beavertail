@@ -76,11 +76,69 @@ extension LogViewModel {
         return visibleLowerBound(of: tab) + offset
     }
 
-    func jumpFromTimeline(fraction: CGFloat, ruleIndex: Int) {
+    /// Steps the selection to the next match of the given highlight rule, wrapping
+    /// to the first match after the last. Driven by clicking a timeline heading.
+    func jumpToNextMatch(forRuleID ruleID: UUID) {
         guard let tabID = selectedTabID, let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        let tab = openTabs[index]
+        guard tab.lineCount > 0, tab.content != nil else { return }
+
+        // Locate the column this rule occupies in the timeline, then the matching
+        // per-column match list (offset by one when a marks column is present).
+        guard let column = tab.timelineActiveRuleIDs.firstIndex(of: ruleID) else { return }
+        let hasMarks = !tab.markedIndices.isEmpty
+        let matchIndex = hasMarks ? column + 1 : column
+        let allMatches = tab.timelineMatches
+        guard matchIndex >= 0, matchIndex < allMatches.count else { return }
+        let ruleMatches = allMatches[matchIndex]
+        guard !ruleMatches.isEmpty else { return }
+
+        // Continue from the current position in the log: pick this rule's first
+        // occurrence strictly after the last line the timeline jumped to, wrapping
+        // to its first occurrence only when there are none further on. This keeps
+        // navigation moving forward through the log even when switching between
+        // headings, and never jumps backward while forward entries remain.
+        let current = timelineCurrentLineByTab[tabID]
+        let targetLine: Int
+        if let current {
+            var left = 0
+            var right = ruleMatches.count
+            while left < right {
+                let mid = left + (right - left) / 2
+                if ruleMatches[mid] <= current { left = mid + 1 } else { right = mid }
+            }
+            targetLine = left < ruleMatches.count ? ruleMatches[left] : ruleMatches[0]
+        } else {
+            targetLine = ruleMatches[0]
+        }
+        timelineCurrentLineByTab[tabID] = targetLine
+
+        // Mark this rule's column as the selected one so the current-position
+        // indicator spans only that column.
+        timelineSelectedRuleID = ruleID
+        timelineSelectionIsMarks = false
+
+        isScrubbingMinimap = false
+        openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: targetLine, in: openTabs[index])
+        NotificationCenter.default.post(
+            name: topPaneDirectScrollNotification,
+            object: topPaneRow(forOriginalIndex: targetLine, in: openTabs[index])
+        )
+        triggerMinimapShimmer()
+        triggerTimelineJump()
+    }
+
+    func jumpFromTimeline(fraction: CGFloat, ruleIndex: Int) {
+        guard let tabID = selectedTabID, let index = openTabs.firstIndex(where: { $0.id == tabID }) else {
+            return
+        }
         let totalCount = openTabs[index].lineCount
-        guard totalCount > 0 else { return }
-        guard openTabs[index].content != nil else { return }
+        guard totalCount > 0 else {
+            return
+        }
+        guard openTabs[index].content != nil else {
+            return
+        }
 
         // The timeline image spans only the visible range, so map the click
         // fraction into original-line space using the image's band bucketing.
@@ -89,13 +147,29 @@ extension LogViewModel {
         let hasMarks = !openTabs[index].markedIndices.isEmpty
         let mappedRuleIndex = ruleIndex == -1 ? 0 : (hasMarks ? ruleIndex + 1 : ruleIndex)
 
+        // Mark which column this click belongs to so the current-position
+        // indicator spans only that column (marks column, or a specific rule).
+        let displayedRuleIDs = openTabs[index].timelineActiveRuleIDs
+        if ruleIndex == -1 {
+            timelineSelectionIsMarks = true
+            timelineSelectedRuleID = nil
+        } else {
+            timelineSelectionIsMarks = false
+            timelineSelectedRuleID = ruleIndex >= 0 && ruleIndex < displayedRuleIDs.count
+                ? displayedRuleIDs[ruleIndex] : nil
+        }
+
         let cachedMatches = openTabs[index].timelineMatches
         guard mappedRuleIndex >= 0, mappedRuleIndex < cachedMatches.count, !cachedMatches[mappedRuleIndex].isEmpty else {
             openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: exactLine, in: openTabs[index])
+            // Record the current position so a subsequent heading click continues
+            // forward from here.
+            timelineCurrentLineByTab[tabID] = exactLine
             NotificationCenter.default.post(
                 name: topPaneDirectScrollNotification,
                 object: topPaneRow(forOriginalIndex: exactLine, in: openTabs[index])
             )
+            triggerTimelineJump()
             return
         }
 
@@ -127,11 +201,15 @@ extension LogViewModel {
         // We set scrubbing minimap to false because we want it to snap
         isScrubbingMinimap = false
         openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: closestVal, in: openTabs[index])
+        // Record the current position so a subsequent heading click continues
+        // forward from here.
+        timelineCurrentLineByTab[tabID] = closestVal
         // Publish the scroll offset immediately.
         NotificationCenter.default.post(
             name: topPaneDirectScrollNotification,
             object: topPaneRow(forOriginalIndex: closestVal, in: openTabs[index])
         )
+        triggerTimelineJump()
     }
 
     func syncSelectionFromFilteredIndex(_ originalIndex: Int) {

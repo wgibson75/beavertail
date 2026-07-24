@@ -443,9 +443,86 @@ private struct TopPaneView: View {
 
 // MARK: - Timeline Pane
 
+/// Resolves the enclosing `NSScrollView` of the timeline so it can be scrolled
+/// directly. Placed inside the ScrollView's content; `enclosingScrollView` then
+/// returns the timeline's scroll view once it's in the view hierarchy.
+private struct TimelineScrollReader: NSViewRepresentable {
+    let onResolve: (NSScrollView) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = ResolverView()
+        view.onResolve = onResolve
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        (nsView as? ResolverView)?.onResolve = onResolve
+    }
+
+    final class ResolverView: NSView {
+        var onResolve: ((NSScrollView) -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let scrollView = self.enclosingScrollView else { return }
+                self.onResolve?(scrollView)
+            }
+        }
+    }
+}
+
 private struct TimelinePaneView: View {
     @ObservedObject var viewModel: LogViewModel
     @Binding var showFilterDropdown: Bool
+
+    /// The underlying NSScrollView of the timeline, captured so we can scroll it
+    /// directly (SwiftUI's scrollTo is unreliable with the pinned header here).
+    @State private var timelineScrollView: NSScrollView?
+
+    /// The visual column index (0-based, including the leading marks column when
+    /// present) of the currently-selected timeline column, or `nil` when nothing
+    /// applicable is selected. Used to position the current-position indicator so
+    /// it spans only that column's width.
+    private func selectedColumnIndex(activeRules: [HighlightRule], hasMarks: Bool) -> Int? {
+        if viewModel.timelineSelectionIsMarks {
+            return hasMarks ? 0 : nil
+        }
+        guard let ruleID = viewModel.timelineSelectedRuleID,
+              let ruleColumn = activeRules.firstIndex(where: { $0.id == ruleID }) else {
+            return nil
+        }
+        return (hasMarks ? 1 : 0) + ruleColumn
+    }
+
+    /// Scrolls the timeline's (tall, 6000pt) image so the currently-selected entry
+    /// is always vertically centred in the pane. When the entry is near the end of
+    /// the log the scroll is clamped to the scrollable range, so it sits as close to
+    /// centre as possible without scrolling past the end. Scrolls the clip view
+    /// directly — the same reliable approach the log panes use.
+    private func scrollTimelineToSelection() {
+        guard let fraction = viewModel.selectedFraction else { return }
+        guard let scrollView = timelineScrollView,
+              let documentView = scrollView.documentView else { return }
+        let clipView = scrollView.contentView
+        let viewportHeight = clipView.bounds.height
+        let docHeight = documentView.frame.height
+        let maxOriginY = max(0, docHeight - viewportHeight)
+
+        // The selected entry's Y position within the document (image spans nearly
+        // the whole document height; the small header is negligible at this scale).
+        let targetY = fraction * docHeight
+
+        // Always centre the entry, clamped to the scrollable range (so entries near
+        // the end of the log sit as close to centre as the remaining scroll allows).
+        var originY = targetY - viewportHeight / 2
+        originY = max(0, min(originY, maxOriginY))
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.25
+            ctx.allowsImplicitAnimation = true
+            clipView.animator().setBoundsOrigin(NSPoint(x: clipView.bounds.origin.x, y: originY))
+            scrollView.reflectScrolledClipView(clipView)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -461,9 +538,8 @@ private struct TimelinePaneView: View {
                     let hasMarks = !(viewModel.currentTab?.markedIndices.isEmpty ?? true)
 
                     GeometryReader { geometry in
-                        ZStack {
-                            ScrollView(.vertical) {
-                                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        ScrollView(.vertical) {
+                            LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                                     Section(header:
                                         Group {
                                             if !activeRules.isEmpty || hasMarks {
@@ -477,13 +553,7 @@ private struct TimelinePaneView: View {
                                                                 .help("Marks")
                                                         }
                                                         ForEach(activeRules) { rule in
-                                                            Text(rule.pattern)
-                                                                .font(.system(size: 10, design: .monospaced))
-                                                                .lineLimit(1)
-                                                                .truncationMode(.tail)
-                                                                .foregroundStyle(.secondary)
-                                                                .frame(minWidth: 0, maxWidth: .infinity, alignment: .center)
-                                                                .help(rule.pattern)
+                                                            TimelineHeadingView(rule: rule, viewModel: viewModel)
                                                         }
                                                     }
                                                     .padding(.vertical, 4)
@@ -494,48 +564,82 @@ private struct TimelinePaneView: View {
                                         }
                                     ) {
                                         if let image = viewModel.currentTab?.timelineImage {
-                                            Image(nsImage: image)
-                                                .resizable()
-                                                .interpolation(.none)
-                                                .frame(maxWidth: .infinity)
-                                                .frame(height: max(geometry.size.height, image.size.height))
-                                                .opacity(1.0)
-                                                .overlay {
-                                                    GeometryReader { _ in
-                                                        HStack(spacing: 0) {
-                                                            if hasMarks {
-                                                                Color.clear
-                                                                    .frame(maxWidth: .infinity)
-                                                                    .contentShape(Rectangle())
-                                                                    .help("Marks")
-                                                                    .gesture(
-                                                                        DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                                                                            .onEnded { value in
-                                                                                let fraction = value.location.y
-                                                                                    / max(geometry.size.height, image.size.height)
-                                                                                viewModel.jumpFromTimeline(
-                                                                                    fraction: fraction, ruleIndex: -1)
-                                                                            }
-                                                                    )
-                                                            }
-                                                            ForEach(Array(activeRules.enumerated()), id: \.element.id) { index, rule in
-                                                                Color.clear
-                                                                    .frame(maxWidth: .infinity)
-                                                                    .contentShape(Rectangle())
-                                                                    .help(rule.pattern)
-                                                                    .gesture(
-                                                                        DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                                                                            .onEnded { value in
-                                                                                let fraction = value.location.y
-                                                                                    / max(geometry.size.height, image.size.height)
-                                                                                viewModel.jumpFromTimeline(
-                                                                                    fraction: fraction, ruleIndex: index)
-                                                                            }
-                                                                    )
+                                            let displayedHeight = max(geometry.size.height, image.size.height)
+                                            ZStack(alignment: .top) {
+                                                Image(nsImage: image)
+                                                    .resizable()
+                                                    .interpolation(.none)
+                                                    .frame(maxWidth: .infinity)
+                                                    .frame(height: displayedHeight)
+                                                    .opacity(1.0)
+                                                    .overlay {
+                                                        GeometryReader { _ in
+                                                            HStack(spacing: 0) {
+                                                                if hasMarks {
+                                                                    Color.clear
+                                                                        .frame(maxWidth: .infinity)
+                                                                        .contentShape(Rectangle())
+                                                                        .help("Marks")
+                                                                        .gesture(
+                                                                            DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                                                                                .onEnded { value in
+                                                                                    let fraction = value.location.y
+                                                                                        / displayedHeight
+                                                                                    viewModel.jumpFromTimeline(
+                                                                                        fraction: fraction, ruleIndex: -1)
+                                                                                }
+                                                                        )
+                                                                }
+                                                                ForEach(Array(activeRules.enumerated()), id: \.element.id) { index, rule in
+                                                                    Color.clear
+                                                                        .frame(maxWidth: .infinity)
+                                                                        .contentShape(Rectangle())
+                                                                        .help(rule.pattern)
+                                                                        .gesture(
+                                                                            DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                                                                                .onEnded { value in
+                                                                                    let fraction = value.location.y
+                                                                                        / displayedHeight
+                                                                                    viewModel.jumpFromTimeline(
+                                                                                        fraction: fraction, ruleIndex: index)
+                                                                                }
+                                                                        )
+                                                                }
                                                             }
                                                         }
                                                     }
+                                                    .overlay(alignment: .topLeading) {
+                                                        // Current-position indicator, mirroring the
+                                                        // minimap but spanning only the selected
+                                                        // column's width (marks column or one rule).
+                                                        if let fraction = viewModel.selectedFraction,
+                                                           let column = selectedColumnIndex(
+                                                                activeRules: activeRules, hasMarks: hasMarks) {
+                                                            let totalColumns = (hasMarks ? 1 : 0) + activeRules.count
+                                                            let columnWidth = geometry.size.width
+                                                                / CGFloat(max(totalColumns, 1))
+                                                            TimelinePositionIndicator(
+                                                                shimmerTrigger: viewModel.minimapShimmerTrigger
+                                                            )
+                                                            .frame(width: columnWidth)
+                                                            .offset(
+                                                                x: CGFloat(column) * columnWidth,
+                                                                y: fraction * displayedHeight - 1
+                                                            )
+                                                            .allowsHitTesting(false)
+                                                        }
+                                                    }
+
+                                                // Captures the underlying NSScrollView so the pane can be
+                                                // scrolled directly by setting the clip view's bounds
+                                                // origin — the same proven technique the log panes use.
+                                                // SwiftUI's ScrollViewReader.scrollTo is unreliable inside
+                                                // this pinned-header LazyVStack, so it is not used.
+                                                TimelineScrollReader { scrollView in
+                                                    timelineScrollView = scrollView
                                                 }
+                                                .frame(width: 0, height: 0)
+                                            }
                                         } else if viewModel.currentTab?.isGeneratingTimeline == true {
                                             Color.clear
                                                 .frame(maxWidth: .infinity, minHeight: geometry.size.height)
@@ -563,7 +667,9 @@ private struct TimelinePaneView: View {
                                     }
                                 }
                             }
-                        }
+                            .onChange(of: viewModel.timelineJumpTrigger) { _, _ in
+                                scrollTimelineToSelection()
+                            }
                     }
                 }
                 if showFilterDropdown && !viewModel.filterHistory.isEmpty {
@@ -581,6 +687,107 @@ private struct TimelinePaneView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Timeline Heading
+
+/// A single clickable timeline column heading. Its background glows in the
+/// rule's highlight colour on hover (with a faint, lighter border), and clicking
+/// it steps through that rule's matches, navigating the top pane to each
+/// occurrence in turn and moving the timeline's current-position indicator.
+private struct TimelineHeadingView: View {
+    let rule: HighlightRule
+    @ObservedObject var viewModel: LogViewModel
+    @State private var isHovering = false
+
+    /// A slightly lighter version of the heading background colour, used for the
+    /// faint hover border (matching the original appearance).
+    private var borderColor: Color {
+        Color(nsColor: rule.nsBackgroundColor.blended(withFraction: 0.5, of: .white)
+            ?? rule.nsBackgroundColor)
+    }
+
+    var body: some View {
+        // A borderless Button is used rather than `.onTapGesture` because taps on a
+        // pinned section-header view inside a ScrollView are not reliably delivered
+        // to a tap gesture; a Button always receives the click.
+        Button {
+            viewModel.jumpToNextMatch(forRuleID: rule.id)
+        } label: {
+            Text(rule.pattern)
+                .font(.system(size: 10, design: .monospaced))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .foregroundStyle(isHovering ? rule.foregroundColor : Color.secondary)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 2)
+                .padding(.horizontal, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(rule.backgroundColor)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 3)
+                                .stroke(borderColor, lineWidth: 1)
+                        )
+                        .opacity(isHovering ? 1.0 : 0.0)
+                        .shadow(color: isHovering ? rule.backgroundColor.opacity(0.85) : .clear,
+                                radius: isHovering ? 5 : 0)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isHovering = hovering
+            }
+            if hovering {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
+        .help("Click to step through matches for \(rule.pattern)")
+    }
+}
+
+// MARK: - Timeline Position Indicator
+
+/// A horizontal current-position line drawn across the timeline image at the
+/// selected fraction, mirroring the minimap's indicator. It flashes a glow
+/// whenever the selected position changes (driven by `minimapShimmerTrigger`).
+private struct TimelinePositionIndicator: View {
+    let shimmerTrigger: Int
+    @State private var glowIntensity: Double = 0
+
+    private func playShimmer() {
+        withAnimation(.easeOut(duration: 0.12)) {
+            glowIntensity = 1.0
+        }
+        withAnimation(.easeIn(duration: 0.9).delay(0.12)) {
+            glowIntensity = 0.0
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            // Glow halo.
+            Rectangle()
+                .fill(Color.accentColor)
+                .frame(height: 2.0 + glowIntensity * 5.0)
+                .blur(radius: 1.0 + glowIntensity * 3.5)
+                .opacity(0.5 + glowIntensity * 0.5)
+                .shadow(color: Color.accentColor.opacity(0.6 + glowIntensity * 0.4),
+                        radius: 3.0 + glowIntensity * 6.0)
+            // Core line — always visible so the current entry is marked.
+            Rectangle()
+                .fill(Color.primary.opacity(0.45 + glowIntensity * 0.55))
+                .frame(height: 2.0)
+        }
+        .onChange(of: shimmerTrigger) { _, _ in
+            playShimmer()
+        }
+        .onAppear { playShimmer() }
     }
 }
 

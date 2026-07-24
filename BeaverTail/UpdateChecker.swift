@@ -2,11 +2,10 @@
 //  UpdateChecker.swift
 //  BeaverTail
 //
-//  A lightweight, self-contained update checker. It queries the GitHub
-//  "latest release" API for the project repository and, if the released
-//  version is newer than the running app, offers a link to the download
-//  page. No third-party frameworks (e.g. Sparkle) or Apple Developer
-//  signing infrastructure are required.
+//  Presentation coordinator for the update flow. It decides *when* to check
+//  and shows the user-facing alerts, delegating all networking and version
+//  math to the UI-free `UpdateService`. No third-party frameworks (e.g.
+//  Sparkle) or Apple Developer signing infrastructure are required.
 //
 
 import AppKit
@@ -21,11 +20,6 @@ enum UpdateChecker {
 
     private static let repoOwner = "wgibson75"
     private static let repoName = "beavertail"
-
-    /// GitHub REST endpoint for the most recent published (non-prerelease) release.
-    private static var latestReleaseAPI: URL {
-        URL(string: "https://api.github.com/repos/\(repoOwner)/\(repoName)/releases/latest")!
-    }
 
     /// The version string of the running app (CFBundleShortVersionString),
     /// e.g. "1.4.0".
@@ -61,12 +55,12 @@ enum UpdateChecker {
     @MainActor
     private static func performCheck(reportWhenUpToDate: Bool) async {
         do {
-            let release = try await fetchLatestRelease()
-            let latest = normalizedVersion(from: release.tagName)
-            let current = normalizedVersion(from: currentVersion)
+            let release = try await UpdateService.fetchLatestRelease(owner: repoOwner, repo: repoName)
+            let current = UpdateService.normalizedVersion(from: currentVersion)
 
-            if compareVersions(latest, current) > 0 {
-                showUpdateAvailable(latestVersion: latest, downloadURLString: release.downloadURLString)
+            if UpdateService.compareVersions(release.version, current) > 0 {
+                showUpdateAvailable(latestVersion: release.version,
+                                    downloadURLString: release.downloadURLString)
             } else if reportWhenUpToDate {
                 showUpToDate()
             }
@@ -75,48 +69,6 @@ enum UpdateChecker {
                 showError(error)
             }
         }
-    }
-
-    private static func fetchLatestRelease() async throws -> ReleaseInfo {
-        var request = URLRequest(url: latestReleaseAPI)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        // GitHub requires a User-Agent header on API requests.
-        request.setValue("BeaverTail-UpdateChecker", forHTTPHeaderField: "User-Agent")
-        request.timeoutInterval = 15
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw URLError(.badServerResponse)
-        }
-        return try JSONDecoder().decode(ReleaseInfo.self, from: data)
-    }
-
-    // MARK: - Version helpers
-
-    /// Strips a leading "v"/"V" and surrounding whitespace so a GitHub tag like
-    /// "v1.4.0" compares cleanly against a bundle version like "1.4.0".
-    static func normalizedVersion(from raw: String) -> String {
-        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if value.hasPrefix("v") || value.hasPrefix("V") {
-            value.removeFirst()
-        }
-        return value
-    }
-
-    /// Compares dotted numeric version strings component by component.
-    /// Returns 1 if `a > b`, -1 if `a < b`, and 0 if they are equal. Missing
-    /// trailing components are treated as zero (so "1.4" == "1.4.0").
-    static func compareVersions(_ a: String, _ b: String) -> Int {
-        let lhs = a.split(separator: ".").map { Int($0) ?? 0 }
-        let rhs = b.split(separator: ".").map { Int($0) ?? 0 }
-        let count = max(lhs.count, rhs.count)
-        for index in 0..<count {
-            let left = index < lhs.count ? lhs[index] : 0
-            let right = index < rhs.count ? rhs[index] : 0
-            if left != right { return left > right ? 1 : -1 }
-        }
-        return 0
     }
 
     // MARK: - Alerts
@@ -159,38 +111,5 @@ enum UpdateChecker {
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
         alert.runModal()
-    }
-}
-
-// MARK: - Release model
-
-/// Subset of the GitHub release JSON that we care about.
-private struct ReleaseInfo: Decodable {
-    let tagName: String
-    let htmlURL: String
-    let assets: [ReleaseAsset]
-
-    enum CodingKeys: String, CodingKey {
-        case tagName = "tag_name"
-        case htmlURL = "html_url"
-        case assets
-    }
-
-    /// Direct download URL for the DMG asset if one is attached to the
-    /// release, otherwise the release page URL as a fallback.
-    var downloadURLString: String {
-        let dmg = assets.first { $0.name.lowercased().hasSuffix(".dmg") }
-        return dmg?.browserDownloadURL ?? htmlURL
-    }
-}
-
-/// A single downloadable file attached to a GitHub release.
-private struct ReleaseAsset: Decodable {
-    let name: String
-    let browserDownloadURL: String
-
-    enum CodingKeys: String, CodingKey {
-        case name
-        case browserDownloadURL = "browser_download_url"
     }
 }
