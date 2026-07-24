@@ -175,7 +175,8 @@ struct LogTab: Identifiable, Equatable, Codable {
         timelineActiveRuleIDs: [UUID] = [],
         isGeneratingTimeline: Bool = false,
         isCurrentlyStreaming: Bool = false,
-        filterPattern: String = "",        isCaseInsensitive: Bool = true,
+        filterPattern: String = "",
+        isCaseInsensitive: Bool = true,
         followTail: Bool = true
     ) {
         self.id = id

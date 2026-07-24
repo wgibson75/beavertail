@@ -744,6 +744,15 @@ private struct TimelineHeadingView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Right-click steps backward through this rule's matches (reverse of the
+        // left-click). A transparent AppKit catcher is used because SwiftUI has no
+        // native right-click gesture; it only claims right-mouse events so the
+        // Button still receives left-clicks and hover normally.
+        .overlay(
+            RightClickCatcher {
+                viewModel.jumpToPreviousMatch(forRuleID: rule.id)
+            }
+        )
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.15)) {
                 isHovering = hovering
@@ -754,7 +763,51 @@ private struct TimelineHeadingView: View {
                 NSCursor.pop()
             }
         }
-        .help("Click to step through matches for \(rule.pattern)")
+        .help("Left-click for the next match, right-click for the previous match of \(rule.pattern)")
+    }
+}
+
+// MARK: - Right-Click Catcher
+
+/// A transparent AppKit overlay that reports right-clicks (secondary mouse button)
+/// without consuming any other events, so the SwiftUI view beneath it continues to
+/// receive left-clicks, hover and drags normally.
+private struct RightClickCatcher: NSViewRepresentable {
+    var onRightClick: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        CatcherView(onRightClick: onRightClick)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        (nsView as? CatcherView)?.onRightClick = onRightClick
+    }
+
+    private final class CatcherView: NSView {
+        var onRightClick: () -> Void
+
+        init(onRightClick: @escaping () -> Void) {
+            self.onRightClick = onRightClick
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        // Claim the point only for secondary-button events; return nil for
+        // everything else so left-clicks/hover fall through to the SwiftUI view.
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            switch NSApp.currentEvent?.type {
+            case .rightMouseDown, .rightMouseUp, .rightMouseDragged:
+                return super.hitTest(point)
+            default:
+                return nil
+            }
+        }
+
+        override func rightMouseDown(with event: NSEvent) {
+            onRightClick()
+        }
     }
 }
 

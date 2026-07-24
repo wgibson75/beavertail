@@ -77,8 +77,23 @@ extension LogViewModel {
     }
 
     /// Steps the selection to the next match of the given highlight rule, wrapping
-    /// to the first match after the last. Driven by clicking a timeline heading.
+    /// to the first match after the last. Driven by left-clicking a timeline heading.
     func jumpToNextMatch(forRuleID ruleID: UUID) {
+        jumpToAdjacentMatch(forRuleID: ruleID, backwards: false)
+    }
+
+    /// Steps the selection to the previous match of the given highlight rule,
+    /// wrapping to the last match when there are none before the current position.
+    /// Driven by right-clicking a timeline heading (the reverse of a left-click).
+    func jumpToPreviousMatch(forRuleID ruleID: UUID) {
+        jumpToAdjacentMatch(forRuleID: ruleID, backwards: true)
+    }
+
+    /// Shared forward/backward timeline-heading navigation. Advances from the last
+    /// line the timeline jumped to (shared across headings) to this rule's adjacent
+    /// occurrence in the requested direction, wrapping only when there is nothing
+    /// further on in that direction.
+    private func jumpToAdjacentMatch(forRuleID ruleID: UUID, backwards: Bool) {
         guard let tabID = selectedTabID, let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
         let tab = openTabs[index]
         guard tab.lineCount > 0, tab.content != nil else { return }
@@ -93,23 +108,31 @@ extension LogViewModel {
         let ruleMatches = allMatches[matchIndex]
         guard !ruleMatches.isEmpty else { return }
 
-        // Continue from the current position in the log: pick this rule's first
-        // occurrence strictly after the last line the timeline jumped to, wrapping
-        // to its first occurrence only when there are none further on. This keeps
-        // navigation moving forward through the log even when switching between
-        // headings, and never jumps backward while forward entries remain.
+        // Continue from the current position in the log: pick this rule's adjacent
+        // occurrence in the requested direction (forward = strictly after, backward =
+        // strictly before the last jumped-to line), wrapping around only when there
+        // is nothing further on in that direction. This keeps navigation continuous
+        // even when switching between headings.
         let current = timelineCurrentLineByTab[tabID]
         let targetLine: Int
         if let current {
+            // First index whose value is > current (forward) / >= current (backward).
             var left = 0
             var right = ruleMatches.count
             while left < right {
                 let mid = left + (right - left) / 2
-                if ruleMatches[mid] <= current { left = mid + 1 } else { right = mid }
+                let goRight = backwards ? ruleMatches[mid] < current : ruleMatches[mid] <= current
+                if goRight { left = mid + 1 } else { right = mid }
             }
-            targetLine = left < ruleMatches.count ? ruleMatches[left] : ruleMatches[0]
+            if backwards {
+                // Last occurrence before `current`; wrap to the final match.
+                targetLine = left - 1 >= 0 ? ruleMatches[left - 1] : ruleMatches[ruleMatches.count - 1]
+            } else {
+                // First occurrence after `current`; wrap to the first match.
+                targetLine = left < ruleMatches.count ? ruleMatches[left] : ruleMatches[0]
+            }
         } else {
-            targetLine = ruleMatches[0]
+            targetLine = backwards ? ruleMatches[ruleMatches.count - 1] : ruleMatches[0]
         }
         timelineCurrentLineByTab[tabID] = targetLine
 
