@@ -679,12 +679,16 @@ private struct TimelinePaneView: View {
                                                             let totalColumns = (hasMarks ? 1 : 0) + activeRules.count
                                                             let columnWidth = geometry.size.width
                                                                 / CGFloat(max(totalColumns, 1))
+                                                            // Slightly wider than the entry's coloured dot
+                                                            // (0.8 of the column) but narrower than the column.
+                                                            let indicatorWidth = columnWidth * 0.9
                                                             TimelinePositionIndicator(
                                                                 shimmerTrigger: viewModel.minimapShimmerTrigger
                                                             )
-                                                            .frame(width: columnWidth)
+                                                            .frame(width: indicatorWidth)
                                                             .offset(
-                                                                x: CGFloat(column) * columnWidth,
+                                                                x: CGFloat(column) * columnWidth
+                                                                    + (columnWidth - indicatorWidth) / 2,
                                                                 y: fraction * displayedHeight - 1
                                                             )
                                                             .allowsHitTesting(false)
