@@ -18,6 +18,108 @@ struct ContentView: View {
     @State private var draggingTabID: UUID?
     @State private var isFileDropTargeted = false
 
+    /// A single tab "chip" in the tab strip. Extracted from `body` so the very large
+    /// main view expression stays within the Swift type-checker's reach.
+    private func tabView(for tab: LogTab) -> some View {
+        let isSelected = viewModel.selectedTabID == tab.id
+        let isDragging = draggingTabID == tab.id
+        return HStack(spacing: 5) {
+            if let mark = tab.mark {
+                Circle()
+                    .fill(mark == .good ? Color.green : Color.red)
+                    .frame(width: 7, height: 7)
+                    .help(mark == .good ? "Marked as Good Log" : "Marked as Bad Log")
+            }
+            Text(tab.name)
+                .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                .foregroundStyle(isSelected ? AnyShapeStyle(Color.primary) : AnyShapeStyle(Color.secondary))
+                .lineLimit(1)
+
+            Button {
+                viewModel.closeTab(id: tab.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+            .opacity(isDragging ? 0 : 1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background {
+            ZStack {
+                // Selected-tab card (hidden while this tab is being dragged so the
+                // origin reads as a gap).
+                if isSelected && !isDragging {
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color(NSColor.controlBackgroundColor))
+                        .shadow(color: .black.opacity(0.08), radius: 1, y: 1)
+                }
+                // Placeholder "slot" shown at the dragged tab's current position: a
+                // soft, dashed outline that clearly marks where the tab will land.
+                if isDragging {
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color.accentColor.opacity(0.10))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .strokeBorder(
+                                    Color.accentColor.opacity(0.55),
+                                    style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                                )
+                        )
+                }
+            }
+        }
+        .contentShape(Rectangle())
+        // Collapse the dragged tab into a slim placeholder so the surrounding tabs
+        // visibly open up a gap for it.
+        .opacity(isDragging ? 0.5 : 1.0)
+        .scaleEffect(isDragging ? 0.92 : 1.0, anchor: .center)
+        .animation(.spring(response: 0.28, dampingFraction: 0.72), value: isDragging)
+        .onTapGesture {
+            viewModel.selectedTabID = tab.id
+            viewModel.triggerLazyLoadForTab(id: tab.id)
+        }
+        .onDrag {
+            draggingTabID = tab.id
+            return NSItemProvider(object: tab.id.uuidString as NSString)
+        } preview: {
+            // A floating "lifted" card that follows the pointer, so the user can
+            // clearly see the tab being moved.
+            TabDragPreview(name: tab.name)
+        }
+        .onDrop(
+            of: [UTType.plainText],
+            delegate: TabDropDelegate(
+                targetTab: tab,
+                tabs: $viewModel.openTabs,
+                draggingTabID: $draggingTabID
+            )
+        )
+        .modifier(ConditionalTabContextMenu(
+            isEnabled: !tab.isUniqueLinesTab,
+            menu: { tabContextMenu(for: tab) }
+        ))
+    }
+
+    /// Reset-focus control shown above the minimap when the current tab has a subset
+    /// of its lines focused. Extracted from `body` so the (very large) main view
+    /// expression stays within the type-checker's reach.
+    @ViewBuilder
+    private var resetFocusControl: some View {
+        if viewModel.isHidingLinesInCurrentTab {
+            ResetFocusButton {
+                viewModel.showAllLines()
+            }
+            .help("Show all hidden lines")
+            // Match the minimap column width so the icon sits centred
+            // directly above the minimap.
+            .frame(width: 30)
+            .transition(.opacity.combined(with: .scale))
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
 
@@ -33,87 +135,7 @@ struct ContentView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 2) {
                         ForEach(viewModel.openTabs) { tab in
-                            let isSelected = viewModel.selectedTabID == tab.id
-                            let isDragging = draggingTabID == tab.id
-                            HStack(spacing: 5) {
-                                if let mark = tab.mark {
-                                    Circle()
-                                        .fill(mark == .good ? Color.green : Color.red)
-                                        .frame(width: 7, height: 7)
-                                        .help(mark == .good ? "Marked as Good Log" : "Marked as Bad Log")
-                                }
-                                Text(tab.name)
-                                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-                                    .foregroundStyle(isSelected ? AnyShapeStyle(Color.primary) : AnyShapeStyle(Color.secondary))
-                                    .lineLimit(1)
-
-                                Button {
-                                    viewModel.closeTab(id: tab.id)
-                                } label: {
-                                    Image(systemName: "xmark")
-                                        .font(.system(size: 8, weight: .bold))
-                                        .foregroundStyle(.tertiary)
-                                }
-                                .buttonStyle(.plain)
-                                .opacity(isDragging ? 0 : 1)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background {
-                                ZStack {
-                                    // Selected-tab card (hidden while this tab is
-                                    // being dragged so the origin reads as a gap).
-                                    if isSelected && !isDragging {
-                                        RoundedRectangle(cornerRadius: 5)
-                                            .fill(Color(NSColor.controlBackgroundColor))
-                                            .shadow(color: .black.opacity(0.08), radius: 1, y: 1)
-                                    }
-                                    // Placeholder "slot" shown at the dragged tab's
-                                    // current position: a soft, dashed outline that
-                                    // clearly marks where the tab will land.
-                                    if isDragging {
-                                        RoundedRectangle(cornerRadius: 5)
-                                            .fill(Color.accentColor.opacity(0.10))
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 5)
-                                                    .strokeBorder(
-                                                        Color.accentColor.opacity(0.55),
-                                                        style: StrokeStyle(lineWidth: 1, dash: [4, 3])
-                                                    )
-                                            )
-                                    }
-                                }
-                            }
-                            .contentShape(Rectangle())
-                            // Collapse the dragged tab into a slim placeholder so the
-                            // surrounding tabs visibly open up a gap for it.
-                            .opacity(isDragging ? 0.5 : 1.0)
-                            .scaleEffect(isDragging ? 0.92 : 1.0, anchor: .center)
-                            .animation(.spring(response: 0.28, dampingFraction: 0.72), value: isDragging)
-                            .onTapGesture {
-                                viewModel.selectedTabID = tab.id
-                                viewModel.triggerLazyLoadForTab(id: tab.id)
-                            }
-                            .onDrag {
-                                draggingTabID = tab.id
-                                return NSItemProvider(object: tab.id.uuidString as NSString)
-                            } preview: {
-                                // A floating "lifted" card that follows the pointer,
-                                // so the user can clearly see the tab being moved.
-                                TabDragPreview(name: tab.name)
-                            }
-                            .onDrop(
-                                of: [UTType.plainText],
-                                delegate: TabDropDelegate(
-                                    targetTab: tab,
-                                    tabs: $viewModel.openTabs,
-                                    draggingTabID: $draggingTabID
-                                )
-                            )
-                            .modifier(ConditionalTabContextMenu(
-                                isEnabled: !tab.isUniqueLinesTab,
-                                menu: { tabContextMenu(for: tab) }
-                            ))
+                            tabView(for: tab)
                         }
 
                         // Spacer fills the remaining strip width so the whole
@@ -148,24 +170,7 @@ struct ContentView: View {
                     // lines are hidden in the current tab, so it never occupies
                     // space that belongs to the minimap. Clicking it reveals all
                     // hidden lines again.
-                    if viewModel.isHidingLinesInCurrentTab {
-                        Button {
-                            viewModel.showAllLines()
-                        } label: {
-                            Image(systemName: "arrow.counterclockwise")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 18, height: 18)
-                                .background(Circle().fill(Color.secondary.opacity(0.12)))
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .help("Show all hidden lines")
-                        // Match the minimap column width so the icon sits centred
-                        // directly above the minimap.
-                        .frame(width: 30)
-                        .transition(.opacity.combined(with: .scale))
-                    }
+                    resetFocusControl
                 }
                 .background(Color(NSColor.windowBackgroundColor))
                 Divider()
@@ -309,6 +314,9 @@ struct ContentView: View {
         if tab.mark != nil {
             Button("Clear") {
                 viewModel.markTab(id: tab.id, as: nil)
+            }
+            Button("Clear All") {
+                viewModel.clearAllTabMarks()
             }
         }
 
@@ -918,8 +926,7 @@ private struct TimelinePositionIndicator: View {
 
 // MARK: - Bottom Pane
 
-private struct BottomPaneView: View {
-    @ObservedObject var viewModel: LogViewModel
+private struct BottomPaneView: View {    @ObservedObject var viewModel: LogViewModel
     @Binding var showFilterDropdown: Bool
     var body: some View {
         VStack(spacing: 0) {

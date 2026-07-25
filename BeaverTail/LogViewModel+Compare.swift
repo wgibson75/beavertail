@@ -44,6 +44,14 @@ extension LogViewModel {
     var goodLogCount: Int { openTabs.filter { $0.mark == .good }.count }
     var badLogCount: Int { openTabs.filter { $0.mark == .bad }.count }
 
+    /// Clears the good/bad mark on every open tab.
+    func clearAllTabMarks() {
+        for idx in openTabs.indices where openTabs[idx].mark != nil {
+            openTabs[idx].mark = nil
+            openTabs[idx].markSequence = nil
+        }
+    }
+
     /// The two comparison options only become available once at least one log has
     /// been marked good AND at least one has been marked bad.
     var canFindUniqueLines: Bool { goodLogCount > 0 && badLogCount > 0 }
@@ -80,6 +88,10 @@ extension LogViewModel {
         uniqueLinesGeneration &+= 1
         let generation = uniqueLinesGeneration
 
+        // Cancel any comparison still running from a previous request before starting
+        // a new one.
+        uniqueLinesTask?.cancel()
+
         // Snapshot the inputs on the main actor. A tab with fully-loaded content is
         // used as-is; one that is unloaded (or still streaming a partial index) is
         // rebuilt from its file URL on the background task below.
@@ -90,9 +102,10 @@ extension LogViewModel {
         progressTracker.isComparing = true
         progressTracker.compareProgress = 0
 
-        Task.detached(priority: .userInitiated) {
+        uniqueLinesTask = Task.detached(priority: .userInitiated) {
             let goodSources = Self.resolveSources(goodInputs)
             let badSources = Self.resolveSources(badInputs)
+            if Task.isCancelled { return }
 
             // If either side has no loadable content (e.g. every marked file was
             // deleted), report it instead of silently producing nothing.
@@ -118,7 +131,14 @@ extension LogViewModel {
                 self.beginUniqueLinesProgressPolling(progress)
             }
 
-            let lines = LogComparisonService.uniqueLines(in: sources, notIn: others, progress: progress)
+            // Poll `Task.isCancelled` so closing the results tab mid-scan stops the
+            // signature work immediately rather than running it to completion.
+            let lines = LogComparisonService.uniqueLines(
+                in: sources, notIn: others,
+                isCancelled: { Task.isCancelled },
+                progress: progress
+            )
+            if Task.isCancelled { return }
 
             await MainActor.run { [weak self] in
                 guard let self, generation == self.uniqueLinesGeneration else { return }
@@ -202,6 +222,16 @@ extension LogViewModel {
     }
 
     // MARK: - Helpers
+
+    /// Cancels an in-flight "Find Unique Lines" comparison (e.g. because the results
+    /// tab was closed mid-generation) and tears down its progress bar. Bumping the
+    /// generation ensures any result about to be applied is discarded.
+    func cancelUniqueLinesGeneration() {
+        uniqueLinesGeneration &+= 1
+        uniqueLinesTask?.cancel()
+        uniqueLinesTask = nil
+        stopUniqueLinesProgress()
+    }
 
     /// Starts a main-thread timer that polls the comparison's shared progress counter
     /// and advances the "Generating unique lines…" bar monotonically.

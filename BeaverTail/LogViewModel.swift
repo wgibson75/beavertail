@@ -215,6 +215,9 @@ class LogViewModel: ObservableObject {
     /// Generation counter for the "Find Unique Lines" comparison, so a newer request
     /// supersedes an in-flight one and stale results are discarded.
     var uniqueLinesGeneration: Int = 0
+    /// The in-flight comparison task (signature scan + line collection), stored so it
+    /// can be cancelled immediately when the results tab is closed mid-generation.
+    var uniqueLinesTask: Task<Void, Never>?
     /// Cancellation token for the in-flight filter scan, so entering a new pattern
     /// stops the previous scan's worker threads immediately (not just discards them).
     private var activeFilterToken: ScanCancellationToken?
@@ -531,6 +534,11 @@ class LogViewModel: ObservableObject {
         // Abort any in-flight (or parked) index build for this tab so its background
         // thread doesn't stay blocked in the scheduler waiting to be reselected.
         scanScheduler.cancel(tabID: id)
+        // Closing the synthetic results tab while it is still being generated must
+        // stop the comparison immediately, not let it run to completion.
+        if openTabs[index].isUniqueLinesTab {
+            cancelUniqueLinesGeneration()
+        }
         loadProgressByTab.removeValue(forKey: id)
         minimapTasks[id]?.cancel()
         minimapTasks.removeValue(forKey: id)
@@ -1299,7 +1307,7 @@ class LogViewModel: ObservableObject {
                 return low
             }
 
-            for bucket in 0..<imgHeight {
+            for bucket in 0..<imgHeight where rangeSpan >= imgHeight {
                 if Task.isCancelled { return }
                 let bucketStart = rangeStart + Int(Double(bucket) * Double(rangeSpan) / Double(imgHeight))
                 if bucketStart >= rangeEnd { break }
@@ -1330,6 +1338,25 @@ class LogViewModel: ObservableObject {
                 if let scaledColor = color.copy(alpha: alpha) {
                     ctx.setFillColor(scaledColor)
                     ctx.fill(CGRect(x: 0, y: bucket, width: imgWidth, height: 1))
+                }
+            }
+
+            // FEW lines (fewer visible lines than pixel rows): each visible line spans
+            // one or more pixel rows. Fill each matched line's FULL band, top-anchored,
+            // so the first visible line's highlight begins at the very top of the
+            // minimap and stays aligned with the current-position indicator. Draw
+            // lower-priority rules first so the highest-priority rule wins on overlap.
+            if rangeSpan < imgHeight {
+                for mIdx in stride(from: cache.count - 1, through: 0, by: -1) {
+                    if Task.isCancelled { return }
+                    guard mIdx < colors.count, let color = colors[mIdx].copy(alpha: 1.0) else { continue }
+                    ctx.setFillColor(color)
+                    for line in cache[mIdx] where line >= rangeStart && line < rangeEnd {
+                        let rel = line - rangeStart
+                        let yTop = Int(Double(rel) * Double(imgHeight) / Double(rangeSpan))
+                        let yBot = Int(Double(rel + 1) * Double(imgHeight) / Double(rangeSpan))
+                        ctx.fill(CGRect(x: 0, y: yTop, width: imgWidth, height: max(1, yBot - yTop)))
+                    }
                 }
             }
 

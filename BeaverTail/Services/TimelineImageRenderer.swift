@@ -58,6 +58,24 @@ enum TimelineImageRenderer {
         let colWidth = 40
         let imgHeight = 6000
 
+        // When there are fewer visible lines than pixel rows, each line spans one or
+        // more rows. In that regime the per-bucket drawing would place a line's dot at
+        // the BOTTOM of its band; instead we draw each entry centred on the same
+        // `r / (N - 1)` fraction the current-position indicator uses, so the first
+        // visible line sits at the very top, the last at the very bottom, and every
+        // entry stays aligned with the indicator.
+        let isSmallLog = rangeSpan > 0 && rangeSpan < imgHeight
+
+        /// Top pixel row for a `dotHeight`-tall dot centred on a visible line's
+        /// indicator fraction (`r / (N - 1)`), clamped to stay on-canvas.
+        let dotY: (Int, Double) -> CGFloat = { line, dotHeight in
+            let fraction = rangeSpan <= 1
+                ? 0.0
+                : Double(line - input.rangeStart) / Double(rangeSpan - 1)
+            let centre = fraction * Double(imgHeight)
+            return CGFloat(min(Double(imgHeight) - dotHeight, max(0, centre - dotHeight / 2)))
+        }
+
         let bSearch: ([Int], Int) -> Int = { arr, el in
             var low = 0
             var high = arr.count
@@ -189,42 +207,70 @@ enum TimelineImageRenderer {
             : CGColor(red: 0, green: 0, blue: 0, alpha: 1)
 
         if input.hasMarks {
-            for bucket in 0..<imgHeight {
-                let (bucketStart, bucketEnd) = bucketBounds(bucket)
-                if bucketStart >= input.rangeEnd { break }
-
-                let mLower = bSearch(input.sortedMarks, bucketStart)
-                let mUpper = bSearch(input.sortedMarks, bucketEnd)
-                if mLower < mUpper {
-                    let dotWidth = CGFloat(colWidth) * 0.8
-                    let dotHeight = 4.0
-                    let rect = CGRect(x: (CGFloat(colWidth) - dotWidth) / 2, y: CGFloat(bucket), width: dotWidth, height: dotHeight)
-                    ctx.setFillColor(markCGColor)
+            let dotWidth = CGFloat(colWidth) * 0.8
+            if isSmallLog {
+                // Draw one mark dot centred on each marked line's indicator fraction.
+                ctx.setFillColor(markCGColor)
+                for line in input.sortedMarks where line >= input.rangeStart && line < input.rangeEnd {
+                    let rect = CGRect(x: (CGFloat(colWidth) - dotWidth) / 2,
+                                      y: dotY(line, 4.0), width: dotWidth, height: 4.0)
                     ctx.fillEllipse(in: rect)
+                }
+            } else {
+                for bucket in 0..<imgHeight {
+                    let (bucketStart, bucketEnd) = bucketBounds(bucket)
+                    if bucketStart >= input.rangeEnd { break }
+
+                    let mLower = bSearch(input.sortedMarks, bucketStart)
+                    let mUpper = bSearch(input.sortedMarks, bucketEnd)
+                    if mLower < mUpper {
+                        let dotHeight = 4.0
+                        let rect = CGRect(x: (CGFloat(colWidth) - dotWidth) / 2, y: CGFloat(bucket), width: dotWidth, height: dotHeight)
+                        ctx.setFillColor(markCGColor)
+                        ctx.fillEllipse(in: rect)
+                    }
                 }
             }
         }
 
-        for bucket in 0..<imgHeight {
-            let totalSampled = bucketSampledCounts[bucket]
-            if totalSampled == 0 { continue }
-
-            let counts = bucketMatchCounts[bucket]
+        if isSmallLog {
+            // Draw each rule's matched entries centred on their line's indicator
+            // fraction so they line up with the current-position indicator.
+            let dotWidth = CGFloat(colWidth) * 0.8
             for (dispIdx, originalIdx) in displayedRuleIndices.enumerated() {
-                let count = counts[originalIdx]
-                if count > 0 {
-                    let density = CGFloat(count) / CGFloat(totalSampled)
-                    let alpha = max(0.45, min(1.0, density * 1.6))
-                    if let scaledColor = input.ruleColors[originalIdx].copy(alpha: alpha) {
-                        ctx.setFillColor(scaledColor)
-                        let colIdx = dispIdx + ruleOffset
-                        let xOffset = colIdx * colWidth
-                        let dotWidth = CGFloat(colWidth) * 0.8
-                        let dotHeight = 2.0
-                        ctx.fillEllipse(in: CGRect(x: CGFloat(xOffset) + (CGFloat(colWidth) - dotWidth) / 2,
-                                                   y: CGFloat(bucket),
-                                                   width: dotWidth,
-                                                   height: dotHeight))
+                guard let color = input.ruleColors[originalIdx].copy(alpha: 1.0) else { continue }
+                ctx.setFillColor(color)
+                let colIdx = dispIdx + ruleOffset
+                let xOffset = colIdx * colWidth
+                for line in newTimelineMatches[originalIdx] where line >= input.rangeStart && line < input.rangeEnd {
+                    ctx.fillEllipse(in: CGRect(x: CGFloat(xOffset) + (CGFloat(colWidth) - dotWidth) / 2,
+                                               y: dotY(line, 2.0),
+                                               width: dotWidth,
+                                               height: 2.0))
+                }
+            }
+        } else {
+            for bucket in 0..<imgHeight {
+                let totalSampled = bucketSampledCounts[bucket]
+                if totalSampled == 0 { continue }
+
+                let counts = bucketMatchCounts[bucket]
+                for (dispIdx, originalIdx) in displayedRuleIndices.enumerated() {
+                    let count = counts[originalIdx]
+                    if count > 0 {
+                        let density = CGFloat(count) / CGFloat(totalSampled)
+                        let alpha = max(0.45, min(1.0, density * 1.6))
+                        if let scaledColor = input.ruleColors[originalIdx].copy(alpha: alpha) {
+                            ctx.setFillColor(scaledColor)
+                            let colIdx = dispIdx + ruleOffset
+                            let xOffset = colIdx * colWidth
+                            let dotWidth = CGFloat(colWidth) * 0.8
+                            let dotHeight = 2.0
+                            ctx.fillEllipse(in: CGRect(x: CGFloat(xOffset) + (CGFloat(colWidth) - dotWidth) / 2,
+                                                       y: CGFloat(bucket),
+                                                       width: dotWidth,
+                                                       height: dotHeight))
+                        }
                     }
                 }
             }

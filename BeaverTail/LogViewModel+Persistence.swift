@@ -91,6 +91,12 @@ extension LogViewModel {
         guard let index = openTabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = openTabs[index]
         guard tab.content == nil, !tab.isCurrentlyStreaming else { return }
+        // The synthetic "Unique lines" results tab is backed by in-memory content and
+        // its placeholder URL never exists on disk. Attempting to lazy-load it (e.g.
+        // when the tab is clicked while the comparison is still running and its content
+        // is nil) would fail to open the placeholder file and wrongly flip the tab into
+        // an "Unable to open file…" error state, so skip it.
+        guard !tab.isUniqueLinesTab else { return }
 
         openTabs[index].isCurrentlyStreaming = true
 

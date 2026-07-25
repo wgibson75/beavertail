@@ -34,21 +34,19 @@ extension LogViewModel {
     /// Converts an original line index to a 0...1 fraction of the minimap/timeline
     /// image, which spans only the currently-visible original-index range.
     ///
-    /// This returns the centre of the exact pixel the minimap image draws the line
-    /// into. The image places visible line `r` in bucket `ceil((r+1)·H/N) - 1`
-    /// (where `H` is the image height and `N` the visible count — see
-    /// `generateMinimapData`), which sits at the bottom edge of the line's band, not
-    /// its middle. Matching that bucket keeps the hover indicator exactly on the
-    /// highlight even when only a handful of lines are visible; for large logs it is
-    /// identical to the drawn pixel and so remains correct there too.
+    /// Visible line `r` of `N` visible lines maps to `r / (N - 1)`, so the endpoints
+    /// are exact: the first visible line sits at the very top (`0`) and the last at
+    /// the very bottom (`1`), with interior lines spread linearly between. Each
+    /// fraction still falls inside the line's drawn highlight band, so the
+    /// current-position indicator stays on the highlight at every scale — including
+    /// logs with only a handful of lines, where each band is many pixels tall. For
+    /// large logs a band is sub-pixel, so this is indistinguishable from the exact
+    /// drawn pixel.
     func minimapFraction(forOriginalIndex originalIndex: Int, in tab: LogTab) -> CGFloat {
         let span = tab.lineCount
-        guard span > 0 else { return 0 }
+        guard span > 1 else { return 0 }
         let relative = max(0, min(span - 1, originalIndex - visibleLowerBound(of: tab)))
-        let height = minimapImageHeight
-        let bucket = min(height - 1,
-                         Int(ceil(Double(relative + 1) * Double(height) / Double(span))) - 1)
-        return max(0, min(1, (CGFloat(bucket) + 0.5) / CGFloat(height)))
+        return max(0, min(1, CGFloat(relative) / CGFloat(span - 1)))
     }
 
     /// Converts a 0...1 minimap/timeline click fraction to an original line index,
@@ -71,8 +69,9 @@ extension LogViewModel {
         guard let fraction = tab.selectedFraction else { return nil }
         let span = tab.lineCount
         guard span > 0 else { return nil }
-        // Inverse of the centred `(r + 0.5)/N` mapping: floor(fraction * N).
-        let offset = min(span - 1, max(0, Int(fraction * CGFloat(span))))
+        guard span > 1 else { return visibleLowerBound(of: tab) }
+        // Inverse of the `r / (N - 1)` indicator mapping.
+        let offset = min(span - 1, max(0, Int((fraction * CGFloat(span - 1)).rounded())))
         return visibleLowerBound(of: tab) + offset
     }
 
