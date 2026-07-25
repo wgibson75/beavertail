@@ -13,11 +13,20 @@ struct VisibleRange: Equatable {
     var upper: Int?
 }
 
+/// A user-applied classification of a log tab, used by the "Find Unique Lines"
+/// comparison feature. A tab can be marked as a known-good or known-bad log; the
+/// comparison then surfaces the log-line "flavours" present in one set but not the
+/// other.
+enum LogMark: String, Codable, Equatable {
+    case good
+    case bad
+}
+
 /// Struct tracking individual workspace parameters per loaded file tab node
 struct LogTab: Identifiable, Equatable, Codable {
     let id: UUID
-    let name: String
-    let fileURL: URL
+    var name: String
+    var fileURL: URL
 
     /// Memory-mapped, lazily-indexed file content. `nil` until the file is loaded.
     var content: LogContent?
@@ -46,6 +55,17 @@ struct LogTab: Identifiable, Equatable, Codable {
     var minimapImage: NSImage?
     var minimapMatches: [Int] = []
     var timelineImage: NSImage?
+
+    /// Comparison classification (good/bad) applied via the tab's right-click menu.
+    /// `nil` when the tab is unmarked. Not persisted across launches.
+    var mark: LogMark?
+    /// Monotonically increasing order in which this tab was marked, so the unique-line
+    /// comparison can process marked logs in the sequence the user marked them.
+    var markSequence: Int?
+    /// True for the single synthetic "Unique lines" results tab produced by the
+    /// comparison feature. Such a tab has in-memory content (no backing file), so it
+    /// is excluded from live-tailing and session persistence.
+    var isUniqueLinesTab: Bool = false
     var highlightMatches: [[Int]] = []
     var activeRuleSignatures: [String] = []
     var activeRuleIDs: [UUID] = []
@@ -249,5 +269,6 @@ struct LogTab: Identifiable, Equatable, Codable {
             && lhs.markedIndices == rhs.markedIndices
             && lhs.lineCount == rhs.lineCount
             && lhs.isCurrentlyStreaming == rhs.isCurrentlyStreaming
+            && lhs.mark == rhs.mark
     }
 }

@@ -44,9 +44,24 @@ class LogProgressTracker: ObservableObject {
     @Published var fileLoadProgress: Double = 0.0
     @Published var isFiltering: Bool = false
     @Published var filterProgress: Double = 0.0
+    /// Drives the "Generating unique lines…" progress bar while the good/bad log
+    /// comparison runs.
+    @Published var isComparing: Bool = false
+    @Published var compareProgress: Double = 0.0
 }
 
 class RecentFilesTracker: ObservableObject {
     static let shared = RecentFilesTracker()
     @Published var recentFiles: [RecentFile] = []
+}
+
+/// Rarely-changing state that drives menu-command availability. Kept separate from
+/// `LogViewModel` (which the App holds via `@State`, deliberately unobserved to avoid
+/// redrawing the menus on every frequent `@Published` update) so menu items can react
+/// to it. Its published values are only reassigned when they actually change, so the
+/// menus rebuild only on genuine transitions.
+class AppCommandState: ObservableObject {
+    static let shared = AppCommandState()
+    /// True only while the unsaved "unique lines" results tab is the selected tab.
+    @Published var canSaveUniqueLines: Bool = false
 }

@@ -53,7 +53,10 @@ class LogViewModel: ObservableObject {
     static let deferredFilterMessage = "Filtering will begin once the file has finished loading…"
 
     @Published var openTabs: [LogTab] = [] {
-        didSet { saveLoadedTabsSession() }
+        didSet {
+            saveLoadedTabsSession()
+            refreshSaveCommandAvailability()
+        }
     }
 
     /// The "Set Point in Time" reference timestamp for the CURRENTLY selected tab.
@@ -91,6 +94,17 @@ class LogViewModel: ObservableObject {
             // Restart highlight generation for the now-visible tab if it was
             // interrupted by a previous switch-away (no-op when already complete).
             resumeHighlightGenerationForSelectedTabIfNeeded()
+            refreshSaveCommandAvailability()
+        }
+    }
+
+    /// Keeps the ⌘S "Save to File…" command enabled only while the unsaved
+    /// "unique lines" results tab is selected. Only republishes on a genuine change,
+    /// so the menus don't rebuild on every frequent `openTabs` update.
+    func refreshSaveCommandAvailability() {
+        let canSave = currentTab?.isUniqueLinesTab == true
+        if AppCommandState.shared.canSaveUniqueLines != canSave {
+            AppCommandState.shared.canSaveUniqueLines = canSave
         }
     }
 
@@ -198,6 +212,9 @@ class LogViewModel: ObservableObject {
     }
 
     private var filterGeneration: Int = 0
+    /// Generation counter for the "Find Unique Lines" comparison, so a newer request
+    /// supersedes an in-flight one and stale results are discarded.
+    var uniqueLinesGeneration: Int = 0
     /// Cancellation token for the in-flight filter scan, so entering a new pattern
     /// stops the previous scan's worker threads immediately (not just discards them).
     private var activeFilterToken: ScanCancellationToken?
@@ -210,6 +227,9 @@ class LogViewModel: ObservableObject {
     private var tabsNeedingFilterRerun: Set<UUID> = []
     private var filterTimer: Timer?
     var fileLoadTimer: Timer?
+    /// Main-thread timer that polls the comparison's progress counter to drive the
+    /// "Generating unique lines…" bar.
+    var compareProgressTimer: Timer?
     /// Concurrent queue for the heavy memory-map index builds. Builds may be
     /// in-flight simultaneously here, but their CPU-heavy segment scans are funnelled
     /// through `scanScheduler`, which guarantees only ONE all-core scan runs at a

@@ -17,6 +17,9 @@ extension LogViewModel {
     func flushSaveLoadedTabsSession() {
         var serializedMetadata: [SavedTabMetadata] = []
         for tab in openTabs {
+            // The synthetic "Unique lines" results tab has no backing file, so it is
+            // not persisted across launches.
+            if tab.isUniqueLinesTab { continue }
             do {
                 let bookmarkBase64 = try SessionStore.makeBookmark(for: tab.fileURL)
                 serializedMetadata.append(SavedTabMetadata(

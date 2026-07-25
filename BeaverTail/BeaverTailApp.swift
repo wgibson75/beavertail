@@ -117,6 +117,7 @@ struct BeaverTailApp: App {
     // updated during file loading, regex filtering, and minimap rendering.
     @State private var viewModel = LogViewModel()
     @StateObject private var recentTracker = RecentFilesTracker.shared
+    @StateObject private var commandState = AppCommandState.shared
 
     /// Whether BeaverTail checks GitHub for a newer release on launch.
     /// Defaults to on; the user can disable it from the app menu.
@@ -168,6 +169,15 @@ struct BeaverTailApp: App {
                         }
                     }
                 }
+            }
+            // ⌘S saves the unsaved "unique lines" results tab. Enabled only while that
+            // tab is selected (it converts to a normal file-backed tab once saved).
+            CommandGroup(replacing: .saveItem) {
+                Button("Save to File…") {
+                    viewModel.saveUniqueLinesToFile()
+                }
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(!commandState.canSaveUniqueLines)
             }
             CommandGroup(replacing: .help) {
                 Button("BeaverTail Help") {

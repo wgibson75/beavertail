@@ -9,6 +9,10 @@ extension LogViewModel {
     func startLiveTailingForActiveTab() {
         stopLiveTailing()
         guard let tab = currentTab else { return }
+        // The synthetic "Unique lines" tab has in-memory content and no backing file,
+        // so there is nothing to tail — skip it (tailing a non-existent file would
+        // otherwise flip it into a spurious "file deleted" error state).
+        guard !tab.isUniqueLinesTab else { return }
         let fileURL = tab.fileURL
         let tabID = tab.id
 

@@ -51,6 +51,7 @@ Introduced to lift "core logic" out of the previously monolithic `LogViewModel`:
 | `UpdateService` | GitHub "latest release" networking and version comparison. | `UpdateChecker` |
 | `CLIInstaller` (`BTailInstaller`) | Installs the `btail` shell helper (filesystem + shell). | `BeaverTailApp` |
 | `TimelineImageRenderer` | Pure Core Graphics rendering of the per-rule density timeline. | `LogViewModel+Timeline` |
+| `LogComparisonService` | Pure log-line signature + good/bad "unique lines" comparison. | `LogViewModel+Compare` |
 | `IndexScanScheduler` | Coordinates CPU-heavy index scans across tabs. | (already a service) |
 
 `UpdateChecker` remains as the *presentation coordinator* (it owns the

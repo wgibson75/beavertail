@@ -251,7 +251,7 @@ final class ScanCancellationToken: @unchecked Sendable {
 /// Thread-safe progress counter. Worker threads bump `current` cheaply; the UI
 /// reads `fraction` from a timer on the main thread. This decouples progress
 /// reporting from the scan so the bar stays smooth even while every core is busy.
-final class ScanProgress: @unchecked Sendable {
+nonisolated final class ScanProgress: @unchecked Sendable {
     private var _current: Int = 0
     // os_unfair_lock (via OSAllocatedUnfairLock) donates the waiter's priority to the
     // lock holder, avoiding priority inversions when the user-interactive main thread
@@ -467,6 +467,12 @@ final class LogContent: LineProvider, @unchecked Sendable {
         return data.withUnsafeBytes { raw -> String in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return "" }
             var e = end
+            // Strip the terminating newline from the final line of a newline-terminated
+            // file (the last indexed line runs to EOF, so `end` includes its trailing
+            // LF/CRLF). For every other line `end` already excludes the newline, so
+            // these checks are a no-op there. Without this, a file that ends in a
+            // newline shows a spurious empty last line.
+            if e > start, base[e - 1] == 0x0A { e -= 1 } // strip trailing LF
             if e > start, base[e - 1] == 0x0D { e -= 1 } // strip trailing CR (CRLF)
             return String(decoding: UnsafeBufferPointer(start: base + start, count: e - start), as: UTF8.self)
         }
@@ -500,6 +506,24 @@ final class LogContent: LineProvider, @unchecked Sendable {
         let content = try mappedEmpty(from: url)
         content.buildIndex(progress: progress, onSegment: { _ in })
         return content
+    }
+
+    /// Builds a fully-indexed, in-memory `LogContent` from an array of strings.
+    /// Used for synthetic tabs (e.g. the "Unique lines" comparison results) that
+    /// have no backing file on disk but must behave like any other loaded log —
+    /// filterable, highlightable and exportable. Lines are newline-separated with no
+    /// trailing newline so the final line decodes without a spurious blank tail.
+    nonisolated static func fromLines(_ lines: [String]) -> LogContent {
+        var data = Data()
+        var starts = ContiguousArray<Int>()
+        starts.reserveCapacity(lines.count)
+        let newline: UInt8 = 0x0A
+        for (i, line) in lines.enumerated() {
+            starts.append(data.count)
+            data.append(contentsOf: Array(line.utf8))
+            if i < lines.count - 1 { data.append(newline) }
+        }
+        return LogContent(data: data, lineStarts: starts, totalBytes: data.count, scanComplete: true)
     }
 
     /// Scans the mapped data for line starts, appending them to the index in file

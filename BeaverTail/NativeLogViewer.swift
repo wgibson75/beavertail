@@ -779,7 +779,8 @@ struct NativeLogViewer: NSViewRepresentable {
         isHidingLines: Bool = false,
         onHideLinesAbove: ((Int) -> Void)? = nil,
         onHideLinesBelow: ((Int) -> Void)? = nil,
-        onShowAllLines: (() -> Void)? = nil
+        onShowAllLines: (() -> Void)? = nil,
+        onSaveToFile: (() -> Void)? = nil
     ) {
         self.provider = provider
         isFiltered = false
@@ -806,6 +807,7 @@ struct NativeLogViewer: NSViewRepresentable {
         self.onHideLinesAbove = onHideLinesAbove
         self.onHideLinesBelow = onHideLinesBelow
         self.onShowAllLines = onShowAllLines
+        self.onSaveToFile = onSaveToFile
     }
     /// Initializer for the Bottom Pane (Filtered Log View)
     init(

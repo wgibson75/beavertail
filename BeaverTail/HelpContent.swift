@@ -33,6 +33,35 @@ enum HelpContent {
             HelpItem(shortcut: "⌘ + W", description: "Close the active tab. The application stays open when all tabs are closed."),
             HelpItem(shortcut: nil, description: "Drag tabs left or right to reorder them.")
         ]),
+        HelpSection(title: "Comparing Logs (Unique Lines)", items: [
+            HelpItem(shortcut: nil, description:
+                "Right-click a tab and choose 'Mark as Good' or 'Mark as Bad' to classify open logs for comparison. "
+                + "A green (good) or red (bad) dot appears on marked tabs; choose 'Clear' to unmark."),
+            HelpItem(shortcut: nil, description:
+                "Once at least one log is marked good and at least one is marked bad, two options appear in the tab "
+                + "right-click menu: 'Show Unique Lines from Good' and 'Show Unique Lines from Bad'."),
+            HelpItem(shortcut: nil, description:
+                "'Show Unique Lines from Bad' reports the log lines that appear in the bad log(s) but not in the good "
+                + "log(s); 'Show Unique Lines from Good' does the reverse. This is useful for isolating the lines "
+                + "associated with a problem captured in one log but not another."),
+            HelpItem(shortcut: nil, description:
+                "Lines are compared by a 'signature' that ignores volatile detail — hexadecimal characters and text "
+                + "inside single or double quotes are removed — so timestamps, memory addresses, handle counters and "
+                + "quoted labels don't prevent two lines of the same type from matching."),
+            HelpItem(shortcut: nil, description:
+                "When more than one log is marked on the reporting side, only signatures present in EVERY one of "
+                + "those logs are reported (and only if absent from all logs on the opposite side). The matching "
+                + "lines are listed, in their original order, from the first log you marked on that side."),
+            HelpItem(shortcut: nil, description:
+                "Results open in a single 'unique-lines.txt' tab; a progress bar is shown while they are generated. "
+                + "Choosing an option again refreshes that same tab. You can filter and apply highlight rules to it "
+                + "just like any other log."),
+            HelpItem(shortcut: "⌘ + S", description:
+                "Right-click in the upper pane of the results tab and choose 'Save to File…' — or press ⌘ + S "
+                + "while that tab is selected — to save the unique lines. (⌘ + S only applies to the unsaved "
+                + "unique-lines tab.) Saving turns the tab into a normal file-backed log tab named after the chosen "
+                + "file; if that file is already open in another tab, that tab is replaced.")
+        ]),
         HelpSection(title: "Filtering", items: [
             HelpItem(shortcut: "↵", description:
                 "Type a regular expression into the Filter field and press Return to filter log lines. "

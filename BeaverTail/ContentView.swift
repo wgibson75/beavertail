@@ -24,6 +24,9 @@ struct ContentView: View {
             // FILE STREAMING PROGRESS BARr
             FileLoadProgressView(progressTracker: viewModel.progressTracker)
 
+            // UNIQUE-LINES COMPARISON PROGRESS BAR
+            UniqueLinesProgressView(progressTracker: viewModel.progressTracker)
+
             // TAB STRIP
             if !viewModel.openTabs.isEmpty {
                 HStack(spacing: 0) {
@@ -33,6 +36,12 @@ struct ContentView: View {
                             let isSelected = viewModel.selectedTabID == tab.id
                             let isDragging = draggingTabID == tab.id
                             HStack(spacing: 5) {
+                                if let mark = tab.mark {
+                                    Circle()
+                                        .fill(mark == .good ? Color.green : Color.red)
+                                        .frame(width: 7, height: 7)
+                                        .help(mark == .good ? "Marked as Good Log" : "Marked as Bad Log")
+                                }
                                 Text(tab.name)
                                     .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
                                     .foregroundStyle(isSelected ? AnyShapeStyle(Color.primary) : AnyShapeStyle(Color.secondary))
@@ -101,6 +110,10 @@ struct ContentView: View {
                                     draggingTabID: $draggingTabID
                                 )
                             )
+                            .modifier(ConditionalTabContextMenu(
+                                isEnabled: !tab.isUniqueLinesTab,
+                                menu: { tabContextMenu(for: tab) }
+                            ))
                         }
 
                         // Spacer fills the remaining strip width so the whole
@@ -278,8 +291,35 @@ struct ContentView: View {
                     .allowsHitTesting(false)
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: openFileMenuNotification)) { _ in
-            viewModel.openFile()
+    }
+
+    /// Right-click menu for a log tab: mark it as a good/bad log for the unique-lines
+    /// comparison, and run the comparison once both a good and a bad log exist. Only
+    /// attached to real log tabs (never the synthetic "Unique lines" results tab).
+    @ViewBuilder
+    private func tabContextMenu(for tab: LogTab) -> some View {
+        Toggle("Mark as Good", isOn: Binding(
+            get: { tab.mark == .good },
+            set: { viewModel.markTab(id: tab.id, as: $0 ? .good : nil) }
+        ))
+        Toggle("Mark as Bad", isOn: Binding(
+            get: { tab.mark == .bad },
+            set: { viewModel.markTab(id: tab.id, as: $0 ? .bad : nil) }
+        ))
+        if tab.mark != nil {
+            Button("Clear") {
+                viewModel.markTab(id: tab.id, as: nil)
+            }
+        }
+
+        if viewModel.canFindUniqueLines {
+            Divider()
+                Button("Show Unique Lines from Good") {
+                    viewModel.findUniqueLines(preferring: .good)
+                }
+                Button("Show Unique Lines from Bad") {
+                    viewModel.findUniqueLines(preferring: .bad)
+                }
         }
     }
 
@@ -360,6 +400,21 @@ struct ContentView: View {
     }
 }
 
+/// Attaches a context menu only when `isEnabled` is true, so tabs without any menu
+/// items (the synthetic "Unique lines" results tab) show no empty popup on right-click.
+private struct ConditionalTabContextMenu<Menu: View>: ViewModifier {
+    let isEnabled: Bool
+    @ViewBuilder let menu: () -> Menu
+
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.contextMenu { menu() }
+        } else {
+            content
+        }
+    }
+}
+
 // MARK: - Top Pane
 
 private struct TopPaneView: View {
@@ -434,7 +489,13 @@ private struct TopPaneView: View {
                     isHidingLines: viewModel.isHidingLinesInCurrentTab,
                     onHideLinesAbove: { viewModel.hideLinesAbove(originalIndex: $0) },
                     onHideLinesBelow: { viewModel.hideLinesBelow(originalIndex: $0) },
-                    onShowAllLines: { viewModel.showAllLines() }
+                    onShowAllLines: { viewModel.showAllLines() },
+                    // Only the synthetic "Unique lines" results tab offers "Save to File…"
+                    // in the top pane, letting the user export the unique lines anywhere
+                    // they right-click.
+                    onSaveToFile: viewModel.currentTab?.isUniqueLinesTab == true
+                        ? { viewModel.saveUniqueLinesToFile() }
+                        : nil
                 ).id(viewModel.selectedTabID?.uuidString ?? "top")
             }
         }
@@ -1260,6 +1321,29 @@ struct FileLoadProgressView: View {
                     .controlSize(.small)
                     .animation(.none, value: progressTracker.fileLoadProgress)
                 Text("Loading file… \(Int(progressTracker.fileLoadProgress * 100))%")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            Divider()
+        }
+    }
+}
+
+/// Progress bar shown while the good/bad "unique lines" comparison runs. Styled
+/// identically to `FileLoadProgressView` so it reads as the same kind of operation.
+struct UniqueLinesProgressView: View {
+    @ObservedObject var progressTracker: LogProgressTracker
+
+    var body: some View {
+        if progressTracker.isComparing {
+            VStack(spacing: 2) {
+                ProgressView(value: progressTracker.compareProgress)
+                    .progressViewStyle(.linear)
+                    .controlSize(.small)
+                    .animation(.none, value: progressTracker.compareProgress)
+                Text("Generating unique lines… \(Int(progressTracker.compareProgress * 100))%")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
