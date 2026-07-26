@@ -626,6 +626,9 @@ private struct TimelinePaneView: View {
     var body: some View {
         VStack(spacing: 0) {
             FilterBarView(viewModel: viewModel, showFilterDropdown: $showFilterDropdown)
+            // Same filter progress bar shown in the non-timeline bottom pane, so
+            // updating the regex Filter shows progress here too.
+            FilterProgressView(progressTracker: viewModel.progressTracker)
             Divider()
 
             ZStack(alignment: .topLeading) {

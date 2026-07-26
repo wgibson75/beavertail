@@ -899,6 +899,16 @@ class LogViewModel: ObservableObject {
         progressTracker.filterProgress = 0.0
         openTabs[tabIndex].filterMessage = nil
 
+        // Clear the bottom pane immediately so stale results from the previous
+        // filter don't linger while the new scan runs. The log pane empties now and
+        // refills progressively as matches arrive; the timeline clears here and is
+        // regenerated once the scan completes.
+        openTabs[tabIndex].filteredIndices = []
+        openTabs[tabIndex].timelineImage = nil
+        openTabs[tabIndex].timelineMatches = []
+        openTabs[tabIndex].timelineActiveRuleIDs = []
+        updateDisplayedIndices(for: tabIndex)
+
         guard let content = openTabs[tabIndex].content else {
             progressTracker.isFiltering = false
             return
