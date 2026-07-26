@@ -234,14 +234,26 @@ extension LogViewModel {
         triggerTimelineJump()
     }
 
-    func syncSelectionFromFilteredIndex(_ originalIndex: Int) {
+    func syncSelectionFromFilteredIndex(_ originalIndex: Int, allowsHorizontalScroll: Bool = false) {
         guard let tabID = selectedTabID, let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
         let totalCount = openTabs[index].lineCount
         guard totalCount > 0 else { return }
         openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: originalIndex, in: openTabs[index])
+        // Post an explicit request carrying the caller's horizontal-scroll intent.
+        // Programmatic "jump to a new line" callers (time-period selection, zoom
+        // step-back, single bottom-pane clicks, mark navigation) pass `false`, so the
+        // top pane only scrolls vertically to reveal the line. Only an intentional
+        // repeated bottom-pane click passes `true`. Sending a bare Int previously left
+        // the handler's `explicitHorizontalScroll` nil, letting it fall back to a
+        // `selectedRow == row` heuristic that misfired (the row is frequently already
+        // selected by a preceding visibility change) and made the top pane scroll
+        // horizontally by mistake.
         NotificationCenter.default.post(
             name: topPaneDirectScrollNotification,
-            object: topPaneRow(forOriginalIndex: originalIndex, in: openTabs[index])
+            object: TopPaneDirectScrollRequest(
+                lineIndex: topPaneRow(forOriginalIndex: originalIndex, in: openTabs[index]),
+                allowsHorizontalScroll: allowsHorizontalScroll
+            )
         )
         // Flash the current-position indicator so the new position stands out. Covers
         // bottom-pane filtered-line clicks, mark-block navigation and zoom step-back,

@@ -1035,7 +1035,7 @@ private struct BottomPaneView: View {    @ObservedObject var viewModel: LogViewM
                             fontSize: viewModel.fontSize,
                             markedIndices: viewModel.currentTab?.markedIndices ?? [],
                             onLineIndexSelected: { viewModel.syncSelectionFromFilteredIndex($0) },
-                            onRepeatedPlainClick: { viewModel.syncSelectionFromFilteredIndex($0) },
+                            onRepeatedPlainClick: { viewModel.syncSelectionFromFilteredIndex($0, allowsHorizontalScroll: true) },
                             onToggleMark: { viewModel.toggleMarks($0) },
                             onClearAllMarks: { viewModel.clearAllMarks() },
                             onSetReferenceTimestamp: { viewModel.referenceTimestamp = $0 },
