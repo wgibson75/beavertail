@@ -963,6 +963,21 @@ private struct BottomPaneView: View {    @ObservedObject var viewModel: LogViewM
                                 .foregroundStyle(.secondary)
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if viewModel.filteredCount == 0
+                        && !viewModel.progressTracker.isFiltering
+                        && !viewModel.currentFilterPattern.isEmpty {
+                        // A filter is applied (and valid — an invalid regex sets a
+                        // filterMessage which makes filteredCount == 1) but no log
+                        // lines matched it.
+                        VStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 28))
+                                .foregroundStyle(.tertiary)
+                            Text("No lines matched")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         NativeLogViewer(
                             filteredProvider: viewModel.filteredProvider,
