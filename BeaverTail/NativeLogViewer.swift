@@ -34,8 +34,7 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
         let rowCount = numberOfRows
         guard rowCount > 0 else { return true }
         let lastRowRect = rect(ofRow: rowCount - 1)
-        // Purely vertical test (rows can be far wider than the viewport when
-        // horizontally scrolled, so a full-rect containment check is unreliable).
+        // Purely vertical test (rows can be wider than the viewport when scrolled).
         return visibleRect.maxY >= lastRowRect.maxY - 2.0
     }
     var referenceTimestamp: Date? {
@@ -326,10 +325,8 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
         if isHorizontalScrollActive {
             hasDeferredReload = true
         } else if hasActiveTextSelection {
-            // The user is dragging to select / has selected part of a line in the
-            // top pane. reloadData() would recycle the cell and destroy the field
-            // editor's selection before they can copy it, so hold the reload back
-            // and flush it the moment the selection is released.
+            // The user is selecting text in a top-pane cell; reloadData() would recycle
+            // the cell and destroy the field editor's selection, so defer until release.
             hasDeferredReload = true
             ensureSelectionReloadWatcher()
         } else {
@@ -341,21 +338,16 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
         hasDeferredReload = false
         reloadPreservingSelection()
     }
-    /// True while a top-pane cell's field editor currently has an active text
-    /// selection (or the user is mid-drag with the mouse button held down). Used to
-    /// defer reloads so an in-progress selection isn't wiped by reloadData while the
-    /// log is being filtered or is still loading.
+    /// True while a top-pane cell's field editor has an active text selection (or a
+    /// mid-drag). Used to defer reloads so an in-progress selection isn't wiped.
     var hasActiveTextSelection: Bool {
         guard let editor = window?.firstResponder as? NSTextView, editor.isFieldEditor
         else { return false }
-        // While a cell is being edited the shared field editor is inserted into that
-        // cell's view hierarchy, so it is a descendant of THIS table. This precisely
-        // excludes selections in unrelated fields (e.g. the filter box), whose field
-        // editor lives outside the table.
+        // The shared field editor is a descendant of THIS table only while one of its
+        // cells is being edited — excludes selections in unrelated fields (filter box).
         guard editor.isDescendant(of: self) else { return false }
         if editor.selectedRange().length > 0 { return true }
-        // Still count an in-progress drag (button down, selection not yet grown).
-        return (NSEvent.pressedMouseButtons & 0x1) != 0
+        return (NSEvent.pressedMouseButtons & 0x1) != 0  // in-progress drag
     }
     /// Starts a lightweight poll (if not already running) that flushes a
     /// selection-deferred reload once the text selection is released.
@@ -413,8 +405,7 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
         horizontalScrollStartX = startX
         horizontalScrollDistance = distance
         horizontalScrollLastTimestamp = 0
-        // Prefer a window-based display link (more reliably scheduled than a scroll
-        // view's document-view link); fall back to the view-based one.
+        // Prefer a window-based display link (more reliably scheduled); else view-based.
         let link: CADisplayLink
         if let window = self.window {
             link = window.displayLink(target: self, selector: #selector(stepHorizontalScroll(_:)))
@@ -675,8 +666,7 @@ private class LogTextField: NSTextField {
         }
     }
     override func rightMouseDown(with event: NSEvent) {
-        // For both panes: ensure the right-clicked row is selected before the
-        // context menu is built.
+        // Ensure the right-clicked row is selected before the context menu is built.
         if let tv = enclosingTableView() {
             let point = tv.convert(event.locationInWindow, from: nil)
             let row = tv.row(at: point)
@@ -692,8 +682,7 @@ private class LogTextField: NSTextField {
                 }
             }
         }
-        // Explicitly pop up our own menu rather than calling super, which would
-        // route through the field editor and show the system text menu instead.
+        // Pop up our own menu rather than super's (which shows the system text menu).
         if let menu = self.menu(for: event) {
             NSMenu.popUpContextMenu(menu, with: event, for: self)
         } else {
@@ -865,11 +854,9 @@ struct NativeLogViewer: NSViewRepresentable {
         tableView.backgroundColor = .clear
         tableView.selectionHighlightStyle = .regular
         tableView.allowsMultipleSelection = true
-        // Fixed row height (every row is identical). This gives NSTableView its
-        // O(1) document-height fast path. Implementing tableView(_:heightOfRow:)
-        // instead forces AppKit to call the delegate for EVERY row on reloadData
-        // — tens of millions of main-thread calls for huge logs, which freezes
-        // the UI. Setting rowHeight directly avoids that entirely.
+        // Fixed row height gives NSTableView its O(1) document-height fast path;
+        // tableView(_:heightOfRow:) would call the delegate for EVERY row on reloadData
+        // (tens of millions of main-thread calls for huge logs), freezing the UI.
         tableView.usesAutomaticRowHeights = false
         tableView.rowHeight = fontSize + 2
         tableView.delegate = context.coordinator
@@ -1024,10 +1011,9 @@ struct NativeLogViewer: NSViewRepresentable {
             queue: .main
         ) { [weak tableView] notification in
             guard let tableView = tableView else { return }
-            // A "force" post (Follow toggled on / filter completed) always snaps to
-            // the bottom and clears any user scroll-up suspension. A plain live-tail
-            // append post (nil object) is ignored while the user has scrolled up, so
-            // they can read older lines without being pulled back to the newest line.
+            // A "force" post (Follow toggled on / filter completed) always snaps to the
+            // bottom and clears any scroll-up suspension; a plain live-tail append is
+            // ignored while the user has scrolled up so they can read older lines.
             let force = (notification.object as? String) == forceScrollToBottomMarker
             if force {
                 tableView.followSuspendedByScroll = false
@@ -1063,9 +1049,8 @@ struct NativeLogViewer: NSViewRepresentable {
         if isFiltered {
             installScrollRowToTopObserver(name: bottomPaneScrollToRowNotification, tableView: tableView)
         }
-        // SCROLL A ROW TO THE TOP AND SELECT IT – top pane only. Used after
-        // "Hide Lines Above" so the selected line stays selected and sits at the
-        // very top of the pane instead of the stale row index jumping elsewhere.
+        // SCROLL A ROW TO THE TOP AND SELECT IT – top pane only (e.g. after "Hide
+        // Lines Above" so the selected line sits at the very top).
         if !isFiltered {
             installScrollRowToTopObserver(name: topPaneScrollToRowNotification, tableView: tableView)
         }
@@ -1106,6 +1091,7 @@ struct NativeLogViewer: NSViewRepresentable {
         tableView.onHideLinesBelow = onHideLinesBelow
         tableView.onShowAllLines = onShowAllLines
         tableView.onSaveToFile = onSaveToFile
+        let oldTopProvider = context.coordinator.provider  // for range-change detection
         context.coordinator.provider = provider
         context.coordinator.isFiltered = isFiltered
         context.coordinator.defaultTextColor = textColor
@@ -1128,17 +1114,37 @@ struct NativeLogViewer: NSViewRepresentable {
             coordinator?.provider.originalIndex(at: row) ?? row
         }
         context.coordinator.configureColumns(in: tableView, showLineNumbers: showLineNumbers)
-        // Preserve the current selection across reloadData (which otherwise drops
-        // the visual highlight). If a horizontal scroll is in progress, the reload is
-        // deferred until it finishes so the scroll animation isn't interrupted by a
-        // mid-scroll redraw (which appears as a single jerk).
+        // TOP PANE: when the visible range's top boundary shifts (narrowing to a minimap
+        // subset), compensate the scroll offset by the boundary delta so content stays
+        // put instead of appearing to jump. Skipped for live-tail appends.
+        let oldFirstOriginal = oldTopProvider.count > 0 ? oldTopProvider.originalIndex(at: 0) : nil
+        let newFirstOriginal = provider.count > 0 ? provider.originalIndex(at: 0) : nil
+        let oldOriginY = nsView.contentView.bounds.origin.y
         tableView.reloadDeferringDuringHorizontalScroll()
-        // FIXED MINIMAP SCRUBBING JUMP CONDITIONS:
-        // Only auto-scroll the top pane if the user is actively dragging their cursor across the minimap bar!
+        if !isFiltered, let oldFirst = oldFirstOriginal, let newFirst = newFirstOriginal,
+           oldFirst != newFirst {
+            let clipView = nsView.contentView
+            let maxY = max(0, tableView.bounds.height - clipView.bounds.height)
+            let targetY = min(max(0, oldOriginY - CGFloat(newFirst - oldFirst) * (fontSize + 2)), maxY)
+            clipView.setBoundsOrigin(NSPoint(x: clipView.bounds.origin.x, y: targetY))
+            nsView.reflectScrolledClipView(clipView)
+            // Keep the selection highlight on the current line at its new (shifted)
+            // row — its index moved with the range — without scrolling.
+            if let fraction = selectedFraction, provider.count > 0,
+               let coord = tableView.delegate as? Coordinator {
+                let count = provider.count
+                let selRow = count > 1
+                    ? min(count - 1, max(0, Int((fraction * CGFloat(count - 1)).rounded())))
+                    : 0
+                coord.isProgrammaticallySelecting = true
+                tableView.selectRowIndexes(IndexSet(integer: selRow), byExtendingSelection: false)
+                coord.isProgrammaticallySelecting = false
+            }
+        }
+        // Auto-scroll the top pane only while the user is actively scrubbing the
+        // minimap, using the same band bucketing (floor(fraction · N)) as its image.
         if !isFiltered, isMinimapActiveDrive, let fraction = selectedFraction,
            provider.count > 0 {
-            // Use the same band bucketing as the minimap image (floor(fraction · N))
-            // so the drag-preview row matches where a click ultimately lands.
             let targetRow = min(provider.count - 1, Int(CGFloat(provider.count) * fraction))
             if targetRow >= 0, targetRow < tableView.numberOfRows {
                 DispatchQueue.main.async {
