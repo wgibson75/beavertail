@@ -531,7 +531,7 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
                 menu.addItem(setItem)
             }
             if referenceTimestamp != nil {
-                let clearItem = NSMenuItem(title: "Reset", action: #selector(clearPointInTimeAction(_:)), keyEquivalent: "")
+                let clearItem = NSMenuItem(title: "Clear", action: #selector(clearPointInTimeAction(_:)), keyEquivalent: "")
                 clearItem.target = self
                 menu.addItem(clearItem)
                 menu.addItem(NSMenuItem.separator())
