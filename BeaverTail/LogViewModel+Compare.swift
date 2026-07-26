@@ -331,7 +331,14 @@ extension LogViewModel {
             followTail: false
         )
         tab.isUniqueLinesTab = true
-        openTabs.append(tab)
+        // Position the results tab immediately after the right-most tab marked Good
+        // or Bad, so it appears next to the logs being compared and is easy to find.
+        // Fall back to the end if nothing is marked.
+        if let lastMarkedIndex = openTabs.lastIndex(where: { $0.mark != nil }) {
+            openTabs.insert(tab, at: lastMarkedIndex + 1)
+        } else {
+            openTabs.append(tab)
+        }
         selectedTabID = newID
         return newID
     }

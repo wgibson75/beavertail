@@ -30,12 +30,6 @@ struct ContentView: View {
         // only unselected tabs glow (subtly) under the pointer.
         let showHoverGlow = isHovered && !isSelected && !isDragging
         return HStack(spacing: 5) {
-            if let mark = tab.mark {
-                Circle()
-                    .fill(mark == .good ? Color.green : Color.red)
-                    .frame(width: 7, height: 7)
-                    .help(mark == .good ? "Marked as Good Log" : "Marked as Bad Log")
-            }
             Text(tab.name)
                 .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
                 .foregroundStyle(isSelected ? AnyShapeStyle(Color.primary) : AnyShapeStyle(Color.secondary))
@@ -65,18 +59,33 @@ struct ContentView: View {
                         .fill(Color.accentColor.opacity(0.10))
                         .shadow(color: Color.accentColor.opacity(0.3), radius: 5)
                 }
-                // Selected-tab card: an obvious, always-on highlight (accent-tinted
-                // fill) so the active tab clearly stands out, regardless of the
-                // pointer. Hidden while this tab is being dragged so the origin
-                // reads as a gap.
+                // Selected-tab card: an obvious, always-on highlight so the active
+                // tab clearly stands out, regardless of the pointer. Hidden while
+                // this tab is being dragged so the origin reads as a gap.
                 if isSelected && !isDragging {
                     RoundedRectangle(cornerRadius: 5)
                         .fill(Color(NSColor.controlBackgroundColor))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 5)
-                                .fill(Color.accentColor.opacity(0.14))
-                        )
                         .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
+                }
+                // Good/Bad mark: a faint green (Good) / red (Bad) tab background,
+                // drawn over the selected card so marked tabs are colour-tinted
+                // rather than dotted. Slightly stronger when the tab is selected.
+                if tab.isUniqueLinesTab && !isDragging {
+                    // Unsaved unique-lines results tab: a yellow background to signal
+                    // it hasn't been saved yet. Once saved it becomes a normal tab and
+                    // uses the default blue accent (below) to indicate it is saved.
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color.yellow.opacity(isSelected ? 0.34 : 0.20))
+                        .help("Unique lines — not yet saved")
+                } else if let mark = tab.mark, !isDragging {
+                    let markColor = mark == .good ? Color.green : Color.red
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(markColor.opacity(isSelected ? 0.30 : 0.16))
+                        .help(mark == .good ? "Marked as Good Log" : "Marked as Bad Log")
+                } else if isSelected && !isDragging {
+                    // Unmarked selected tab keeps the accent tint.
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color.accentColor.opacity(0.14))
                 }
                 // Placeholder "slot" shown at the dragged tab's current position: a
                 // soft, dashed outline that clearly marks where the tab will land.
