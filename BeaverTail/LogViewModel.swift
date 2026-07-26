@@ -141,6 +141,10 @@ class LogViewModel: ObservableObject {
         minimapShimmerTrigger &+= 1
     }
 
+    /// Bumped when a focused subset of lines is reset (Reset button / Show All
+    /// Lines) so the minimap can play a celebratory colour-burst "explosion".
+    @Published var minimapBurstTrigger: Int = 0
+
     /// Bumped whenever a timeline heading (or column) click changes the selected
     /// entry, so the Timeline pane can scroll its own tall (6000pt) image to bring
     /// the newly-selected entry into view, centred, when it isn't already visible.
@@ -718,6 +722,8 @@ class LogViewModel: ObservableObject {
         // Fully revealing the log discards the tracked time-period history.
         openTabs[index].visibleBoundsHistory.removeAll()
         applyLineVisibilityChange(for: index, tabID: tabID, selectedOriginalIndex: previouslySelected)
+        // Celebrate revealing the full log with a minimap colour-burst.
+        minimapBurstTrigger &+= 1
     }
 
     /// Steps back to the previously-defined time period — one level of "zoom out".
