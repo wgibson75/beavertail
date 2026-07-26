@@ -605,13 +605,16 @@ private struct TimelinePaneView: View {
                     let activeRules = allActiveRules.filter { displayedRuleIDs.contains($0.id) }
 
                     let hasMarks = !(viewModel.currentTab?.markedIndices.isEmpty ?? true)
+                    // The Timeline only shows entries (and their headings) when a regex
+                    // Filter is applied.
+                    let hasFilter = !(viewModel.currentTab?.filterPattern.isEmpty ?? true)
 
                     GeometryReader { geometry in
                         ScrollView(.vertical) {
                             LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                                     Section(header:
                                         Group {
-                                            if !activeRules.isEmpty || hasMarks {
+                                            if hasFilter && (!activeRules.isEmpty || hasMarks) {
                                                 VStack(spacing: 0) {
                                                     HStack(spacing: 0) {
                                                         if hasMarks {
@@ -632,7 +635,19 @@ private struct TimelinePaneView: View {
                                             }
                                         }
                                     ) {
-                                        if let image = viewModel.currentTab?.timelineImage {
+                                        if viewModel.currentTab?.filterPattern.isEmpty ?? true {
+                                            // The Timeline only shows entries matching the regex
+                                            // Filter; with no filter entered there is nothing to show.
+                                            VStack(spacing: 8) {
+                                                Image(systemName: "line.3.horizontal.decrease.circle")
+                                                    .font(.system(size: 28))
+                                                    .foregroundStyle(.tertiary)
+                                                Text("Enter a filter to view matching entries")
+                                                    .font(.callout)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+                                        } else if let image = viewModel.currentTab?.timelineImage {
                                             let displayedHeight = max(geometry.size.height, image.size.height)
                                             ZStack(alignment: .top) {
                                                 Image(nsImage: image)

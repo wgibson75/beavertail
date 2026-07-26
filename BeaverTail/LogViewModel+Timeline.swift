@@ -32,14 +32,21 @@ extension LogViewModel {
         let isDark = self.isSystemDark
 
         let filterValid = !isFiltered || !filteredIndices.isEmpty
+        // The Timeline View only shows entries that match the supplied regex Filter.
+        // With no filter entered (or a filter that matched no lines) there is nothing
+        // to show, so clear any existing timeline and bail — the view then displays
+        // an appropriate message instead.
         guard let content = openTabs[index].content,
               content.count > 0,
+              isFiltered,
               !activeRules.isEmpty || hasMarks,
               filterValid || hasMarks,
               cache.count == activeRuleIDsCache.count else {
             DispatchQueue.main.async { [weak self] in
                 guard let self, let i = self.openTabs.firstIndex(where: { $0.id == tabID }) else { return }
                 self.openTabs[i].timelineImage = nil
+                self.openTabs[i].timelineMatches = []
+                self.openTabs[i].timelineActiveRuleIDs = []
                 self.openTabs[i].isGeneratingTimeline = false
             }
             return
