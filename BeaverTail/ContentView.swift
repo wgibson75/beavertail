@@ -17,12 +17,18 @@ struct ContentView: View {
     @State private var showFilterDropdown = false
     @State private var draggingTabID: UUID?
     @State private var isFileDropTargeted = false
+    /// Tab currently under the mouse pointer, used to glow its heading + background.
+    @State private var hoveredTabID: UUID?
 
     /// A single tab "chip" in the tab strip. Extracted from `body` so the very large
     /// main view expression stays within the Swift type-checker's reach.
     private func tabView(for tab: LogTab) -> some View {
         let isSelected = viewModel.selectedTabID == tab.id
         let isDragging = draggingTabID == tab.id
+        let isHovered = hoveredTabID == tab.id
+        // The selected tab is highlighted on its own and must not react to hover;
+        // only unselected tabs glow (subtly) under the pointer.
+        let showHoverGlow = isHovered && !isSelected && !isDragging
         return HStack(spacing: 5) {
             if let mark = tab.mark {
                 Circle()
@@ -34,6 +40,9 @@ struct ContentView: View {
                 .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
                 .foregroundStyle(isSelected ? AnyShapeStyle(Color.primary) : AnyShapeStyle(Color.secondary))
                 .lineLimit(1)
+                .brightness(showHoverGlow ? 0.16 : 0)
+                .shadow(color: Color.accentColor.opacity(showHoverGlow ? 0.4 : 0), radius: showHoverGlow ? 5 : 0)
+                .animation(.easeOut(duration: 0.16), value: isHovered)
 
             Button {
                 viewModel.closeTab(id: tab.id)
@@ -49,12 +58,25 @@ struct ContentView: View {
         .padding(.vertical, 5)
         .background {
             ZStack {
-                // Selected-tab card (hidden while this tab is being dragged so the
-                // origin reads as a gap).
+                // Subtle hover glow behind unselected tabs only — a light accent
+                // fill with a soft halo. The selected tab never shows this.
+                if showHoverGlow {
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color.accentColor.opacity(0.10))
+                        .shadow(color: Color.accentColor.opacity(0.3), radius: 5)
+                }
+                // Selected-tab card: an obvious, always-on highlight (accent-tinted
+                // fill) so the active tab clearly stands out, regardless of the
+                // pointer. Hidden while this tab is being dragged so the origin
+                // reads as a gap.
                 if isSelected && !isDragging {
                     RoundedRectangle(cornerRadius: 5)
                         .fill(Color(NSColor.controlBackgroundColor))
-                        .shadow(color: .black.opacity(0.08), radius: 1, y: 1)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(Color.accentColor.opacity(0.14))
+                        )
+                        .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
                 }
                 // Placeholder "slot" shown at the dragged tab's current position: a
                 // soft, dashed outline that clearly marks where the tab will land.
@@ -70,6 +92,7 @@ struct ContentView: View {
                         )
                 }
             }
+            .animation(.easeOut(duration: 0.16), value: isHovered)
         }
         .contentShape(Rectangle())
         // Collapse the dragged tab into a slim placeholder so the surrounding tabs
@@ -77,6 +100,13 @@ struct ContentView: View {
         .opacity(isDragging ? 0.5 : 1.0)
         .scaleEffect(isDragging ? 0.92 : 1.0, anchor: .center)
         .animation(.spring(response: 0.28, dampingFraction: 0.72), value: isDragging)
+        .onHover { hovering in
+            if hovering {
+                hoveredTabID = tab.id
+            } else if hoveredTabID == tab.id {
+                hoveredTabID = nil
+            }
+        }
         .onTapGesture {
             viewModel.selectedTabID = tab.id
             viewModel.triggerLazyLoadForTab(id: tab.id)
