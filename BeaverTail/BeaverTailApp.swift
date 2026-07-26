@@ -172,7 +172,10 @@ struct BeaverTailApp: App {
             }
             // ⌘S saves the unsaved "unique lines" results tab. Enabled only while that
             // tab is selected (it converts to a normal file-backed tab once saved).
-            CommandGroup(replacing: .saveItem) {
+            // NOTE: use `after: .saveItem` (not `replacing:`) so the standard "Close"
+            // (⌘W) and "Close All" items in the save-item group are preserved — the
+            // ⌘W tab-close handling depends on that Close menu item existing.
+            CommandGroup(after: .saveItem) {
                 Button("Save to File…") {
                     viewModel.saveUniqueLinesToFile()
                 }
