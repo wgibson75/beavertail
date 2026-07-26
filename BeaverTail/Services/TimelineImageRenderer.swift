@@ -179,6 +179,10 @@ enum TimelineImageRenderer {
         }
 
         let numColumns = displayedRuleIndices.count + (input.hasMarks ? 1 : 0)
+        // Nothing matched the filter — no rule produced a column and there are no
+        // marks. Return nil (rather than a blank 1px image) so the view falls through
+        // to the "No Highlight Rules matched" message instead of showing an empty pane.
+        if numColumns == 0 { return nil }
         let imgWidth = numColumns * colWidth
 
         let colorSpace = CGColorSpaceCreateDeviceRGB()

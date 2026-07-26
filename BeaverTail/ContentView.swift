@@ -1018,6 +1018,9 @@ private struct FilterBarView: View {
     @ObservedObject var viewModel: LogViewModel
     @Binding var showFilterDropdown: Bool
     @Environment(\.colorScheme) private var colorScheme
+    /// Pending "hide dropdown after blur" work, cancelled if the field regains
+    /// focus quickly so a stale timer can't clobber a fresh click.
+    @State private var hideDropdownWork: DispatchWorkItem?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1087,13 +1090,19 @@ private struct FilterBarView: View {
                 text: $viewModel.currentFilterPattern,
                 placeholder: "Regex pattern…",
                 onFocus: {
-                    if !viewModel.filterHistory.isEmpty { showFilterDropdown = true }
+                    // Cancel any pending blur-driven hide so it can't immediately
+                    // close a dropdown we're about to show. The display itself is
+                    // gated on a non-empty history, so always request showing.
+                    hideDropdownWork?.cancel()
+                    hideDropdownWork = nil
+                    showFilterDropdown = true
                 },
                 onTextChange: { showFilterDropdown = false },
                 onBlur: {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                        showFilterDropdown = false
-                    }
+                    hideDropdownWork?.cancel()
+                    let work = DispatchWorkItem { showFilterDropdown = false }
+                    hideDropdownWork = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
                 },
                 onSubmit: {
                     showFilterDropdown = false
@@ -1189,95 +1198,6 @@ private struct TabDragPreview: View {
                 RoundedRectangle(cornerRadius: 5)
                     .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1)
             )
-    }
-}
-
-// Wraps a custom NSTextField subclass to provide reliable focus/blur/change
-// callbacks inside AppKit-backed containers such as VSplitView.
-// becomeFirstResponder fires on every click, unlike controlTextDidBeginEditing
-// which only fires once per editing session.
-
-private final class FocusableTextField: NSTextField {
-    var onBecomeFirstResponder: (() -> Void)?
-
-    override func becomeFirstResponder() -> Bool {
-        let accepted = super.becomeFirstResponder()
-        if accepted { onBecomeFirstResponder?() }
-        return accepted
-    }
-}
-
-private struct RegexTextField: NSViewRepresentable {
-    @Binding var text: String
-    let placeholder: String
-    let onFocus: () -> Void
-    let onTextChange: () -> Void
-    let onBlur: () -> Void
-    let onSubmit: () -> Void
-
-    func makeNSView(context: Context) -> FocusableTextField {
-        let field = FocusableTextField()
-        field.placeholderString = placeholder
-        field.bezelStyle = .roundedBezel
-        field.isBordered = true
-        field.isEditable = true
-        field.isSelectable = true
-        field.cell?.wraps = false
-        field.cell?.isScrollable = true
-        field.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
-        field.stringValue = text
-        field.delegate = context.coordinator
-        let coordinator = context.coordinator
-        field.onBecomeFirstResponder = {
-            coordinator.parent.onFocus()
-        }
-        return field
-    }
-
-    func updateNSView(_ nsView: FocusableTextField, context: Context) {
-        context.coordinator.parent = self
-        // Re-wire the callback so it always uses the latest onFocus closure
-        let coordinator = context.coordinator
-        nsView.onBecomeFirstResponder = {
-            coordinator.parent.onFocus()
-        }
-        // Only push programmatic text changes when the user isn't mid-edit
-        if !context.coordinator.isEditing, nsView.stringValue != text {
-            nsView.stringValue = text
-        }
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-
-    final class Coordinator: NSObject, NSTextFieldDelegate {
-        var parent: RegexTextField
-        var isEditing = false
-
-        init(_ parent: RegexTextField) { self.parent = parent }
-
-        func controlTextDidBeginEditing(_ obj: Notification) {
-            isEditing = true
-        }
-
-        func controlTextDidChange(_ obj: Notification) {
-            guard let field = obj.object as? NSTextField else { return }
-            parent.text = field.stringValue
-            parent.onTextChange()
-        }
-
-        func controlTextDidEndEditing(_ obj: Notification) {
-            isEditing = false
-            parent.onBlur()
-        }
-
-        func control(_ control: NSControl, textView: NSTextView,
-                     doCommandBy commandSelector: Selector) -> Bool {
-            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-                parent.onSubmit()
-                return true
-            }
-            return false
-        }
     }
 }
 

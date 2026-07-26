@@ -80,15 +80,25 @@ extension LogViewModel {
         )
 
         timelineTasks[tabID] = Task.detached(priority: .utility) { [weak self] in
-            guard let result = TimelineImageRenderer.render(input) else {
-                return
-            }
+            let result = TimelineImageRenderer.render(input)
+            // A nil result means either the task was cancelled (a newer render is
+            // running — leave state untouched) or nothing matched. Distinguish the
+            // two via the cancellation flag.
+            if Task.isCancelled { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                    self.openTabs[freshIndex].timelineImage = result.image
-                    self.openTabs[freshIndex].timelineMatches = result.matches
-                    self.openTabs[freshIndex].timelineActiveRuleIDs = result.activeRuleIDs
+                    if let result {
+                        self.openTabs[freshIndex].timelineImage = result.image
+                        self.openTabs[freshIndex].timelineMatches = result.matches
+                        self.openTabs[freshIndex].timelineActiveRuleIDs = result.activeRuleIDs
+                    } else {
+                        // Nothing matched the filter — clear so the view shows the
+                        // "No Highlight Rules matched" message instead of a blank pane.
+                        self.openTabs[freshIndex].timelineImage = nil
+                        self.openTabs[freshIndex].timelineMatches = []
+                        self.openTabs[freshIndex].timelineActiveRuleIDs = []
+                    }
                     self.openTabs[freshIndex].isGeneratingTimeline = false
                     self.objectWillChange.send()
                 }
