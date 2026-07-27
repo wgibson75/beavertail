@@ -86,8 +86,8 @@ struct HighlightSettingsView: View {
     @Environment(\.colorScheme) var colorScheme
 
     @State private var patternInput = ""
-    @State private var fgColor = Color(red: 1, green: 1, blue: 1)
-    @State private var bgColor = Color(red: 1, green: 0.84, blue: 0)
+    @State private var fgColor = HighlightSettingsView.defaultFgColor
+    @State private var bgColor = HighlightSettingsView.defaultBgColor
     @State private var isCaseSensitive = false
     @State private var editingRuleID: UUID?
     @FocusState private var isPatternFocused: Bool
@@ -97,8 +97,12 @@ struct HighlightSettingsView: View {
 
     @State private var originalPattern: String = ""
     @State private var originalIsCaseSensitive: Bool = false
-    @State private var originalFgColor: Color = Color(red: 1, green: 1, blue: 1)
-    @State private var originalBgColor: Color = Color(red: 1, green: 0.84, blue: 0)
+    @State private var originalFgColor: Color = HighlightSettingsView.defaultFgColor
+    @State private var originalBgColor: Color = HighlightSettingsView.defaultBgColor
+
+    /// Default rule colours: black text on a #BEBEFF (light periwinkle) background.
+    private static let defaultFgColor = Color(red: 0, green: 0, blue: 0)
+    private static let defaultBgColor = Color(red: 190.0 / 255.0, green: 190.0 / 255.0, blue: 1.0)
 
     private var hasMeaningfulChanges: Bool {
         patternInput != originalPattern || isCaseSensitive != originalIsCaseSensitive
@@ -115,9 +119,35 @@ struct HighlightSettingsView: View {
             // ── Form area ──
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
-                    TextField("Regex pattern", text: $patternInput)
+                    TextField("", text: $patternInput)
                         .focused($isPatternFocused)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .font(.system(.body, design: .monospaced))
+                        // Preview the rule's actual colours right in the input field.
+                        .foregroundColor(fgColor)
+                        .tint(fgColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        // Custom placeholder: a darker (medium) grey so the prompt
+                        // stands out against the light default background without
+                        // being as strong as the black entered text.
+                        .overlay(alignment: .leading) {
+                            if patternInput.isEmpty {
+                                Text("Regex pattern")
+                                    .font(.system(.body, design: .monospaced))
+                                    .foregroundColor(Color(red: 0.35, green: 0.35, blue: 0.35))
+                                    .padding(.leading, 8)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(bgColor)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .stroke(Color(NSColor.separatorColor), lineWidth: 1)
+                        )
                         .frame(maxWidth: .infinity)
 
                     WheelColorWell(color: $fgColor)
@@ -139,6 +169,13 @@ struct HighlightSettingsView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Match Case: when active, the pattern matches case-sensitively")
+
+                    Button("New") {
+                        startNewRule()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(editingRuleID == nil)
+                    .help("Reset the fields to their default values so you can add a new filter")
 
                     Button("Add") {
                         if editingRuleID != nil {
@@ -456,17 +493,37 @@ struct HighlightSettingsView: View {
         clearForm()
     }
 
+    private func startNewRule() {
+        // Revert any live edits made to the currently-selected rule so clicking
+        // "New" never accidentally mutates it, then reset the form to defaults.
+        if let editingID = editingRuleID,
+           let index = rulesStore.rules.firstIndex(where: { $0.id == editingID }) {
+            var rule = rulesStore.rules[index]
+            rule.pattern = originalPattern
+            rule.isCaseSensitive = originalIsCaseSensitive
+            rule.foregroundColorHex = originalFgColor.toHex()
+            rule.backgroundColorHex = originalBgColor.toHex()
+            rule.updateCachedObjects()
+            rulesStore.rules[index] = rule
+        }
+        clearForm()
+        // Move focus to the pattern field so the user can start typing straight away.
+        DispatchQueue.main.async {
+            self.isPatternFocused = true
+        }
+    }
+
     private func clearForm() {
         editingRuleID = nil
         patternInput = ""
-        fgColor = Color(red: 1, green: 1, blue: 1)
-        bgColor = Color(red: 1, green: 0.84, blue: 0)
+        fgColor = Self.defaultFgColor
+        bgColor = Self.defaultBgColor
         isCaseSensitive = false
         isPatternFocused = false
         originalPattern = ""
         originalIsCaseSensitive = false
-        originalFgColor = Color(red: 1, green: 1, blue: 1)
-        originalBgColor = Color(red: 1, green: 0.84, blue: 0)
+        originalFgColor = Self.defaultFgColor
+        originalBgColor = Self.defaultBgColor
     }
 
     private func exportRules() {
