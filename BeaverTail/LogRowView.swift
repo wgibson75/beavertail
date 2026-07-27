@@ -44,10 +44,8 @@ final class LogRowView: NSTableRowView {
     }
     override func drawSelection(in dirtyRect: NSRect) {
         guard isSelected else { return }
-        // Faint translucent tint so any rule colour beneath still shows through
-        let selectionColor = NSColor.selectedContentBackgroundColor
-        selectionColor.withAlphaComponent(0.35).setFill()
-        bounds.fill()
+        // No background shading: rely solely on the accent border below so any
+        // rule colour beneath remains fully visible.
         NSColor.controlAccentColor.setStroke()
         let path = NSBezierPath()
         path.lineWidth = 2.0
