@@ -86,23 +86,33 @@ struct HighlightSettingsView: View {
     @Environment(\.colorScheme) var colorScheme
 
     @State private var patternInput = ""
-    @State private var fgColor = HighlightSettingsView.defaultFgColor
-    @State private var bgColor = HighlightSettingsView.defaultBgColor
+    @State private var fgColor = HighlightSettingsView.defaultFgColor(.light)
+    @State private var bgColor = HighlightSettingsView.defaultBgColor(.light)
     @State private var isCaseSensitive = false
     @State private var editingRuleID: UUID?
-    @FocusState private var isPatternFocused: Bool
+    // Bump these tokens to programmatically focus / blur the pattern field.
+    @State private var patternFocusToken = 0
+    @State private var patternBlurToken = 0
     @State private var mouseMonitor: Any?
     @State private var deletingRules: Set<UUID> = []
     @State private var showingDeleteAllAlert = false
 
     @State private var originalPattern: String = ""
     @State private var originalIsCaseSensitive: Bool = false
-    @State private var originalFgColor: Color = HighlightSettingsView.defaultFgColor
-    @State private var originalBgColor: Color = HighlightSettingsView.defaultBgColor
+    @State private var originalFgColor: Color = HighlightSettingsView.defaultFgColor(.light)
+    @State private var originalBgColor: Color = HighlightSettingsView.defaultBgColor(.light)
 
-    /// Default rule colours: black text on a #BEBEFF (light periwinkle) background.
-    private static let defaultFgColor = Color(red: 0, green: 0, blue: 0)
-    private static let defaultBgColor = Color(red: 190.0 / 255.0, green: 190.0 / 255.0, blue: 1.0)
+    /// Default rule colours adapt to the current appearance:
+    /// black text on light gray (light mode), white text on dark gray (dark mode).
+    private static func defaultFgColor(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(red: 1, green: 1, blue: 1) : Color(red: 0, green: 0, blue: 0)
+    }
+
+    private static func defaultBgColor(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(red: 72.0 / 255.0, green: 72.0 / 255.0, blue: 72.0 / 255.0)      // dark gray
+            : Color(red: 229.0 / 255.0, green: 229.0 / 255.0, blue: 229.0 / 255.0)   // light gray
+    }
 
     private var hasMeaningfulChanges: Bool {
         patternInput != originalPattern || isCaseSensitive != originalIsCaseSensitive
@@ -119,36 +129,34 @@ struct HighlightSettingsView: View {
             // ── Form area ──
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
-                    TextField("", text: $patternInput)
-                        .focused($isPatternFocused)
-                        .textFieldStyle(.plain)
-                        .font(.system(.body, design: .monospaced))
-                        // Preview the rule's actual colours right in the input field.
-                        .foregroundColor(fgColor)
-                        .tint(fgColor)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        // Custom placeholder: a darker (medium) grey so the prompt
-                        // stands out against the light default background without
-                        // being as strong as the black entered text.
-                        .overlay(alignment: .leading) {
-                            if patternInput.isEmpty {
-                                Text("Regex pattern")
-                                    .font(.system(.body, design: .monospaced))
-                                    .foregroundColor(Color(red: 0.35, green: 0.35, blue: 0.35))
-                                    .padding(.leading, 8)
-                                    .allowsHitTesting(false)
+                    // AppKit-backed so we can control the text-selection highlight
+                    // colour for high contrast against any rule colours / appearance.
+                    RegexPatternField(
+                        text: $patternInput,
+                        foreground: fgColor,
+                        background: bgColor,
+                        placeholder: "Regex pattern",
+                        focusToken: patternFocusToken,
+                        blurToken: patternBlurToken,
+                        onSubmit: {
+                            if editingRuleID != nil {
+                                handleAddOrUpdate(isSecondaryAdd: true)
+                            } else if !patternInput.isEmpty {
+                                handleAddOrUpdate(isSecondaryAdd: false)
                             }
                         }
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(bgColor)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .stroke(Color(NSColor.separatorColor), lineWidth: 1)
-                        )
-                        .frame(maxWidth: .infinity)
+                    )
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(bgColor)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(Color(NSColor.separatorColor), lineWidth: 1)
+                    )
+                    .frame(maxWidth: .infinity)
 
                     WheelColorWell(color: $fgColor)
                         .frame(width: 44, height: 24)
@@ -271,7 +279,6 @@ struct HighlightSettingsView: View {
                                     .padding(.horizontal, 4)
                             )
                             .animation(nil, value: editingRuleID)
-                            .animation(nil, value: isPatternFocused)
                             .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
                             .alignmentGuide(.listRowSeparatorLeading) { d in d[.leading] - 8 }
                             .alignmentGuide(.listRowSeparatorTrailing) { d in d[.trailing] + 8 }
@@ -315,7 +322,7 @@ struct HighlightSettingsView: View {
                     // We must force focus back to the text field AFTER the List has claimed first responder.
                     // Doing this unconditionally on the next runloop tick correctly neutralises focus theft.
                     DispatchQueue.main.async {
-                        self.isPatternFocused = true
+                        self.patternFocusToken += 1
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                             NSApp.sendAction(#selector(NSText.moveToEndOfLine(_:)), to: nil, from: nil)
                         }
@@ -402,6 +409,13 @@ struct HighlightSettingsView: View {
         .frame(minWidth: 460, idealWidth: 540, maxWidth: .infinity,
                minHeight: 360, idealHeight: 460, maxHeight: .infinity)
         .onAppear {
+            // Start a new (unselected) rule with the appearance-appropriate defaults.
+            if editingRuleID == nil {
+                fgColor = Self.defaultFgColor(colorScheme)
+                bgColor = Self.defaultBgColor(colorScheme)
+                originalFgColor = fgColor
+                originalBgColor = bgColor
+            }
             mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
                 // If the click is outside the colour panel, close it
                 if NSColorPanel.shared.isVisible,
@@ -419,6 +433,16 @@ struct HighlightSettingsView: View {
             }
             if NSColorPanel.shared.isVisible {
                 NSColorPanel.shared.close()
+            }
+        }
+        .onChange(of: colorScheme) { _, newScheme in
+            // Keep an untouched default in sync with the appearance, without
+            // overriding colours the user has deliberately chosen.
+            if editingRuleID == nil, isDefaultColorPair() {
+                fgColor = Self.defaultFgColor(newScheme)
+                bgColor = Self.defaultBgColor(newScheme)
+                originalFgColor = fgColor
+                originalBgColor = bgColor
             }
         }
     }
@@ -509,21 +533,38 @@ struct HighlightSettingsView: View {
         clearForm()
         // Move focus to the pattern field so the user can start typing straight away.
         DispatchQueue.main.async {
-            self.isPatternFocused = true
+            self.patternFocusToken += 1
         }
     }
 
     private func clearForm() {
         editingRuleID = nil
         patternInput = ""
-        fgColor = Self.defaultFgColor
-        bgColor = Self.defaultBgColor
+        fgColor = Self.defaultFgColor(colorScheme)
+        bgColor = Self.defaultBgColor(colorScheme)
         isCaseSensitive = false
-        isPatternFocused = false
+        patternBlurToken += 1
         originalPattern = ""
         originalIsCaseSensitive = false
-        originalFgColor = Self.defaultFgColor
-        originalBgColor = Self.defaultBgColor
+        originalFgColor = Self.defaultFgColor(colorScheme)
+        originalBgColor = Self.defaultBgColor(colorScheme)
+    }
+
+    /// True when the current colours are an unmodified default pair (for either
+    /// appearance), so we can safely swap them when the appearance changes.
+    private func isDefaultColorPair() -> Bool {
+        func approx(_ lhs: Color, _ rhs: Color) -> Bool {
+            guard let a = NSColor(lhs).usingColorSpace(.sRGB),
+                  let b = NSColor(rhs).usingColorSpace(.sRGB) else { return false }
+            return abs(a.redComponent - b.redComponent) < 0.02
+                && abs(a.greenComponent - b.greenComponent) < 0.02
+                && abs(a.blueComponent - b.blueComponent) < 0.02
+        }
+        for scheme in [ColorScheme.light, .dark]
+        where approx(fgColor, Self.defaultFgColor(scheme)) && approx(bgColor, Self.defaultBgColor(scheme)) {
+            return true
+        }
+        return false
     }
 
     private func exportRules() {
