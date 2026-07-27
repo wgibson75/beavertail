@@ -22,6 +22,14 @@ final class LogRowView: NSTableRowView {
         get { true }
         set { }
     }
+    // Keep the interior background style "normal" so the cell's text fields never
+    // switch to the emphasized (white) selection text colour when a row is
+    // selected. We draw only an accent border for selection (no fill), so the
+    // per-line foreground colours must be preserved — otherwise, in Light mode,
+    // the white selection text renders invisibly against the light background.
+    override var interiorBackgroundStyle: NSView.BackgroundStyle {
+        .normal
+    }
     var isMarked: Bool = false {
         didSet { needsDisplay = true }
     }
