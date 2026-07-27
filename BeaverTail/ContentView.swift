@@ -87,6 +87,12 @@ struct ContentView: View {
                     RoundedRectangle(cornerRadius: 5)
                         .fill(Color.accentColor.opacity(0.14))
                 }
+                // Highlight outline around the currently selected tab, drawn over any
+                // tint/mark fill so the active tab is clearly ringed.
+                if isSelected && !isDragging {
+                    RoundedRectangle(cornerRadius: 5)
+                        .strokeBorder(Color.accentColor.opacity(0.55), lineWidth: 1.5)
+                }
                 // Placeholder "slot" shown at the dragged tab's current position: a
                 // soft, dashed outline that clearly marks where the tab will land.
                 if isDragging {

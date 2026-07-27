@@ -565,7 +565,17 @@ class LogViewModel: ObservableObject {
             progressTracker.isFiltering = false
         }
         openTabs.remove(at: index)
-        if selectedTabID == id { selectedTabID = openTabs.last?.id }
+        if selectedTabID == id {
+            // Select the neighbouring tab that now occupies the closed tab's slot
+            // (i.e. the next tab to the right), or the new last tab if we just
+            // closed the rightmost one — so the tab shown in its place is the one
+            // that becomes current (and highlighted).
+            if openTabs.isEmpty {
+                selectedTabID = nil
+            } else {
+                selectedTabID = openTabs[min(index, openTabs.count - 1)].id
+            }
+        }
 
         // Keep the load indicator in sync with the (possibly newly-) selected tab.
         refreshLoadIndicatorForSelectedTab()
