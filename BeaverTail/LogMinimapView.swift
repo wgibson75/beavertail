@@ -92,7 +92,7 @@ struct LogMinimapView: View {
                         .allowsHitTesting(false)
                 }
 
-                // LAYER 4: CELEBRATORY COLOUR BURST played when a focused subset of
+                // LAYER 4: PERIMETER FLASH played when a focused subset of
                 // lines is reset (Reset button / Show All Lines).
                 MinimapBurstView(trigger: viewModel.minimapBurstTrigger)
                     .allowsHitTesting(false)
@@ -160,113 +160,32 @@ struct LogMinimapView: View {
     }
 }
 
-// MARK: - Colour Burst
+// MARK: - Reset Flash
 
-/// One soft, glowing mote in the minimap reset cloud. Scattered across the minimap
-/// (`x`/`y`, offsets from centre), it gently drifts and expands as it fades, so the
-/// whole thing reads as a colourful glowing cloud dissipating rather than particles
-/// rushing to a point.
-private struct BurstParticle: Identifiable {
-    let id = UUID()
-    let x: CGFloat
-    let y: CGFloat
-    let driftX: CGFloat
-    let driftY: CGFloat
-    let size: CGFloat
-    let blur: CGFloat
-    let color: Color
-    let baseOpacity: Double
-    let delay: Double
-    let duration: Double
-}
-
-/// Plays a momentary, cloud-like glow: a colourful haze of soft motes blooms across
-/// the minimap and gently drifts + expands as it fades out, whenever `trigger`
-/// changes. Used to celebrate resetting a focused subset of lines back to the full
-/// log.
+/// Briefly flashes the minimap's perimeter whenever `trigger` changes, giving a
+/// simple visual confirmation that a focused subset of lines has been reset back to
+/// the full log (Reset button / Show All Lines).
 private struct MinimapBurstView: View {
     let trigger: Int
 
-    @State private var particles: [BurstParticle] = []
-    @State private var appeared = false
-    @State private var dissipated = false
-
-    private static let palette: [Color] = [
-        .red, .orange, .yellow, .green, .blue, .purple, .pink, .cyan, .mint, .indigo, .teal
-    ]
+    @State private var flashOn = false
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                ForEach(particles) { particle in
-                    Circle()
-                        .fill(particle.color)
-                        .frame(width: particle.size, height: particle.size)
-                        // Soft edges + a coloured halo make each mote read as glowing haze.
-                        // The blur grows as it dissipates so the mote melts away softly.
-                        .blur(radius: dissipated ? particle.blur * 1.7 : particle.blur)
-                        .shadow(color: particle.color.opacity(dissipated ? 0 : (appeared ? 0.7 : 0)),
-                                radius: particle.size * 0.7)
-                        // Step 1: fade/scale in gently. Step 2: bloom outward, drift and fade.
-                        .scaleEffect(dissipated ? 1.6 : (appeared ? 1.0 : 0.5))
-                        .opacity(dissipated ? 0 : (appeared ? particle.baseOpacity : 0))
-                        .offset(
-                            x: dissipated ? particle.x + particle.driftX : particle.x,
-                            y: dissipated ? particle.y + particle.driftY : particle.y
-                        )
-                        // A soft fade-in, then a long, gently easing-out drift so the
-                        // cloud tails off slowly and subtly — staggered by each mote's delay.
-                        .animation(.easeOut(duration: 0.17).delay(particle.delay), value: appeared)
-                        .animation(.easeOut(duration: particle.duration).delay(particle.delay),
-                                   value: dissipated)
-                }
-            }
-            .frame(width: geo.size.width, height: geo.size.height)
-            .position(x: geo.size.width / 2, y: geo.size.height / 2)
-            .blendMode(.plusLighter)
+        // Match the emphasised current-line highlight shown on hover: the same
+        // accent colour with a blurred glow/halo so the flash clearly contrasts
+        // against the minimap.
+        Rectangle()
+            .stroke(Color.accentColor, lineWidth: 2.5)
+            .shadow(color: Color.accentColor.opacity(flashOn ? 0.9 : 0), radius: 6)
+            .opacity(flashOn ? 1.0 : 0)
             .allowsHitTesting(false)
             .onChange(of: trigger) { _, _ in
-                bloom(in: geo.size)
+                // Snap the border on, then fade it back out for a quick flash.
+                flashOn = true
+                withAnimation(.easeOut(duration: 0.4)) {
+                    flashOn = false
+                }
             }
-        }
-    }
-
-    private func bloom(in size: CGSize) {
-        guard size.width > 0, size.height > 0 else { return }
-        let count = 320
-        let halfW = size.width / 2
-        let halfH = size.height / 2
-        // Fresh identities each burst so replacing the array cleanly resets the cloud
-        // to its scattered state (no reverse animation) before it dissipates again.
-        particles = (0..<count).map { _ in
-            // Scatter motes across the whole minimap; a little horizontal overspill
-            // lets the glow bleed softly past the narrow strip's edges.
-            let size = CGFloat.random(in: 2.5 ... 18)
-            return BurstParticle(
-                x: CGFloat.random(in: -halfW * 1.3 ... halfW * 1.3),
-                y: CGFloat.random(in: -halfH ... halfH),
-                driftX: CGFloat.random(in: -9 ... 9),
-                driftY: CGFloat.random(in: -13 ... 13),
-                size: size,
-                // Bigger motes are softer/blurrier, reading as glowing cloud puffs.
-                blur: size * CGFloat.random(in: 0.35 ... 0.6) + 0.5,
-                color: Self.palette.randomElement() ?? .accentColor,
-                baseOpacity: Double.random(in: 0.12 ... 0.38),
-                delay: Double.random(in: 0 ... 0.15),
-                duration: Double.random(in: 1.0 ... 1.8)
-            )
-        }
-        // Reset both phases so the fresh cloud starts invisible and gathered.
-        appeared = false
-        dissipated = false
-        // Step 1: let the cloud gently fade/scale in on the next tick.
-        DispatchQueue.main.async {
-            appeared = true
-        }
-        // Step 2: after it has bloomed in, let it drift, expand and fade away.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            dissipated = true
-        }
     }
 }
 
