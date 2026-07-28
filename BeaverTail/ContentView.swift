@@ -52,54 +52,48 @@ struct ContentView: View {
         .padding(.vertical, 5)
         .background {
             ZStack {
-                // Subtle hover glow behind unselected tabs only — a light accent
-                // fill with a soft halo. The selected tab never shows this.
+                // Subtle neutral hover wash for unselected tabs (Apple-style light
+                // highlight). The selected tab never shows this.
                 if showHoverGlow {
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(Color.accentColor.opacity(0.10))
-                        .shadow(color: Color.accentColor.opacity(0.3), radius: 5)
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.primary.opacity(0.06))
                 }
-                // Selected-tab card: an obvious, always-on highlight so the active
-                // tab clearly stands out, regardless of the pointer. Hidden while
-                // this tab is being dragged so the origin reads as a gap.
+                // Selected tab: a softly raised, neutral card with a gentle shadow —
+                // the standard macOS selected-tab appearance. Hidden while dragging so
+                // the origin reads as a gap.
                 if isSelected && !isDragging {
-                    RoundedRectangle(cornerRadius: 5)
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(Color(NSColor.controlBackgroundColor))
-                        .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
+                        .shadow(color: .black.opacity(0.16), radius: 2.5, y: 1)
                 }
-                // Good/Bad mark: a faint green (Good) / red (Bad) tab background,
-                // drawn over the selected card so marked tabs are colour-tinted
-                // rather than dotted. Slightly stronger when the tab is selected.
+                // Good/Bad/unique colour tint, layered over the raised card (selected)
+                // or shown as a flat wash (unselected), so tabs stay colour-coded while
+                // keeping the standard look.
                 if tab.isUniqueLinesTab && !isDragging {
-                    // Unsaved unique-lines results tab: a yellow background to signal
-                    // it hasn't been saved yet. Once saved it becomes a normal tab and
-                    // uses the default blue accent (below) to indicate it is saved.
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(Color.yellow.opacity(isSelected ? 0.34 : 0.20))
+                    // Unsaved unique-lines results tab: a yellow tint to signal it
+                    // hasn't been saved yet. Once saved it becomes a normal tab.
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.yellow.opacity(isSelected ? 0.30 : 0.18))
                         .help("Unique lines — not yet saved")
                 } else if let mark = tab.mark, !isDragging {
                     let markColor = mark == .good ? Color.green : Color.red
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(markColor.opacity(isSelected ? 0.30 : 0.16))
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(markColor.opacity(isSelected ? 0.26 : 0.15))
                         .help(mark == .good ? "Marked as Good Log" : "Marked as Bad Log")
-                } else if isSelected && !isDragging {
-                    // Unmarked selected tab keeps the accent tint.
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(Color.accentColor.opacity(0.14))
                 }
-                // Highlight outline around the currently selected tab, drawn over any
-                // tint/mark fill so the active tab is clearly ringed.
+                // Crisp hairline border on top of the selected card so the active tab
+                // is cleanly outlined regardless of any colour tint beneath.
                 if isSelected && !isDragging {
-                    RoundedRectangle(cornerRadius: 5)
-                        .strokeBorder(Color.accentColor.opacity(0.55), lineWidth: 1.5)
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(Color(NSColor.separatorColor), lineWidth: 0.5)
                 }
                 // Placeholder "slot" shown at the dragged tab's current position: a
                 // soft, dashed outline that clearly marks where the tab will land.
                 if isDragging {
-                    RoundedRectangle(cornerRadius: 5)
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(Color.accentColor.opacity(0.10))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 5)
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
                                 .strokeBorder(
                                     Color.accentColor.opacity(0.55),
                                     style: StrokeStyle(lineWidth: 1, dash: [4, 3])
