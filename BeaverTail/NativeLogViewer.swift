@@ -855,10 +855,9 @@ struct NativeLogViewer: NSViewRepresentable {
         tableView.selectionHighlightStyle = .regular
         tableView.allowsMultipleSelection = true
         // Fixed row height gives NSTableView its O(1) document-height fast path;
-        // tableView(_:heightOfRow:) would call the delegate for EVERY row on reloadData
-        // (tens of millions of main-thread calls for huge logs), freezing the UI.
+        // per-row heightOfRow callbacks would freeze the UI on huge logs.
         tableView.usesAutomaticRowHeights = false
-        tableView.rowHeight = fontSize + 2
+        tableView.rowHeight = fontSize + 3
         tableView.delegate = context.coordinator
         tableView.dataSource = context.coordinator
         // Wire up copy support
@@ -1080,7 +1079,7 @@ struct NativeLogViewer: NSViewRepresentable {
     }
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let tableView = nsView.documentView as? LogTableView else { return }
-        tableView.rowHeight = fontSize + 2
+        tableView.rowHeight = fontSize + 3
         tableView.hasMarks = !markedIndices.isEmpty
         tableView.showTimestampBubble = showTimestampBubble
         tableView.referenceTimestamp = referenceTimestamp
@@ -1322,7 +1321,7 @@ struct NativeLogViewer: NSViewRepresentable {
             let identifier = NSUserInterfaceItemIdentifier("LogCell")
             var containerCell = tableView.makeView(withIdentifier: identifier, owner: self)
             var textField: LogTextField?
-            let rowHeight = fontSize + 2
+            let rowHeight = fontSize + 3
             if containerCell == nil {
                 let container = NSView()
                 container.identifier = identifier
