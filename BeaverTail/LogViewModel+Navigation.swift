@@ -142,9 +142,18 @@ extension LogViewModel {
 
         isScrubbingMinimap = false
         openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: targetLine, in: openTabs[index])
+        // Heading navigation must never trigger the top pane's horizontal
+        // auto-scroll — even when the heading has a single entry and repeated
+        // clicks re-target the already-selected row. Post an explicit request with
+        // allowsHorizontalScroll:false so the handler's "repeated click" heuristic
+        // (selectedRow == row) can't misfire. Horizontal scrolling is reserved for
+        // clicking a highlight entry (log line) twice.
         NotificationCenter.default.post(
             name: topPaneDirectScrollNotification,
-            object: topPaneRow(forOriginalIndex: targetLine, in: openTabs[index])
+            object: TopPaneDirectScrollRequest(
+                lineIndex: topPaneRow(forOriginalIndex: targetLine, in: openTabs[index]),
+                allowsHorizontalScroll: false
+            )
         )
         triggerMinimapShimmer()
         triggerTimelineJump()
