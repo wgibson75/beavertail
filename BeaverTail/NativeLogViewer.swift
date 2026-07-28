@@ -857,7 +857,7 @@ struct NativeLogViewer: NSViewRepresentable {
         // Fixed row height gives NSTableView its O(1) document-height fast path;
         // per-row heightOfRow callbacks would freeze the UI on huge logs.
         tableView.usesAutomaticRowHeights = false
-        tableView.rowHeight = fontSize + 3
+        tableView.rowHeight = fontSize + 4
         tableView.delegate = context.coordinator
         tableView.dataSource = context.coordinator
         // Wire up copy support
@@ -1079,7 +1079,7 @@ struct NativeLogViewer: NSViewRepresentable {
     }
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let tableView = nsView.documentView as? LogTableView else { return }
-        tableView.rowHeight = fontSize + 3
+        tableView.rowHeight = fontSize + 4
         tableView.hasMarks = !markedIndices.isEmpty
         tableView.showTimestampBubble = showTimestampBubble
         tableView.referenceTimestamp = referenceTimestamp
@@ -1321,7 +1321,7 @@ struct NativeLogViewer: NSViewRepresentable {
             let identifier = NSUserInterfaceItemIdentifier("LogCell")
             var containerCell = tableView.makeView(withIdentifier: identifier, owner: self)
             var textField: LogTextField?
-            let rowHeight = fontSize + 3
+            let rowHeight = fontSize + 4
             if containerCell == nil {
                 let container = NSView()
                 container.identifier = identifier
@@ -1353,7 +1353,7 @@ struct NativeLogViewer: NSViewRepresentable {
             }
             // Refresh font and frame so size changes apply to recycled cells
             textField?.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-            textField?.frame = NSRect(x: 2, y: 1, width: 9980, height: rowHeight)
+            textField?.frame = NSRect(x: 2, y: 0, width: 9980, height: rowHeight)
             let lineText = provider.line(at: row)
             textField?.stringValue = lineText
             var cellFgColor = defaultTextColor
