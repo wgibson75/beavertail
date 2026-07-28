@@ -178,8 +178,10 @@ struct HighlightSettingsView: View {
                     .buttonStyle(.plain)
                     .help("Match Case: when active, the pattern matches case-sensitively")
 
-                    Button("New") {
+                    Button {
                         startNewRule()
+                    } label: {
+                        Image(systemName: "arrow.counterclockwise")
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(editingRuleID == nil)
