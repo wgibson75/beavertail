@@ -124,6 +124,11 @@ struct LogMinimapView: View {
             .onChange(of: viewModel.minimapShimmerTrigger) { _, _ in
                 playShimmer()
             }
+            // Briefly flash the current-position indicator when switching to another
+            // log tab, exactly as a mouse-over does, so the current spot stands out.
+            .onChange(of: viewModel.selectedTabID) { _, _ in
+                playShimmer()
+            }
             // Briefly intensify the minimap colours whenever a focused subset of
             // lines is reset (Reset button / Show All Lines).
             .onChange(of: viewModel.minimapBurstTrigger) { _, _ in

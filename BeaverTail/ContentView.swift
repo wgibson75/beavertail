@@ -542,7 +542,14 @@ private struct TopPaneView: View {
                     // they right-click.
                     onSaveToFile: viewModel.currentTab?.isUniqueLinesTab == true
                         ? { viewModel.saveUniqueLinesToFile() }
-                        : nil
+                        : nil,
+                    // Remember/restore this tab's top-pane scroll position across tab switches.
+                    scrollRestoreOffset: viewModel.selectedTabID.flatMap { viewModel.topPaneScrollOffsets[$0] },
+                    onScrollOffsetChanged: { [id = viewModel.selectedTabID] offset in
+                        if let id { viewModel.topPaneScrollOffsets[id] = offset }
+                    },
+                    // Keep the same line highlighted when returning to this tab.
+                    selectionRestoreOriginalIndex: viewModel.currentTab.flatMap { viewModel.selectedOriginalIndex(in: $0) }
                 ).id(viewModel.selectedTabID?.uuidString ?? "top")
             }
         }
@@ -1034,7 +1041,10 @@ private struct BottomPaneView: View {    @ObservedObject var viewModel: LogViewM
                             referenceTimestamp: viewModel.referenceTimestamp,
                             fontSize: viewModel.fontSize,
                             markedIndices: viewModel.currentTab?.markedIndices ?? [],
-                            onLineIndexSelected: { viewModel.syncSelectionFromFilteredIndex($0) },
+                            onLineIndexSelected: {
+                                viewModel.syncSelectionFromFilteredIndex($0)
+                                if let id = viewModel.selectedTabID { viewModel.bottomPaneSelectedOriginal[id] = $0 }
+                            },
                             onRepeatedPlainClick: { viewModel.syncSelectionFromFilteredIndex($0, allowsHorizontalScroll: true) },
                             onToggleMark: { viewModel.toggleMarks($0) },
                             onClearAllMarks: { viewModel.clearAllMarks() },
@@ -1044,7 +1054,14 @@ private struct BottomPaneView: View {    @ObservedObject var viewModel: LogViewM
                             onHideLinesAbove: { viewModel.hideLinesAbove(originalIndex: $0) },
                             onHideLinesBelow: { viewModel.hideLinesBelow(originalIndex: $0) },
                             onShowAllLines: { viewModel.showAllLines() },
-                            onSaveToFile: { viewModel.saveFilteredLinesToFile() }
+                            onSaveToFile: { viewModel.saveFilteredLinesToFile() },
+                            // Remember/restore this tab's bottom-pane scroll position across tab switches.
+                            scrollRestoreOffset: viewModel.selectedTabID.flatMap { viewModel.bottomPaneScrollOffsets[$0] },
+                            onScrollOffsetChanged: { [id = viewModel.selectedTabID] offset in
+                                if let id { viewModel.bottomPaneScrollOffsets[id] = offset }
+                            },
+                            // Keep the same line highlighted when returning to this tab.
+                            selectionRestoreOriginalIndex: viewModel.selectedTabID.flatMap { viewModel.bottomPaneSelectedOriginal[$0] }
                         )
                         .id(viewModel.selectedTabID?.uuidString ?? "bot")
                     }

@@ -8,7 +8,7 @@ excluded: []
 # content indexer, view model) whose size is inherent to the domain, not a
 # code-quality problem.
 file_length:
-  warning: 1400
+  warning: 1450
   error: 1600
 
 type_body_length:

@@ -59,6 +59,19 @@ class LogViewModel: ObservableObject {
         }
     }
 
+    /// Per-tab remembered vertical scroll offset (document Y, in points) for the top and
+    /// bottom panes, keyed by tab ID. Lets the user switch between logs without either
+    /// pane jumping back to the top. Not `@Published`: it's written/read by the pane
+    /// views themselves, so mutating it must not trigger a view refresh.
+    var topPaneScrollOffsets: [UUID: CGFloat] = [:]
+    var bottomPaneScrollOffsets: [UUID: CGFloat] = [:]
+
+    /// Original line index last selected *in the filtered (bottom) pane*, per tab. The
+    /// bottom pane only shows a selection when the user clicked a line there (top-pane
+    /// clicks never select it), so this is tracked separately from `selectedFraction`
+    /// to restore the bottom-pane highlight on tab switch only when it truly had one.
+    var bottomPaneSelectedOriginal: [UUID: Int] = [:]
+
     /// The "Set Point in Time" reference timestamp for the CURRENTLY selected tab.
     /// Backed by the tab itself so each open log keeps its own point in time —
     /// setting or clearing it in one tab never affects any other tab.
@@ -554,6 +567,9 @@ class LogViewModel: ObservableObject {
         timelineTasks.removeValue(forKey: id)
         fullyScannedRuleIDsByTab.removeValue(forKey: id)
         tabsNeedingFilterRerun.remove(id)
+        topPaneScrollOffsets.removeValue(forKey: id)
+        bottomPaneScrollOffsets.removeValue(forKey: id)
+        bottomPaneSelectedOriginal.removeValue(forKey: id)
         // If this tab owned the in-flight filter scan, stop it now.
         if filteringTabID == id {
             filterGeneration &+= 1

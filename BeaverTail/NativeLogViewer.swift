@@ -723,6 +723,15 @@ struct NativeLogViewer: NSViewRepresentable {
     /// When true this is the filtered (bottom) pane; the provider supplies its
     /// own originalIndex mapping for the gutter and selection.
     let isFiltered: Bool
+    /// Saved vertical scroll offset restored when this pane is (re)created for a tab.
+    var scrollRestoreOffset: CGFloat?
+    /// Called when this pane scrolls, so the offset can be remembered per tab.
+    var onScrollOffsetChanged: ((CGFloat) -> Void)?
+    /// Original line index of the tab's current selection, re-applied as the
+    /// highlighted row when this pane is (re)created so the selection survives a
+    /// tab switch. `nil` when nothing is selected (or, for the filtered pane, when
+    /// the selected line is not among the current results).
+    var selectionRestoreOriginalIndex: Int?
     let textColor: NSColor
     let rules: [HighlightRule]
     let highlightMatches: [[Int]]
@@ -769,7 +778,10 @@ struct NativeLogViewer: NSViewRepresentable {
         onHideLinesAbove: ((Int) -> Void)? = nil,
         onHideLinesBelow: ((Int) -> Void)? = nil,
         onShowAllLines: (() -> Void)? = nil,
-        onSaveToFile: (() -> Void)? = nil
+        onSaveToFile: (() -> Void)? = nil,
+        scrollRestoreOffset: CGFloat? = nil,
+        onScrollOffsetChanged: ((CGFloat) -> Void)? = nil,
+        selectionRestoreOriginalIndex: Int? = nil
     ) {
         self.provider = provider
         isFiltered = false
@@ -797,6 +809,9 @@ struct NativeLogViewer: NSViewRepresentable {
         self.onHideLinesBelow = onHideLinesBelow
         self.onShowAllLines = onShowAllLines
         self.onSaveToFile = onSaveToFile
+        self.scrollRestoreOffset = scrollRestoreOffset
+        self.onScrollOffsetChanged = onScrollOffsetChanged
+        self.selectionRestoreOriginalIndex = selectionRestoreOriginalIndex
     }
     /// Initializer for the Bottom Pane (Filtered Log View)
     init(
@@ -814,7 +829,10 @@ struct NativeLogViewer: NSViewRepresentable {
         onHideLinesAbove: ((Int) -> Void)? = nil,
         onHideLinesBelow: ((Int) -> Void)? = nil,
         onShowAllLines: (() -> Void)? = nil,
-        onSaveToFile: (() -> Void)? = nil
+        onSaveToFile: (() -> Void)? = nil,
+        scrollRestoreOffset: CGFloat? = nil,
+        onScrollOffsetChanged: ((CGFloat) -> Void)? = nil,
+        selectionRestoreOriginalIndex: Int? = nil
     ) {
         provider = filteredProvider
         isFiltered = true
@@ -842,6 +860,9 @@ struct NativeLogViewer: NSViewRepresentable {
         self.onHideLinesBelow = onHideLinesBelow
         self.onShowAllLines = onShowAllLines
         self.onSaveToFile = onSaveToFile
+        self.scrollRestoreOffset = scrollRestoreOffset
+        self.onScrollOffsetChanged = onScrollOffsetChanged
+        self.selectionRestoreOriginalIndex = selectionRestoreOriginalIndex
     }
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -881,6 +902,11 @@ struct NativeLogViewer: NSViewRepresentable {
         tableView.onSaveToFile = onSaveToFile
         scrollView.documentView = tableView
         context.coordinator.configureColumns(in: tableView, showLineNumbers: showLineNumbers)
+        // Scroll-position memory: apply this tab's saved offset (restored in
+        // updateNSView once content is laid out) and remember new user scrolling.
+        context.coordinator.scrollKeeper.restoreOffset = scrollRestoreOffset
+        context.coordinator.scrollKeeper.onOffsetChanged = onScrollOffsetChanged
+        context.coordinator.scrollKeeper.attach(to: scrollView)
         // SELECTIVE ROW JUMP OBSERVER (From clicking the bottom pane)
         if let notificationName = directScrollNotificationName {
             NotificationCenter.default.addObserver(
@@ -1104,6 +1130,7 @@ struct NativeLogViewer: NSViewRepresentable {
         context.coordinator.onRepeatedPlainClick = onRepeatedPlainClick
         context.coordinator.onToggleMark = onToggleMark
         context.coordinator.onClearAllMarks = onClearAllMarks
+        context.coordinator.scrollKeeper.onOffsetChanged = onScrollOffsetChanged
         // Keep copy closure fresh after data updates
         let coordinator = context.coordinator
         tableView.lineTextForRow = { [weak coordinator] row in
@@ -1120,6 +1147,17 @@ struct NativeLogViewer: NSViewRepresentable {
         let newFirstOriginal = provider.count > 0 ? provider.originalIndex(at: 0) : nil
         let oldOriginY = nsView.contentView.bounds.origin.y
         tableView.reloadDeferringDuringHorizontalScroll()
+        // Restore this tab's remembered scroll position once content is laid out.
+        context.coordinator.scrollKeeper.restoreIfNeeded(documentHeight: tableView.bounds.height)
+        // Re-apply this tab's remembered line selection once content is present.
+        context.coordinator.selectionRestorer.restoreOriginalIndex = selectionRestoreOriginalIndex
+        context.coordinator.selectionRestorer.restoreIfNeeded(
+            provider: provider, rowCount: tableView.numberOfRows
+        ) { row in
+            context.coordinator.isProgrammaticallySelecting = true
+            tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            context.coordinator.isProgrammaticallySelecting = false
+        }
         if !isFiltered, let oldFirst = oldFirstOriginal, let newFirst = newFirstOriginal,
            oldFirst != newFirst {
             let clipView = nsView.contentView
@@ -1182,6 +1220,10 @@ struct NativeLogViewer: NSViewRepresentable {
         /// Set while we restore selection programmatically so the selection-change
         /// delegate callback is suppressed (prevents a reload feedback loop).
         var isProgrammaticallySelecting = false
+        /// Remembers/restores this pane's vertical scroll offset across tab switches.
+        let scrollKeeper = ScrollPositionKeeper()
+        /// Re-applies this pane's remembered line selection after a tab switch.
+        let selectionRestorer = SelectionRestorer()
         /// Returns the display text for a row — used by LogTableView for copy operations.
         func textForRow(_ row: Int) -> String {
             return provider.line(at: row)
