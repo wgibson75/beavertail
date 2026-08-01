@@ -31,12 +31,18 @@ enum HelpContent {
             HelpItem(shortcut: nil, description:
                 "Click a tab to switch to it. The last-used filter pattern for each tab is automatically restored."),
             HelpItem(shortcut: "⌘ + W", description: "Close the active tab. The application stays open when all tabs are closed."),
-            HelpItem(shortcut: nil, description: "Drag tabs left or right to reorder them.")
+            HelpItem(shortcut: nil, description: "Drag tabs left or right to reorder them."),
+            HelpItem(shortcut: nil, description:
+                "Each tab remembers its own scroll position in both panes and its selected line, so switching "
+                + "between logs never loses your place. Switching tabs briefly flashes your current position on the minimap."),
+            HelpItem(shortcut: nil, description:
+                "The currently selected tab is outlined so it stands out.")
         ]),
         HelpSection(title: "Comparing Logs (Unique Lines)", items: [
             HelpItem(shortcut: nil, description:
                 "Right-click a tab and choose 'Mark as Good' or 'Mark as Bad' to classify open logs for comparison. "
-                + "A green (good) or red (bad) dot appears on marked tabs; choose 'Clear' to unmark."),
+                + "Marked tabs take on a faint green (good) or red (bad) background; choose 'Clear' to unmark one tab "
+                + "or 'Clear All' to unmark every tab."),
             HelpItem(shortcut: nil, description:
                 "Once at least one log is marked good and at least one is marked bad, two options appear in the tab "
                 + "right-click menu: 'Show Unique Lines from Good' and 'Show Unique Lines from Bad'."),
@@ -53,9 +59,10 @@ enum HelpContent {
                 + "those logs are reported (and only if absent from all logs on the opposite side). The matching "
                 + "lines are listed, in their original order, from the first log you marked on that side."),
             HelpItem(shortcut: nil, description:
-                "Results open in a single 'unique-lines.txt' tab; a progress bar is shown while they are generated. "
-                + "Choosing an option again refreshes that same tab. You can filter and apply highlight rules to it "
-                + "just like any other log."),
+                "Results open in a single 'unique-lines.txt' tab, positioned just after the last marked tab; a "
+                + "progress bar is shown while they are generated. The tab is yellow until you save it and turns "
+                + "blue once saved. Choosing an option again refreshes that same tab. You can filter and apply "
+                + "highlight rules to it just like any other log."),
             HelpItem(shortcut: "⌘ + S", description:
                 "Right-click in the upper pane of the results tab and choose 'Save to File…' — or press ⌘ + S "
                 + "while that tab is selected — to save the unique lines. (⌘ + S only applies to the unsaved "
@@ -79,20 +86,44 @@ enum HelpContent {
             HelpItem(shortcut: nil, description:
                 "Right-click anywhere in the lower pane and select 'Save to File…' to save the currently "
                 + "filtered lines to a text file. A save dialog lets you choose the location and name; the "
-                + "saved file contains only the matching lines, preserving their original order.")
+                + "saved file contains only the matching lines, preserving their original order."),
+            HelpItem(shortcut: nil, description:
+                "Updating the filter clears the lower pane immediately and shows a progress bar while it re-runs "
+                + "(including in the Timeline View). If nothing matches, the lower pane shows a 'No lines matched' message.")
         ]),
         HelpSection(title: "Highlight Filters", items: [
             HelpItem(shortcut: nil, description:
                 "Open Highlight Filters (paintbrush icon, top-right) to define colour rules that highlight matching "
                 + "lines in both panes. The paintbrush icon is highlighted while the window is open."),
             HelpItem(shortcut: nil, description:
-                "Each rule takes a regex pattern, a text colour, a background colour, "
-                + "an optional Aa (match-case) toggle, and an enable/disable toggle. Disabled filters are ignored and appear dimmed."),
+                "Each rule takes a regex pattern, a text colour, a background colour and an optional Aa (match-case) "
+                + "toggle. The pattern field previews your chosen text and background colours as you type."),
+            HelpItem(shortcut: nil, description:
+                "Press 'Add' to add a new filter; the button is disabled while the pattern is empty or duplicates an "
+                + "existing filter's pattern. Click an existing filter to load it into the fields for editing."),
+            HelpItem(shortcut: nil, description:
+                "After clicking a filter, your edits are detached until you commit them: press 'Update' to save the "
+                + "changes back to that filter. 'Update' only enables once you actually change the pattern, colours "
+                + "or match-case. Use the circular reset button to clear the fields and start a fresh filter."),
+            HelpItem(shortcut: nil, description:
+                "Each filter has an enable/disable switch — green when enabled, red when disabled. Disabled filters "
+                + "are ignored and appear dimmed."),
             HelpItem(shortcut: nil, description:
                 "Drag and drop filters to change the order in which they are applied. "
                 + "Changes are reflected instantly without re-running the filter."),
             HelpItem(shortcut: nil, description:
-                "Use the Import/Export buttons to save and load highlight filters. The enabled/disabled state is persisted when exporting to JSON."),
+                "Group filters to manage them together: press 'New Group', give it an optional name, then drag "
+                + "filters onto the group to add them. A group's switch enables or disables every filter it "
+                + "contains. Drag a whole group to reorder it, drag filters in or out to change their membership, "
+                + "and use a group's ✕ button to remove the group (its filters remain, ungrouped)."),
+            HelpItem(shortcut: "⌘ + Z", description:
+                "Undo the last change made in the Highlight Filters window — adding, updating, deleting, reordering, "
+                + "grouping or ungrouping, moving a filter between groups, or toggling enablement. Up to the last "
+                + "50 changes can be undone."),
+            HelpItem(shortcut: nil, description:
+                "Use the Import/Export buttons to save and load highlight filters. Exports are JSON and include your "
+                + "groups and each filter's enabled state. Importing a file saved by an earlier version (with no "
+                + "groups) still works."),
             HelpItem(shortcut: nil, description:
                 "The Highlight Filters window can be freely moved and resized. "
                 + "Its size and position are remembered between launches.")
@@ -140,20 +171,23 @@ enum HelpContent {
             HelpItem(shortcut: nil, description:
                 "Jumped-to lines in the upper pane are selected and outlined so they are easier to see."),
             HelpItem(shortcut: nil, description:
-                "If a line that has been selected in either the bottom pane or minimap is wider than the window, "
-                + "clicking the entry a second time will smoothly scroll the line horizontally in the upper pane "
-                + "to show the complete line. Click the entry again while it is scrolling to pause; click again "
-                + "to continue scrolling in the same direction."),
+                "If a line selected in the lower pane, the Timeline View or the minimap is wider than the window, "
+                + "and the 'Auto scroll long lines when clicking twice' toolbar option is enabled, clicking the "
+                + "entry a second time smoothly scrolls that line horizontally in the upper pane to reveal the rest. "
+                + "Click again while it is scrolling to pause; click again to continue. When the option is disabled "
+                + "(the default) the lower pane instead lets you drag-select part of a line to copy, like the upper pane."),
             HelpItem(shortcut: nil, description:
-                "Use the minimap on the right edge to navigate large files: click to jump to a line (snapping to "
-                + "the nearest highlight), or click and drag over a region to mark out a time period and hide "
-                + "everything outside it. Coloured bands show where highlight rules match."),
+                "Use the minimap on the right edge to navigate large files: click to jump to a line (snapping to the "
+                + "nearest highlight). Both panes jump to that line — the lower pane centres it when it is part of "
+                + "the filtered set — and the matching Timeline entry is highlighted too. Click and drag over a "
+                + "region to mark out a time period and hide everything outside it. Coloured bands show where "
+                + "highlight rules match."),
             HelpItem(shortcut: nil, description:
                 "Right-click the minimap to step back through previously marked time periods, one level at a time. "
                 + "Moving the pointer over the minimap briefly highlights your current position in the log."),
             HelpItem(shortcut: nil, description:
-                "Toggle Line Numbers, Timestamp Labels; Minimap and Timeline View visibility using the "
-                + "icons in the top right of the application window.")
+                "Use the icons in the top right of the window to toggle Timestamp Labels (ts), 'Auto scroll long "
+                + "lines when clicking twice', Line Numbers, and Minimap and Timeline View visibility.")
         ]),
         HelpSection(title: "Date / Time Stamps", items: [
             HelpItem(shortcut: nil, description:
@@ -165,7 +199,7 @@ enum HelpContent {
                 "Right-click on a log line and select 'Set Point in Time' to use its timestamp as a reference. "
                 + "Subsequent timestamp bubbles will show the elapsed time compared to this point in brackets."),
             HelpItem(shortcut: nil, description:
-                "Right-click on any log line and select 'Reset' to remove the active reference point.")
+                "Right-click on any log line and select 'Clear' to remove the active reference point.")
         ]),
         HelpSection(title: "Text Size", items: [
             HelpItem(shortcut: nil, description:
@@ -198,8 +232,9 @@ enum HelpContent {
                 + "last after the first)."),
             HelpItem(shortcut: nil, description:
                 "Click any coloured mark in the Timeline View to snap the upper pane directly to the corresponding "
-                + "log line and briefly glow that entry. Selecting the same timeline entry again will horizontally "
-                + "scroll any long line in the top pane.")
+                + "log line and briefly glow that entry; the lower pane and minimap follow to the same line. With "
+                + "'Auto scroll long lines when clicking twice' enabled, selecting the same timeline entry again "
+                + "horizontally scrolls a long line in the upper pane.")
         ]),
         HelpSection(title: "Live Tailing", items: [
             HelpItem(shortcut: nil, description:

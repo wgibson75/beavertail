@@ -15,6 +15,10 @@ struct HighlightRule: Identifiable, Codable, Equatable {
     /// When true the compiled regex is case-sensitive ("Match Case" / Aa ON).
     /// When false (default) the regex uses .caseInsensitive.
     var isCaseSensitive: Bool
+    /// The `id` of the `HighlightGroup` this filter belongs to, or `nil` when the
+    /// filter is ungrouped. Decoded optionally so older saved data (which predates
+    /// grouping) still loads with every filter ungrouped.
+    var groupID: UUID?
 
     var signature: String {
         return "\(id.uuidString)-\(pattern.hashValue)-\(isCaseSensitive)-\(isEnabled)"
@@ -33,16 +37,23 @@ struct HighlightRule: Identifiable, Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case pattern, foregroundColorHex, backgroundColorHex, isCaseSensitive, isEnabled
+        case pattern, foregroundColorHex, backgroundColorHex, isCaseSensitive, isEnabled, groupID
     }
 
-    init(id: UUID = UUID(), pattern: String, foregroundColorHex: String, backgroundColorHex: String, isCaseSensitive: Bool = false, isEnabled: Bool = true) {
+    init(id: UUID = UUID(),
+         pattern: String,
+         foregroundColorHex: String,
+         backgroundColorHex: String,
+         isCaseSensitive: Bool = false,
+         isEnabled: Bool = true,
+         groupID: UUID? = nil) {
         self.id = id
         self.pattern = pattern
         self.foregroundColorHex = foregroundColorHex
         self.backgroundColorHex = backgroundColorHex
         self.isCaseSensitive = isCaseSensitive
         self.isEnabled = isEnabled
+        self.groupID = groupID
         updateCachedObjects()
     }
 
@@ -56,6 +67,8 @@ struct HighlightRule: Identifiable, Codable, Equatable {
         // Default false (case-insensitive) when reading older saved data that lacks this key
         isCaseSensitive = (try? container.decode(Bool.self, forKey: .isCaseSensitive)) ?? false
         isEnabled = (try? container.decode(Bool.self, forKey: .isEnabled)) ?? true
+        // Absent in pre-grouping saved data → ungrouped.
+        groupID = try? container.decode(UUID.self, forKey: .groupID)
         updateCachedObjects()
     }
 
@@ -73,6 +86,7 @@ struct HighlightRule: Identifiable, Codable, Equatable {
             lhs.foregroundColorHex == rhs.foregroundColorHex &&
             lhs.backgroundColorHex == rhs.backgroundColorHex &&
             lhs.isCaseSensitive == rhs.isCaseSensitive &&
-            lhs.isEnabled == rhs.isEnabled
+            lhs.isEnabled == rhs.isEnabled &&
+            lhs.groupID == rhs.groupID
     }
 }

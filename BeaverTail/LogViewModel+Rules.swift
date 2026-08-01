@@ -10,15 +10,24 @@ extension LogViewModel {
            let string = String(data: encoded, encoding: .utf8) {
             if rulesData != string { rulesData = string }
         }
+        if let encodedGroups = try? JSONEncoder().encode(highlightRulesStore.groups),
+           let groupString = String(data: encodedGroups, encoding: .utf8) {
+            if groupsData != groupString { groupsData = groupString }
+        }
     }
 
     func loadRules() {
-        guard !rulesData.isEmpty,
-              let data = rulesData.data(using: .utf8),
-              var decoded = try? JSONDecoder().decode([HighlightRule].self, from: data)
-        else { return }
-        for idx in 0 ..< decoded.count { decoded[idx].updateCachedObjects() }
-        highlightRules = decoded
+        if !rulesData.isEmpty,
+           let data = rulesData.data(using: .utf8),
+           var decoded = try? JSONDecoder().decode([HighlightRule].self, from: data) {
+            for idx in 0 ..< decoded.count { decoded[idx].updateCachedObjects() }
+            highlightRules = decoded
+        }
+        if !groupsData.isEmpty,
+           let data = groupsData.data(using: .utf8),
+           let decodedGroups = try? JSONDecoder().decode([HighlightGroup].self, from: data) {
+            highlightRulesStore.groups = decodedGroups
+        }
     }
 
 }

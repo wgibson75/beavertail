@@ -28,8 +28,6 @@ let forceScrollToBottomMarker = "BeaverTailForceScrollToBottom"
 let bottomPaneScrollToTopNotification    = Notification.Name("BeaverTailBottomPaneScrollToTop")
 /// Posted to scroll the bottom pane to a specific row index (Int payload via `object:`).
 let bottomPaneScrollToRowNotification    = Notification.Name("BeaverTailBottomPaneScrollToRow")
-/// Posted to scroll the bottom pane so a specific row is vertically centred (if the
-/// content is tall enough) and selected (Int row payload via `object:`).
 let bottomPaneScrollToRowCenteredNotification = Notification.Name("BeaverTailBottomPaneScrollToRowCentered")
 /// Posted to scroll the top pane so a specific row sits at the top of the viewport
 /// and is selected (Int row payload via `object:`). Used after "Hide Lines Above".
@@ -68,11 +66,8 @@ class LogViewModel: ObservableObject {
     /// views themselves, so mutating it must not trigger a view refresh.
     var topPaneScrollOffsets: [UUID: CGFloat] = [:]
     var bottomPaneScrollOffsets: [UUID: CGFloat] = [:]
-
-    /// Original line index last selected *in the filtered (bottom) pane*, per tab. The
-    /// bottom pane only shows a selection when the user clicked a line there (top-pane
-    /// clicks never select it), so this is tracked separately from `selectedFraction`
-    /// to restore the bottom-pane highlight on tab switch only when it truly had one.
+    /// Per-tab original line index that was last explicitly selected in the
+    /// bottom (filtered) pane, so its highlight can be restored on tab switch.
     var bottomPaneSelectedOriginal: [UUID: Int] = [:]
 
     /// The "Set Point in Time" reference timestamp for the CURRENTLY selected tab.
@@ -199,14 +194,10 @@ class LogViewModel: ObservableObject {
     @Published var isHighlightWindowOpen: Bool = false
 
     @AppStorage("saved_highlight_rules") var rulesData: String = ""
+    @AppStorage("saved_highlight_groups") var groupsData: String = ""
     @AppStorage("saved_show_minimap") var showMinimap: Bool = true
     @AppStorage("saved_show_line_numbers") var showLineNumbers: Bool = true
     @AppStorage("saved_show_timestamp_bubble") var showTimestampBubble: Bool = false
-    /// When true, clicking the same entry twice in the bottom pane horizontally
-    /// scrolls the corresponding long line in the top pane. When false (default) the
-    /// bottom pane instead behaves like the top pane, letting you drag-select a
-    /// portion of a line to copy.
-    @AppStorage("saved_bottom_pane_horizontal_scroll") var bottomPaneHorizontalScroll: Bool = false
     @AppStorage("saved_show_timeline") var showTimeline: Bool = false
 
     @AppStorage("saved_filter_history_v1") var filterHistoryData: String = ""
@@ -214,6 +205,10 @@ class LogViewModel: ObservableObject {
     @AppStorage("saved_recent_files_v1") var recentFilesData: String = ""
     @AppStorage("saved_session_bookmarks_v2") var sessionBookmarksData: String = ""
     @AppStorage("saved_filter_display_mode") private var filterDisplayModeRaw: String = FilterDisplayMode.marksAndMatches.rawValue
+    /// When true, clicking the same entry twice in the bottom pane horizontally
+    /// scrolls the corresponding long line in the top pane. When false (default) the
+    /// bottom pane instead behaves like the top pane for text selection.
+    @AppStorage("saved_bottom_pane_horizontal_scroll") var bottomPaneHorizontalScroll: Bool = false
 
     /// Backing store for the highlight rules. The Highlight Filters window observes
     /// this object directly so its drag-and-drop list is not disturbed by unrelated
@@ -414,7 +409,17 @@ class LogViewModel: ObservableObject {
             self.generateHighlightDataForAllTabs()
         }
 
+        // Group metadata (label/enabled/order) changes only need persisting — the
+        // enable cascade mutates the rules array separately, which drives the rescan.
+        highlightRulesStore.onGroupsChanged = { [weak self] in
+            guard let self else { return }
+            self.objectWillChange.send()
+            self.saveRules()
+        }
+
         loadRules()
+        // The initial load populated the store; don't let ⌘Z undo it away.
+        highlightRulesStore.resetUndoHistory()
         loadFilterHistory()
         loadRecentFiles()
         DispatchQueue.main.async { self.loadSavedTabsSession() }
@@ -578,6 +583,16 @@ class LogViewModel: ObservableObject {
         topPaneScrollOffsets.removeValue(forKey: id)
         bottomPaneScrollOffsets.removeValue(forKey: id)
         bottomPaneSelectedOriginal.removeValue(forKey: id)
+        highlightTasks[id]?.cancel()
+        highlightTasks.removeValue(forKey: id)
+        highlightTokens[id]?.cancel()
+        highlightTokens.removeValue(forKey: id)
+        timelineTasks[id]?.cancel()
+        timelineTasks.removeValue(forKey: id)
+        fullyScannedRuleIDsByTab.removeValue(forKey: id)
+        tabsNeedingFilterRerun.remove(id)
+        topPaneScrollOffsets.removeValue(forKey: id)
+        bottomPaneScrollOffsets.removeValue(forKey: id)
         // If this tab owned the in-flight filter scan, stop it now.
         if filteringTabID == id {
             filterGeneration &+= 1

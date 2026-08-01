@@ -86,6 +86,29 @@ private struct WheelColorWell: NSViewRepresentable {
     }
 }
 
+// MARK: - List item + export file models
+
+/// One row in the rules list — either a group header or a filter row. Used to
+/// render groups inline while keeping a single flat, drag-reorderable list.
+private enum RuleListItem: Identifiable {
+    case group(HighlightGroup)
+    case rule(HighlightRule)
+
+    var id: String {
+        switch self {
+        case .group(let group): return "group:\(group.id.uuidString)"
+        case .rule(let rule): return "rule:\(rule.id.uuidString)"
+        }
+    }
+}
+
+/// The exported/imported document shape (version 2). Older exports are a bare
+/// `[HighlightRule]` array; import falls back to decoding that for compatibility.
+private struct HighlightFiltersFile: Codable {
+    var groups: [HighlightGroup]
+    var rules: [HighlightRule]
+}
+
 struct HighlightSettingsView: View {
     @ObservedObject var rulesStore: HighlightRulesStore
     @Environment(\.dismiss) var dismiss
@@ -144,6 +167,27 @@ struct HighlightSettingsView: View {
     /// is only permitted when the entered pattern is unique.
     private var isUniqueRule: Bool {
         !rulesStore.rules.contains { $0.pattern == patternInput }
+    }
+
+    /// The ordered rows to display: empty groups first (as labelled drop targets),
+    /// then each filter, preceded by its group header the first time that group's
+    /// filters appear. Relies on group members being kept contiguous in `rules`.
+    private var listItems: [RuleListItem] {
+        var items: [RuleListItem] = []
+        let groupedIDs = Set(rulesStore.rules.compactMap { $0.groupID })
+        for group in rulesStore.groups where !groupedIDs.contains(group.id) {
+            items.append(.group(group))
+        }
+        var emitted = Set<UUID>()
+        for rule in rulesStore.rules {
+            if let gid = rule.groupID, !emitted.contains(gid),
+               let group = rulesStore.groups.first(where: { $0.id == gid }) {
+                items.append(.group(group))
+                emitted.insert(gid)
+            }
+            items.append(.rule(rule))
+        }
+        return items
     }
 
     var body: some View {
@@ -234,107 +278,22 @@ struct HighlightSettingsView: View {
 
             // ── Rules list ──
             List {
-                if rulesStore.rules.isEmpty {
+                if rulesStore.rules.isEmpty && rulesStore.groups.isEmpty {
                     ContentUnavailableLabel(
                         text: "No highlight rules yet.",
                         systemImage: "paintbrush"
                     )
                 } else {
-                    ForEach(rulesStore.rules) { rule in
-                        if let index = rulesStore.rules.firstIndex(where: { $0.id == rule.id }) {
-                            HStack(spacing: 10) {
-                                HStack(spacing: 10) {
-                                    Text("\(index + 1)")
-                                        .font(.system(.caption2, design: .monospaced))
-                                        .foregroundColor(Color(NSColor.tertiaryLabelColor))
-                                        .frame(width: 14, alignment: .center)
-
-                                    Toggle("", isOn: Binding(
-                                        get: { rule.isEnabled },
-                                        set: { newValue in
-                                            if let idx = rulesStore.rules.firstIndex(where: { $0.id == rule.id }) {
-                                                rulesStore.rules[idx].isEnabled = newValue
-                                            }
-                                        }
-                                    ))
-                                    .labelsHidden()
-                                    .toggleStyle(.switch)
-                                    .tint(rule.isEnabled ? Color.green.opacity(0.16) : Color.red)
-                                    .scaleEffect(0.65) // Make the switch a bit smaller to fit the row nicely
-
-                                    // Pattern preview badge — always reflects the
-                                    // rule's STORED values; in-progress form edits are
-                                    // only committed to the entry when Update is pressed.
-                                    HStack(spacing: 6) {
-                                        Text(rule.pattern)
-                                            .font(.system(.body, design: .monospaced))
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(rule.backgroundColor)
-                                            .foregroundColor(rule.foregroundColor)
-                                            .clipShape(RoundedRectangle(cornerRadius: 4))
-
-                                        if rule.isCaseSensitive {
-                                            Text("Aa")
-                                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                                .foregroundColor(Color(NSColor.secondaryLabelColor))
-                                                .help("Match Case")
-                                        }
-                                    }
-                                    .opacity(rule.isEnabled ? 1.0 : 0.4) // Dim when disabled
-
-                                    Spacer()
-                                }
-                                .contentShape(Rectangle())
-                                .simultaneousGesture(TapGesture().onEnded { editingRuleID = rule.id })
-                                .offset(x: deletingRules.contains(rule.id) ? -450 : 0)
-                                .opacity(deletingRules.contains(rule.id) ? 0.0 : 1.0)
-                                .animation(.easeIn(duration: 0.15), value: deletingRules)
-
-                                Divider().frame(height: 16)
-
-                                Button {
-                                    deleteRule(rule)
-                                } label: {
-                                    Image(systemName: "trash")
-                                        .foregroundColor(Color(NSColor.secondaryLabelColor))
-                                }
-                                .buttonStyle(.plain)
-                                .help("Delete rule")
-                            }
-                            .padding(.vertical, 2)
-                            .padding(.horizontal, 8)
-                            .contentShape(Rectangle())
-                            .tag(rule.id)
-                            .listRowBackground(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(editingRuleID == rule.id ? Color.primary.opacity(0.06) : Color.clear)
-                                    .padding(.horizontal, 4)
-                            )
-                            .animation(nil, value: editingRuleID)
-                            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
-                            .alignmentGuide(.listRowSeparatorLeading) { d in d[.leading] - 8 }
-                            .alignmentGuide(.listRowSeparatorTrailing) { d in d[.trailing] + 8 }
-                            .onDrag {
-                                NSItemProvider(object: rule.id.uuidString as NSString)
-                            } preview: {
-                                Color.clear
-                            }
+                    ForEach(listItems) { item in
+                        switch item {
+                        case .group(let group):
+                            groupHeaderRow(group)
+                        case .rule(let rule):
+                            ruleRow(rule)
                         }
                     }
                     .onInsert(of: [UTType.plainText.identifier]) { index, providers in
-                        guard let provider = providers.first else { return }
-                        _ = provider.loadObject(ofClass: NSString.self) { item, _ in
-                            guard let idString = item as? String, let ruleID = UUID(uuidString: idString) else { return }
-                            DispatchQueue.main.async {
-                                guard let fromIndex = rulesStore.rules.firstIndex(where: { $0.id == ruleID }) else { return }
-                                let adjustedIndex = index > fromIndex ? index - 1 : index
-                                withAnimation(.default) {
-                                    let rule = rulesStore.rules.remove(at: fromIndex)
-                                    rulesStore.rules.insert(rule, at: adjustedIndex)
-                                }
-                            }
-                        }
+                        handleListInsert(index: index, providers: providers)
                     }
                 }
             }
@@ -369,7 +328,9 @@ struct HighlightSettingsView: View {
             HStack {
                 Button("Import...") { importRules() }
                 Button("Export...") { exportRules() }
-                if !rulesStore.rules.isEmpty {
+                Button("New Group") { newGroup() }
+                    .help("Create a group, then drag filters into it")
+                if !rulesStore.rules.isEmpty || !rulesStore.groups.isEmpty {
                     Button("Remove All...") { showingDeleteAllAlert = true }
                 }
                 Spacer()
@@ -383,10 +344,11 @@ struct HighlightSettingsView: View {
                     withAnimation {
                         clearForm()
                         rulesStore.rules.removeAll()
+                        rulesStore.groups.removeAll()
                     }
                 }
             } message: {
-                Text("Are you sure you want to remove all your highlight filters?\n\nThis action cannot be undone.")
+                Text("Are you sure you want to remove all your highlight filters and groups?\n\nThis action cannot be undone.")
             }
             .background(
                 // Hidden escape key handler
@@ -398,6 +360,15 @@ struct HighlightSettingsView: View {
                     }
                 }
                 .keyboardShortcut(.cancelAction)
+                .hidden()
+            )
+            .background(
+                // Hidden ⌘Z handler: undo the last highlight-filter change
+                // (add / update / delete / group / move / group-toggle), up to 50 steps.
+                Button("") {
+                    rulesStore.undo()
+                }
+                .keyboardShortcut("z", modifiers: .command)
                 .hidden()
             )
             .padding(.horizontal, 16)
@@ -444,6 +415,281 @@ struct HighlightSettingsView: View {
         }
     }
 
+    // MARK: - Rows
+
+    @ViewBuilder
+    private func groupHeaderRow(_ group: HighlightGroup) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+
+            Toggle("", isOn: Binding(
+                get: { group.isEnabled },
+                set: { setGroupEnabled(group.id, $0) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .tint(group.isEnabled ? Color.green.opacity(0.16) : Color.red)
+            .scaleEffect(0.65)
+            .help("Enable or disable every filter in this group")
+
+            TextField("Group name", text: Binding(
+                get: { group.label },
+                set: { setGroupLabel(group.id, $0) }
+            ))
+            .textFieldStyle(.plain)
+            .font(.system(.body).weight(.semibold))
+
+            Spacer()
+
+            Button {
+                deleteGroup(group.id)
+            } label: {
+                Image(systemName: "xmark.circle")
+                    .foregroundColor(Color(NSColor.secondaryLabelColor))
+            }
+            .buttonStyle(.plain)
+            .help("Remove this group (its filters remain, ungrouped)")
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
+        .contentShape(Rectangle())
+        .listRowBackground(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.primary.opacity(0.10))
+                .padding(.horizontal, 4)
+        )
+        .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+        .onDrag {
+            NSItemProvider(object: "group:\(group.id.uuidString)" as NSString)
+        } preview: {
+            Color.clear
+        }
+    }
+
+    @ViewBuilder
+    private func ruleRow(_ rule: HighlightRule) -> some View {
+        let index = rulesStore.rules.firstIndex(where: { $0.id == rule.id }) ?? 0
+        let isGrouped = rule.groupID != nil
+        HStack(spacing: 10) {
+            HStack(spacing: 10) {
+                // Indent grouped filters so their membership reads clearly.
+                if isGrouped {
+                    Color.clear.frame(width: 18)
+                }
+
+                Text("\(index + 1)")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundColor(Color(NSColor.tertiaryLabelColor))
+                    .frame(width: 14, alignment: .center)
+
+                Toggle("", isOn: Binding(
+                    get: { rule.isEnabled },
+                    set: { newValue in
+                        if let idx = rulesStore.rules.firstIndex(where: { $0.id == rule.id }) {
+                            rulesStore.rules[idx].isEnabled = newValue
+                        }
+                    }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .tint(rule.isEnabled ? Color.green.opacity(0.16) : Color.red)
+                .scaleEffect(0.65) // Make the switch a bit smaller to fit the row nicely
+
+                // Pattern preview badge — always reflects the rule's STORED values;
+                // in-progress form edits are only committed to the entry via Update.
+                HStack(spacing: 6) {
+                    Text(rule.pattern)
+                        .font(.system(.body, design: .monospaced))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(rule.backgroundColor)
+                        .foregroundColor(rule.foregroundColor)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+
+                    if rule.isCaseSensitive {
+                        Text("Aa")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(Color(NSColor.secondaryLabelColor))
+                            .help("Match Case")
+                    }
+                }
+                .opacity(rule.isEnabled ? 1.0 : 0.4) // Dim when disabled
+
+                Spacer()
+            }
+            .contentShape(Rectangle())
+            .simultaneousGesture(TapGesture().onEnded { editingRuleID = rule.id })
+            .offset(x: deletingRules.contains(rule.id) ? -450 : 0)
+            .opacity(deletingRules.contains(rule.id) ? 0.0 : 1.0)
+            .animation(.easeIn(duration: 0.15), value: deletingRules)
+
+            Divider().frame(height: 16)
+
+            Button {
+                deleteRule(rule)
+            } label: {
+                Image(systemName: "trash")
+                    .foregroundColor(Color(NSColor.secondaryLabelColor))
+            }
+            .buttonStyle(.plain)
+            .help("Delete rule")
+        }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 8)
+        .contentShape(Rectangle())
+        .tag(rule.id)
+        .listRowBackground(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(editingRuleID == rule.id ? Color.primary.opacity(0.06) : Color.clear)
+                .padding(.horizontal, 4)
+        )
+        .animation(nil, value: editingRuleID)
+        .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+        .alignmentGuide(.listRowSeparatorLeading) { d in d[.leading] - 8 }
+        .alignmentGuide(.listRowSeparatorTrailing) { d in d[.trailing] + 8 }
+        .onDrag {
+            NSItemProvider(object: "rule:\(rule.id.uuidString)" as NSString)
+        } preview: {
+            Color.clear
+        }
+    }
+
+    // MARK: - Drag & drop
+
+    private func handleListInsert(index: Int, providers: [NSItemProvider]) {
+        guard let provider = providers.first else { return }
+        _ = provider.loadObject(ofClass: NSString.self) { item, _ in
+            guard let string = item as? String else { return }
+            DispatchQueue.main.async {
+                if string.hasPrefix("group:"), let gid = UUID(uuidString: String(string.dropFirst(6))) {
+                    performGroupDrop(groupID: gid, listIndex: index)
+                } else {
+                    let raw = string.hasPrefix("rule:") ? String(string.dropFirst(5)) : string
+                    if let rid = UUID(uuidString: raw) {
+                        performRuleDrop(ruleID: rid, listIndex: index)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Number of filter rows before the given list index — i.e. the corresponding
+    /// insertion index into the flat `rules` array (group headers occupy no slot).
+    private func rulesInsertIndex(forListIndex k: Int, in items: [RuleListItem]) -> Int {
+        var count = 0
+        for i in 0..<min(k, items.count) where isRule(items[i]) {
+            count += 1
+        }
+        return count
+    }
+
+    private func isRule(_ item: RuleListItem) -> Bool {
+        if case .rule = item { return true }
+        return false
+    }
+
+    private func performRuleDrop(ruleID: UUID, listIndex k: Int) {
+        let items = listItems
+        guard let fromIndex = rulesStore.rules.firstIndex(where: { $0.id == ruleID }) else { return }
+
+        // Adopt the group implied by the slot just above the drop point: dropping
+        // right below a group header (or a grouped filter) joins that group; dropping
+        // below an ungrouped filter (or at the very top) leaves the filter ungrouped.
+        // This keeps a group's members contiguous by construction.
+        var adoptedGroup: UUID?
+        if k > 0, k - 1 < items.count {
+            switch items[k - 1] {
+            case .rule(let r): adoptedGroup = r.groupID
+            case .group(let g): adoptedGroup = g.id
+            }
+        }
+
+        var target = rulesInsertIndex(forListIndex: k, in: items)
+        withAnimation(.default) {
+            var rule = rulesStore.rules.remove(at: fromIndex)
+            if target > fromIndex { target -= 1 }
+            rule.groupID = adoptedGroup
+            rulesStore.rules.insert(rule, at: max(0, min(target, rulesStore.rules.count)))
+        }
+    }
+
+    private func performGroupDrop(groupID: UUID, listIndex k: Int) {
+        let items = listItems
+        var rules = rulesStore.rules
+        let block = rules.filter { $0.groupID == groupID }
+        guard !block.isEmpty else { return } // Empty group: nothing to reorder.
+        rules.removeAll { $0.groupID == groupID }
+
+        // The first filter at/after the drop point that is NOT part of the moving
+        // group becomes the anchor; snap to the START of its block so we never split
+        // another group.
+        var anchorID: UUID?
+        var idx = k
+        while idx < items.count {
+            if case .rule(let r) = items[idx], r.groupID != groupID {
+                anchorID = r.id
+                break
+            }
+            idx += 1
+        }
+
+        var insertAt = rules.count
+        if let anchorID, let anchorRule = rulesStore.rules.first(where: { $0.id == anchorID }) {
+            if let anchorGroup = anchorRule.groupID,
+               let firstIdx = rules.firstIndex(where: { $0.groupID == anchorGroup }) {
+                insertAt = firstIdx
+            } else if let ai = rules.firstIndex(where: { $0.id == anchorID }) {
+                insertAt = ai
+            }
+        }
+        rules.insert(contentsOf: block, at: max(0, min(insertAt, rules.count)))
+        withAnimation(.default) { rulesStore.rules = rules }
+    }
+
+    // MARK: - Group management
+
+    private func setGroupEnabled(_ id: UUID, _ enabled: Bool) {
+        if let gi = rulesStore.groups.firstIndex(where: { $0.id == id }) {
+            rulesStore.groups[gi].isEnabled = enabled
+        }
+        // Cascade to member filters in a single assignment (one rescan).
+        var rules = rulesStore.rules
+        var changed = false
+        for i in rules.indices where rules[i].groupID == id && rules[i].isEnabled != enabled {
+            rules[i].isEnabled = enabled
+            changed = true
+        }
+        if changed { rulesStore.rules = rules }
+    }
+
+    private func setGroupLabel(_ id: UUID, _ label: String) {
+        if let gi = rulesStore.groups.firstIndex(where: { $0.id == id }) {
+            // Coalesce successive keystrokes into a single undo step so ⌘Z removes
+            // the whole name rather than one character at a time.
+            rulesStore.willEditText(key: "group-label:\(id.uuidString)")
+            rulesStore.groups[gi].label = label
+        }
+    }
+
+    private func deleteGroup(_ id: UUID) {
+        var rules = rulesStore.rules
+        var changed = false
+        for i in rules.indices where rules[i].groupID == id {
+            rules[i].groupID = nil
+            changed = true
+        }
+        if changed { rulesStore.rules = rules }
+        rulesStore.groups.removeAll { $0.id == id }
+    }
+
+    private func newGroup() {
+        rulesStore.groups.insert(HighlightGroup(), at: 0)
+    }
+
+    // MARK: - Rule management
+
     private func deleteRule(_ rule: HighlightRule) {
         if editingRuleID == rule.id { clearForm() }
 
@@ -485,6 +731,12 @@ struct HighlightSettingsView: View {
             backgroundColorHex: bgColor.toHex(),
             isCaseSensitive: isCaseSensitive
         )
+        // A new filter adopts the group of the filter it is inserted after, so
+        // "Add" while a grouped filter is selected keeps it in that group.
+        if let existingID = existingID,
+           let existing = rulesStore.rules.first(where: { $0.id == existingID }) {
+            rule.groupID = existing.groupID
+        }
         rule.updateCachedObjects()
 
         if let existingID = existingID,
@@ -536,6 +788,8 @@ struct HighlightSettingsView: View {
         return false
     }
 
+    // MARK: - Import / export
+
     private func exportRules() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
@@ -544,8 +798,9 @@ struct HighlightSettingsView: View {
         if panel.runModal() == .OK, let url = panel.url {
             do {
                 let encoder = JSONEncoder()
-                encoder.outputFormatting = .prettyPrinted
-                let data = try encoder.encode(rulesStore.rules)
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let file = HighlightFiltersFile(groups: rulesStore.groups, rules: rulesStore.rules)
+                let data = try encoder.encode(file)
                 try data.write(to: url)
             } catch {
                 let alert = NSAlert()
@@ -568,11 +823,19 @@ struct HighlightSettingsView: View {
             do {
                 let data = try Data(contentsOf: url)
                 let decoder = JSONDecoder()
-                var rules = try decoder.decode([HighlightRule].self, from: data)
-                for i in rules.indices {
-                    rules[i].updateCachedObjects()
+                // Prefer the v2 grouped format; fall back to a bare rules array so
+                // files saved by earlier versions still import correctly.
+                if let file = try? decoder.decode(HighlightFiltersFile.self, from: data) {
+                    var rules = file.rules
+                    for i in rules.indices { rules[i].updateCachedObjects() }
+                    rulesStore.groups = file.groups
+                    rulesStore.rules = rules
+                } else {
+                    var rules = try decoder.decode([HighlightRule].self, from: data)
+                    for i in rules.indices { rules[i].updateCachedObjects() }
+                    rulesStore.groups = []
+                    rulesStore.rules = rules
                 }
-                rulesStore.rules = rules
             } catch {
                 let alert = NSAlert()
                 alert.messageText = "Import Failed"
