@@ -12,6 +12,12 @@ import UniformTypeIdentifiers
 /// NSColorWell subclass that forces the shared colour panel into wheel mode
 /// every time it is activated, regardless of the currently selected colour.
 private final class WheelColorWellView: NSColorWell {
+    // NSColorWell has a large intrinsic size; report none so the SwiftUI frame
+    // fully controls the rendered width (otherwise the wells overflow and touch).
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
+
     override func activate(_ exclusive: Bool) {
         let panel = NSColorPanel.shared
         // Convert to sRGB before handing to the panel so equal-channel colours
@@ -115,13 +121,29 @@ struct HighlightSettingsView: View {
     }
 
     private var hasMeaningfulChanges: Bool {
-        patternInput != originalPattern || isCaseSensitive != originalIsCaseSensitive
+        patternInput != originalPattern
+            || isCaseSensitive != originalIsCaseSensitive
+            || !Self.colorsApproximatelyEqual(fgColor, originalFgColor)
+            || !Self.colorsApproximatelyEqual(bgColor, originalBgColor)
     }
 
+    /// Compares two colours in sRGB space with a small tolerance so that
+    /// round-tripping through hex / colour-space conversions doesn't register
+    /// as a spurious change.
+    private static func colorsApproximatelyEqual(_ lhs: Color, _ rhs: Color) -> Bool {
+        guard let a = NSColor(lhs).usingColorSpace(.sRGB),
+              let b = NSColor(rhs).usingColorSpace(.sRGB) else { return false }
+        return abs(a.redComponent - b.redComponent) < 0.01
+            && abs(a.greenComponent - b.greenComponent) < 0.01
+            && abs(a.blueComponent - b.blueComponent) < 0.01
+            && abs(a.alphaComponent - b.alphaComponent) < 0.01
+    }
+
+    /// A pattern is considered a duplicate if any existing filter (including the
+    /// currently-selected one) already uses the exact same regex pattern. Adding
+    /// is only permitted when the entered pattern is unique.
     private var isUniqueRule: Bool {
-        !rulesStore.rules.contains { rule in
-            rule.id != editingRuleID && rule.pattern == patternInput && rule.isCaseSensitive == isCaseSensitive
-        }
+        !rulesStore.rules.contains { $0.pattern == patternInput }
     }
 
     var body: some View {
@@ -139,10 +161,10 @@ struct HighlightSettingsView: View {
                         focusToken: patternFocusToken,
                         blurToken: patternBlurToken,
                         onSubmit: {
-                            if editingRuleID != nil {
-                                handleAddOrUpdate(isSecondaryAdd: true)
-                            } else if !patternInput.isEmpty {
-                                handleAddOrUpdate(isSecondaryAdd: false)
+                            if let id = editingRuleID, hasMeaningfulChanges {
+                                updateExistingRule(id: id)
+                            } else if !patternInput.isEmpty, isUniqueRule {
+                                addNewRule(insertAfter: editingRuleID)
                             }
                         }
                     )
@@ -159,11 +181,11 @@ struct HighlightSettingsView: View {
                     .frame(maxWidth: .infinity)
 
                     WheelColorWell(color: $fgColor)
-                        .frame(width: 44, height: 24)
+                        .frame(width: 38, height: 24)
                         .help("Text colour")
 
                     WheelColorWell(color: $bgColor)
-                        .frame(width: 44, height: 24)
+                        .frame(width: 38, height: 24)
                         .help("Background colour")
 
                     Button(action: { isCaseSensitive.toggle() }) {
@@ -187,15 +209,21 @@ struct HighlightSettingsView: View {
                     .disabled(editingRuleID == nil)
                     .help("Reset the fields to their default values so you can add a new filter")
 
-                    Button("Add") {
-                        if editingRuleID != nil {
-                            handleAddOrUpdate(isSecondaryAdd: true)
-                        } else {
-                            handleAddOrUpdate(isSecondaryAdd: false)
+                    Button("Update") {
+                        if let id = editingRuleID {
+                            updateExistingRule(id: id)
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(patternInput.isEmpty || (editingRuleID != nil && (!hasMeaningfulChanges || !isUniqueRule)))
+                    .disabled(editingRuleID == nil || patternInput.isEmpty || !hasMeaningfulChanges)
+                    .help("Update the selected filter with the details above")
+
+                    Button("Add") {
+                        addNewRule(insertAfter: editingRuleID)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(patternInput.isEmpty || !isUniqueRule)
+                    .help("Add a new filter with the details above")
                 }
             }
             .padding(.horizontal, 16)
@@ -231,19 +259,22 @@ struct HighlightSettingsView: View {
                                     ))
                                     .labelsHidden()
                                     .toggleStyle(.switch)
+                                    .tint(rule.isEnabled ? Color.green.opacity(0.28) : Color.red)
                                     .scaleEffect(0.65) // Make the switch a bit smaller to fit the row nicely
 
-                                    // Pattern preview badge
+                                    // Pattern preview badge — always reflects the
+                                    // rule's STORED values; in-progress form edits are
+                                    // only committed to the entry when Update is pressed.
                                     HStack(spacing: 6) {
-                                        Text(editingRuleID == rule.id ? (patternInput.isEmpty ? " " : patternInput) : rule.pattern)
+                                        Text(rule.pattern)
                                             .font(.system(.body, design: .monospaced))
                                             .padding(.horizontal, 6)
                                             .padding(.vertical, 2)
-                                            .background(editingRuleID == rule.id ? bgColor : rule.backgroundColor)
-                                            .foregroundColor(editingRuleID == rule.id ? fgColor : rule.foregroundColor)
+                                            .background(rule.backgroundColor)
+                                            .foregroundColor(rule.foregroundColor)
                                             .clipShape(RoundedRectangle(cornerRadius: 4))
 
-                                        if editingRuleID == rule.id ? isCaseSensitive : rule.isCaseSensitive {
+                                        if rule.isCaseSensitive {
                                             Text("Aa")
                                                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                                                 .foregroundColor(Color(NSColor.secondaryLabelColor))
@@ -329,42 +360,6 @@ struct HighlightSettingsView: View {
                             NSApp.sendAction(#selector(NSText.moveToEndOfLine(_:)), to: nil, from: nil)
                         }
                     }
-                }
-            }
-            .onChange(of: patternInput) { _, newValue in
-                if let id = editingRuleID, let index = rulesStore.rules.firstIndex(where: { $0.id == id }) {
-                    var rule = rulesStore.rules[index]
-                    if rule.pattern != newValue {
-                        rule.pattern = newValue
-                        rule.updateCachedObjects()
-                        rulesStore.rules[index] = rule
-                    }
-                }
-            }
-            .onChange(of: isCaseSensitive) { _, newValue in
-                if let id = editingRuleID, let index = rulesStore.rules.firstIndex(where: { $0.id == id }) {
-                    var rule = rulesStore.rules[index]
-                    if rule.isCaseSensitive != newValue {
-                        rule.isCaseSensitive = newValue
-                        rule.updateCachedObjects()
-                        rulesStore.rules[index] = rule
-                    }
-                }
-            }
-            .onChange(of: fgColor) { _, newValue in
-                if let id = editingRuleID, let index = rulesStore.rules.firstIndex(where: { $0.id == id }) {
-                    var rule = rulesStore.rules[index]
-                    rule.foregroundColorHex = newValue.toHex()
-                    rule.updateCachedObjects()
-                    rulesStore.rules[index] = rule
-                }
-            }
-            .onChange(of: bgColor) { _, newValue in
-                if let id = editingRuleID, let index = rulesStore.rules.firstIndex(where: { $0.id == id }) {
-                    var rule = rulesStore.rules[index]
-                    rule.backgroundColorHex = newValue.toHex()
-                    rule.updateCachedObjects()
-                    rulesStore.rules[index] = rule
                 }
             }
 
@@ -464,30 +459,6 @@ struct HighlightSettingsView: View {
         }
     }
 
-    private func handleAddOrUpdate(isSecondaryAdd: Bool) {
-        guard !patternInput.isEmpty else { return }
-
-        if let editingID = editingRuleID {
-            if isSecondaryAdd {
-                // Revert the live-updated changes on the original rule
-                if let index = rulesStore.rules.firstIndex(where: { $0.id == editingID }) {
-                    var rule = rulesStore.rules[index]
-                    rule.pattern = originalPattern
-                    rule.isCaseSensitive = originalIsCaseSensitive
-                    rule.foregroundColorHex = originalFgColor.toHex()
-                    rule.backgroundColorHex = originalBgColor.toHex()
-                    rule.updateCachedObjects()
-                    rulesStore.rules[index] = rule
-                }
-                addNewRule(insertAfter: editingID)
-            } else {
-                updateExistingRule(id: editingID)
-            }
-        } else {
-            addNewRule()
-        }
-    }
-
     private func updateExistingRule(id: UUID) {
         if let index = rulesStore.rules.firstIndex(where: { $0.id == id }) {
             var rule = rulesStore.rules[index]
@@ -498,7 +469,13 @@ struct HighlightSettingsView: View {
             rule.updateCachedObjects()
             rulesStore.rules[index] = rule
         }
-        clearForm()
+        // Keep the entry selected and re-baseline the "original" snapshot to the
+        // just-saved values. Update disables until the next change, but the user
+        // can keep editing and update the same entry again.
+        originalPattern = patternInput
+        originalIsCaseSensitive = isCaseSensitive
+        originalFgColor = fgColor
+        originalBgColor = bgColor
     }
 
     private func addNewRule(insertAfter existingID: UUID? = nil) {
@@ -520,18 +497,8 @@ struct HighlightSettingsView: View {
     }
 
     private func startNewRule() {
-        // Revert any live edits made to the currently-selected rule so clicking
-        // "New" never accidentally mutates it, then reset the form to defaults.
-        if let editingID = editingRuleID,
-           let index = rulesStore.rules.firstIndex(where: { $0.id == editingID }) {
-            var rule = rulesStore.rules[index]
-            rule.pattern = originalPattern
-            rule.isCaseSensitive = originalIsCaseSensitive
-            rule.foregroundColorHex = originalFgColor.toHex()
-            rule.backgroundColorHex = originalBgColor.toHex()
-            rule.updateCachedObjects()
-            rulesStore.rules[index] = rule
-        }
+        // Edits are detached from the selected rule, so simply reset the form
+        // to defaults and move focus to the pattern field to start a new filter.
         clearForm()
         // Move focus to the pattern field so the user can start typing straight away.
         DispatchQueue.main.async {
