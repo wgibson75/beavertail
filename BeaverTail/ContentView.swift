@@ -420,17 +420,27 @@ struct ContentView: View {
             .toggleStyle(.button)
             .help("Set highlight filters")
 
-            Toggle(isOn: $viewModel.showLineNumbers) {
-                Label("Line #", systemImage: "list.number")
-            }
-            .toggleStyle(.button)
-            .help("Show line numbers")
-
             Toggle(isOn: $viewModel.showTimestampBubble) {
                 Label("Show timestamp labels", image: "tsIcon")
             }
             .toggleStyle(.button)
             .help("Show timestamp labels")
+
+            Toggle(isOn: $viewModel.bottomPaneHorizontalScroll) {
+                Label {
+                    Text("Bottom pane horizontal scrolling")
+                } icon: {
+                    BottomScrollToggleIcon()
+                }
+            }
+            .toggleStyle(.button)
+            .help("Scroll long lines when clicking twice in bottom pane")
+
+            Toggle(isOn: $viewModel.showLineNumbers) {
+                Label("Line #", systemImage: "list.number")
+            }
+            .toggleStyle(.button)
+            .help("Show line numbers")
 
             Toggle(isOn: $viewModel.showMinimap) {
                 Label("Minimap", systemImage: "sidebar.right")
@@ -1036,6 +1046,7 @@ private struct BottomPaneView: View {    @ObservedObject var viewModel: LogViewM
                             activeRuleIDs: viewModel.currentTab?.activeRuleIDs ?? [],
                             selectedFraction: viewModel.selectedFraction,
                             tailScrollNotificationName: bottomPaneScrollToBottomNotification,
+                            bottomPaneHorizontalScroll: viewModel.bottomPaneHorizontalScroll,
                             showLineNumbers: viewModel.showLineNumbers,
                             showTimestampBubble: viewModel.showTimestampBubble,
                             referenceTimestamp: viewModel.referenceTimestamp,

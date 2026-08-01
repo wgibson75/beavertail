@@ -741,6 +741,7 @@ struct NativeLogViewer: NSViewRepresentable {
     let tailScrollNotificationName: Notification.Name
     let showLineNumbers: Bool
     let showTimestampBubble: Bool
+    var bottomPaneHorizontalScroll: Bool = false
     var referenceTimestamp: Date?
     let fontSize: CGFloat
     let markedIndices: Set<Int>
@@ -817,6 +818,7 @@ struct NativeLogViewer: NSViewRepresentable {
     init(
         filteredProvider: LineProvider, textColor: NSColor, rules: [HighlightRule], highlightMatches: [[Int]], activeRuleIDs: [UUID],
         selectedFraction: CGFloat?, tailScrollNotificationName: Notification.Name,
+        bottomPaneHorizontalScroll: Bool = false,
         showLineNumbers: Bool, showTimestampBubble: Bool, referenceTimestamp: Date? = nil, fontSize: CGFloat = 12,
         markedIndices: Set<Int> = [],
         onLineIndexSelected: @escaping (Int) -> Void,
@@ -849,6 +851,7 @@ struct NativeLogViewer: NSViewRepresentable {
         self.fontSize = fontSize
         self.markedIndices = markedIndices
         isMinimapActiveDrive = false // Bottom pane is never driven by minimap scrubbing
+        self.bottomPaneHorizontalScroll = bottomPaneHorizontalScroll
         self.onLineIndexSelected = onLineIndexSelected
         self.onRepeatedPlainClick = onRepeatedPlainClick
         self.onToggleMark = onToggleMark
@@ -1127,6 +1130,7 @@ struct NativeLogViewer: NSViewRepresentable {
         let oldTopProvider = context.coordinator.provider  // for range-change detection
         context.coordinator.provider = provider
         context.coordinator.isFiltered = isFiltered
+        context.coordinator.bottomPaneHorizontalScroll = bottomPaneHorizontalScroll
         context.coordinator.defaultTextColor = textColor
         context.coordinator.rules = rules
         context.coordinator.showTimestampBubble = showTimestampBubble
@@ -1209,6 +1213,7 @@ struct NativeLogViewer: NSViewRepresentable {
     class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
         var provider: LineProvider = ArrayLineProvider(lines: [])
         var isFiltered: Bool = false
+        var bottomPaneHorizontalScroll: Bool = false
         var defaultTextColor: NSColor = .labelColor
         var rules: [HighlightRule] = []
         var showTimestampBubble: Bool = false
@@ -1379,13 +1384,9 @@ struct NativeLogViewer: NSViewRepresentable {
                 container.layer?.backgroundColor = NSColor.clear.cgColor
                 let text = LogTextField()
                 text.isEditable = false
-                // Top-pane cells allow text selection so the user can drag to
-                // highlight a portion of a line and copy it (⌘C or right-click
-                // "Copy Selection"). Bottom-pane cells keep selection disabled so
-                // all clicks reach the table view for row-level jump behaviour.
-                let topPane = !isFiltered
-                text.isSelectable = topPane
-                text.allowsTextSelection = topPane
+                let cellsSelectable = !isFiltered || !bottomPaneHorizontalScroll
+                text.isSelectable = cellsSelectable
+                text.allowsTextSelection = cellsSelectable
                 text.delegate = self
                 text.isBordered = false
                 text.backgroundColor = .clear
@@ -1397,9 +1398,9 @@ struct NativeLogViewer: NSViewRepresentable {
             } else {
                 textField = containerCell?.subviews.first as? LogTextField
                 // Keep selectable flag in sync on recycled cells
-                let topPane = !isFiltered
-                textField?.isSelectable = topPane
-                textField?.allowsTextSelection = topPane
+                let cellsSelectable = !isFiltered || !bottomPaneHorizontalScroll
+                textField?.isSelectable = cellsSelectable
+                textField?.allowsTextSelection = cellsSelectable
             }
             // Refresh font and frame so size changes apply to recycled cells
             textField?.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)

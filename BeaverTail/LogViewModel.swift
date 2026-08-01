@@ -202,6 +202,11 @@ class LogViewModel: ObservableObject {
     @AppStorage("saved_show_minimap") var showMinimap: Bool = true
     @AppStorage("saved_show_line_numbers") var showLineNumbers: Bool = true
     @AppStorage("saved_show_timestamp_bubble") var showTimestampBubble: Bool = false
+    /// When true, clicking the same entry twice in the bottom pane horizontally
+    /// scrolls the corresponding long line in the top pane. When false (default) the
+    /// bottom pane instead behaves like the top pane, letting you drag-select a
+    /// portion of a line to copy.
+    @AppStorage("saved_bottom_pane_horizontal_scroll") var bottomPaneHorizontalScroll: Bool = false
     @AppStorage("saved_show_timeline") var showTimeline: Bool = false
 
     @AppStorage("saved_filter_history_v1") var filterHistoryData: String = ""
