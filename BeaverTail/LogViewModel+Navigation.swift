@@ -343,6 +343,14 @@ extension LogViewModel {
                 allowsHorizontalScroll: isRepeatedMinimapSelection
             )
         )
+        // If the jumped-to line is also present in the bottom (filtered) pane, scroll
+        // and select it there too, and remember it as the bottom pane's selection so it
+        // survives a tab switch.
+        if let bottomRow = bottomPaneRow(forOriginalIndex: finalExactLine) {
+            bottomPaneSelectedOriginal[tabID] = finalExactLine
+            // Centre the line in the bottom pane (like the top pane) when possible.
+            NotificationCenter.default.post(name: bottomPaneScrollToRowCenteredNotification, object: bottomRow)
+        }
         // Flash the current-position indicator so the jumped-to line stands out.
         triggerMinimapShimmer()
     }

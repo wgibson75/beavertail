@@ -1072,18 +1072,23 @@ struct NativeLogViewer: NSViewRepresentable {
         }
         // MARK: BLOCK NAVIGATION – bottom pane only
         if isFiltered {
-            installScrollRowToTopObserver(name: bottomPaneScrollToRowNotification, tableView: tableView)
+            installScrollRowObserver(name: bottomPaneScrollToRowNotification, centered: false, tableView: tableView)
+        }
+        if isFiltered {
+            installScrollRowObserver(name: bottomPaneScrollToRowCenteredNotification, centered: true, tableView: tableView)
         }
         // SCROLL A ROW TO THE TOP AND SELECT IT – top pane only (e.g. after "Hide
         // Lines Above" so the selected line sits at the very top).
         if !isFiltered {
-            installScrollRowToTopObserver(name: topPaneScrollToRowNotification, tableView: tableView)
+            installScrollRowObserver(name: topPaneScrollToRowNotification, centered: false, tableView: tableView)
         }
         return scrollView
     }
     /// Installs an observer that, when `name` is posted with an `Int` row payload,
-    /// scrolls that row to the top of the pane and selects it.
-    private func installScrollRowToTopObserver(name: Notification.Name, tableView: LogTableView) {
+    /// scrolls that row into view and selects it. When `centered` is true the row is
+    /// vertically centred (clamped to the valid scroll range when the content is too
+    /// short to fully centre it); otherwise it is scrolled to the top of the pane.
+    private func installScrollRowObserver(name: Notification.Name, centered: Bool, tableView: LogTableView) {
         NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { notification in
             guard let row = notification.object as? Int else { return }
             DispatchQueue.main.async {
@@ -1091,8 +1096,11 @@ struct NativeLogViewer: NSViewRepresentable {
                 let clamped = max(0, min(row, tableView.numberOfRows - 1))
                 let rowRect = tableView.rect(ofRow: clamped)
                 if let clipView = tableView.enclosingScrollView?.contentView {
-                    let topY = max(0, rowRect.minY)
-                    clipView.setBoundsOrigin(NSPoint(x: clipView.bounds.origin.x, y: topY))
+                    let viewportHeight = clipView.bounds.height
+                    let maxY = max(0, tableView.bounds.height - viewportHeight)
+                    let desiredY = centered ? rowRect.midY - viewportHeight / 2 : rowRect.minY
+                    let targetY = max(0, min(desiredY, maxY))
+                    clipView.setBoundsOrigin(NSPoint(x: clipView.bounds.origin.x, y: targetY))
                     tableView.enclosingScrollView?.reflectScrolledClipView(clipView)
                 }
                 if let coord = tableView.delegate as? NativeLogViewer.Coordinator {

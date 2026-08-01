@@ -28,6 +28,9 @@ let forceScrollToBottomMarker = "BeaverTailForceScrollToBottom"
 let bottomPaneScrollToTopNotification    = Notification.Name("BeaverTailBottomPaneScrollToTop")
 /// Posted to scroll the bottom pane to a specific row index (Int payload via `object:`).
 let bottomPaneScrollToRowNotification    = Notification.Name("BeaverTailBottomPaneScrollToRow")
+/// Posted to scroll the bottom pane so a specific row is vertically centred (if the
+/// content is tall enough) and selected (Int row payload via `object:`).
+let bottomPaneScrollToRowCenteredNotification = Notification.Name("BeaverTailBottomPaneScrollToRowCentered")
 /// Posted to scroll the top pane so a specific row sits at the top of the viewport
 /// and is selected (Int row payload via `object:`). Used after "Hide Lines Above".
 let topPaneScrollToRowNotification       = Notification.Name("BeaverTailTopPaneScrollToRow")
@@ -333,7 +336,7 @@ class LogViewModel: ObservableObject {
 
     /// Returns the bottom-pane row index for a given original file line index,
     /// or nil if that line is not currently displayed.
-    private func bottomPaneRow(forOriginalIndex origIdx: Int) -> Int? {
+    func bottomPaneRow(forOriginalIndex origIdx: Int) -> Int? {
         guard let tab = currentTab else { return nil }
         // displayedIndices is sorted; binary search for origIdx
         var lo = 0, hi = tab.displayedIndices.count - 1
