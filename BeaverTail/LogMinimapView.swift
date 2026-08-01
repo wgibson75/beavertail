@@ -12,6 +12,10 @@ struct LogMinimapView: View {
     // mouse pointer moves into the minimap region. 0 = resting, 1 = fully glowing.
     @State private var glowIntensity: Double = 0
 
+    // Drives a brief intensification of the minimap image's colours after the view
+    // is reset back to the full log. 0 = resting (normal colours), 1 = fully boosted.
+    @State private var colorBoost: Double = 0
+
     // Click-drag-release range selection. While the pointer is dragged far enough
     // to count as marking out a time period, these track the drag so a live
     // selection rectangle can be drawn; on release the range is applied.
@@ -35,6 +39,18 @@ struct LogMinimapView: View {
         }
     }
 
+    /// Plays a brief intensification of the minimap colours after a reset: ramp the
+    /// saturation/brightness boost up quickly, then ease it back to normal so the
+    /// colours momentarily "pop" to confirm the log has been reset to full.
+    private func playColorBoost() {
+        withAnimation(.easeOut(duration: 0.15)) {
+            colorBoost = 1.0
+        }
+        withAnimation(.easeIn(duration: 0.7).delay(0.15)) {
+            colorBoost = 0.0
+        }
+    }
+
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .topLeading) {
@@ -47,6 +63,11 @@ struct LogMinimapView: View {
                         .resizable()
                         .interpolation(.none) // Keeps color boundaries crisp and un-blurred
                         .frame(width: geometry.size.width, height: geometry.size.height)
+                        // Briefly intensify the colours after a reset: boost saturation
+                        // and contrast, then let them settle back to normal.
+                        .saturation(1.0 + colorBoost * 1.6)
+                        .contrast(1.0 + colorBoost * 0.35)
+                        .brightness(colorBoost * 0.05)
                 }
 
                 // LAYER 2: LIGHTWEIGHT OVERLAY INDICATOR
@@ -91,11 +112,6 @@ struct LogMinimapView: View {
                         .offset(y: minY)
                         .allowsHitTesting(false)
                 }
-
-                // LAYER 4: PERIMETER FLASH played when a focused subset of
-                // lines is reset (Reset button / Show All Lines).
-                MinimapBurstView(trigger: viewModel.minimapBurstTrigger)
-                    .allowsHitTesting(false)
             }
             .contentShape(Rectangle())
             .onHover { isInside in
@@ -107,6 +123,11 @@ struct LogMinimapView: View {
             // bump this trigger so the new current position momentarily glows.
             .onChange(of: viewModel.minimapShimmerTrigger) { _, _ in
                 playShimmer()
+            }
+            // Briefly intensify the minimap colours whenever a focused subset of
+            // lines is reset (Reset button / Show All Lines).
+            .onChange(of: viewModel.minimapBurstTrigger) { _, _ in
+                playColorBoost()
             }
             .gesture(
                 DragGesture(minimumDistance: 0)
@@ -160,34 +181,7 @@ struct LogMinimapView: View {
     }
 }
 
-// MARK: - Reset Flash
-
-/// Briefly flashes the minimap's perimeter whenever `trigger` changes, giving a
-/// simple visual confirmation that a focused subset of lines has been reset back to
-/// the full log (Reset button / Show All Lines).
-private struct MinimapBurstView: View {
-    let trigger: Int
-
-    @State private var flashOn = false
-
-    var body: some View {
-        // Match the emphasised current-line highlight shown on hover: the same
-        // accent colour with a blurred glow/halo so the flash clearly contrasts
-        // against the minimap.
-        Rectangle()
-            .stroke(Color.accentColor, lineWidth: 2.5)
-            .shadow(color: Color.accentColor.opacity(flashOn ? 0.9 : 0), radius: 6)
-            .opacity(flashOn ? 1.0 : 0)
-            .allowsHitTesting(false)
-            .onChange(of: trigger) { _, _ in
-                // Snap the border on, then fade it back out for a quick flash.
-                flashOn = true
-                withAnimation(.easeOut(duration: 0.4)) {
-                    flashOn = false
-                }
-            }
-    }
-}
+// MARK: - Right-click Catcher
 
 /// A transparent AppKit overlay that reports right-clicks (secondary mouse button)
 /// without consuming any other events, so SwiftUI gestures beneath it continue to
