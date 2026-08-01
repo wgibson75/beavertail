@@ -428,13 +428,13 @@ struct ContentView: View {
 
             Toggle(isOn: $viewModel.bottomPaneHorizontalScroll) {
                 Label {
-                    Text("Bottom pane horizontal scrolling")
+                    Text("Auto scroll long lines when clicking twice")
                 } icon: {
                     BottomScrollToggleIcon()
                 }
             }
             .toggleStyle(.button)
-            .help("Scroll long lines when clicking twice in bottom pane")
+            .help("Auto scroll long lines when clicking twice")
 
             Toggle(isOn: $viewModel.showLineNumbers) {
                 Label("Line #", systemImage: "list.number")
@@ -555,11 +555,9 @@ private struct TopPaneView: View {
                         : nil,
                     // Remember/restore this tab's top-pane scroll position across tab switches.
                     scrollRestoreOffset: viewModel.selectedTabID.flatMap { viewModel.topPaneScrollOffsets[$0] },
-                    onScrollOffsetChanged: { [id = viewModel.selectedTabID] offset in
-                        if let id { viewModel.topPaneScrollOffsets[id] = offset }
-                    },
-                    // Keep the same line highlighted when returning to this tab.
-                    selectionRestoreOriginalIndex: viewModel.currentTab.flatMap { viewModel.selectedOriginalIndex(in: $0) }
+                    onScrollOffsetChanged: { offset in
+                        if let id = viewModel.selectedTabID { viewModel.topPaneScrollOffsets[id] = offset }
+                    }
                 ).id(viewModel.selectedTabID?.uuidString ?? "top")
             }
         }
@@ -1052,11 +1050,8 @@ private struct BottomPaneView: View {    @ObservedObject var viewModel: LogViewM
                             referenceTimestamp: viewModel.referenceTimestamp,
                             fontSize: viewModel.fontSize,
                             markedIndices: viewModel.currentTab?.markedIndices ?? [],
-                            onLineIndexSelected: {
-                                viewModel.syncSelectionFromFilteredIndex($0)
-                                if let id = viewModel.selectedTabID { viewModel.bottomPaneSelectedOriginal[id] = $0 }
-                            },
-                            onRepeatedPlainClick: { viewModel.syncSelectionFromFilteredIndex($0, allowsHorizontalScroll: true) },
+                            onLineIndexSelected: { viewModel.syncSelectionFromFilteredIndex($0) },
+                            onRepeatedPlainClick: { viewModel.syncSelectionFromFilteredIndex($0, allowsHorizontalScroll: viewModel.bottomPaneHorizontalScroll) },
                             onToggleMark: { viewModel.toggleMarks($0) },
                             onClearAllMarks: { viewModel.clearAllMarks() },
                             onSetReferenceTimestamp: { viewModel.referenceTimestamp = $0 },
@@ -1068,11 +1063,9 @@ private struct BottomPaneView: View {    @ObservedObject var viewModel: LogViewM
                             onSaveToFile: { viewModel.saveFilteredLinesToFile() },
                             // Remember/restore this tab's bottom-pane scroll position across tab switches.
                             scrollRestoreOffset: viewModel.selectedTabID.flatMap { viewModel.bottomPaneScrollOffsets[$0] },
-                            onScrollOffsetChanged: { [id = viewModel.selectedTabID] offset in
-                                if let id { viewModel.bottomPaneScrollOffsets[id] = offset }
-                            },
-                            // Keep the same line highlighted when returning to this tab.
-                            selectionRestoreOriginalIndex: viewModel.selectedTabID.flatMap { viewModel.bottomPaneSelectedOriginal[$0] }
+                            onScrollOffsetChanged: { offset in
+                                if let id = viewModel.selectedTabID { viewModel.bottomPaneScrollOffsets[id] = offset }
+                            }
                         )
                         .id(viewModel.selectedTabID?.uuidString ?? "bot")
                     }

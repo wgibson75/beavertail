@@ -193,12 +193,18 @@ extension LogViewModel {
         let cachedMatches = openTabs[index].timelineMatches
         guard mappedRuleIndex >= 0, mappedRuleIndex < cachedMatches.count, !cachedMatches[mappedRuleIndex].isEmpty else {
             openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: exactLine, in: openTabs[index])
+            // Horizontal auto-scroll of long lines is only allowed on a repeated
+            // click of the same entry AND when the bottom-pane scroll option is on.
+            let isRepeatedTimelineClick = timelineCurrentLineByTab[tabID] == exactLine
             // Record the current position so a subsequent heading click continues
             // forward from here.
             timelineCurrentLineByTab[tabID] = exactLine
             NotificationCenter.default.post(
                 name: topPaneDirectScrollNotification,
-                object: topPaneRow(forOriginalIndex: exactLine, in: openTabs[index])
+                object: TopPaneDirectScrollRequest(
+                    lineIndex: topPaneRow(forOriginalIndex: exactLine, in: openTabs[index]),
+                    allowsHorizontalScroll: isRepeatedTimelineClick && bottomPaneHorizontalScroll
+                )
             )
             triggerTimelineJump()
             return
@@ -232,13 +238,19 @@ extension LogViewModel {
         // We set scrubbing minimap to false because we want it to snap
         isScrubbingMinimap = false
         openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: closestVal, in: openTabs[index])
+        // Horizontal auto-scroll of long lines is only allowed on a repeated click
+        // of the same entry AND when the bottom-pane scroll option is enabled.
+        let isRepeatedTimelineClick = timelineCurrentLineByTab[tabID] == closestVal
         // Record the current position so a subsequent heading click continues
         // forward from here.
         timelineCurrentLineByTab[tabID] = closestVal
         // Publish the scroll offset immediately.
         NotificationCenter.default.post(
             name: topPaneDirectScrollNotification,
-            object: topPaneRow(forOriginalIndex: closestVal, in: openTabs[index])
+            object: TopPaneDirectScrollRequest(
+                lineIndex: topPaneRow(forOriginalIndex: closestVal, in: openTabs[index]),
+                allowsHorizontalScroll: isRepeatedTimelineClick && bottomPaneHorizontalScroll
+            )
         )
         triggerTimelineJump()
     }
@@ -291,37 +303,39 @@ extension LogViewModel {
         let cache = openTabs[index].highlightMatches
         var globalClosestVal = -1
         var globalMinDiff = Int.max
+        // Track which rule (index into `cache` / `activeRuleIDs`) the closest match
+        // belongs to, so a snapped click can also select that rule's Timeline column.
+        var globalClosestRuleIndex = -1
 
         // Only consider matches inside the visible range — the minimap never draws
         // highlights for hidden lines, so we must never snap to one.
-        let consider: (Int) -> Void = { candidate in
-            guard candidate >= rangeStart, candidate <= rangeEndInclusive else { return }
-            let diff = abs(candidate - exactLine)
-            if diff < globalMinDiff {
-                globalMinDiff = diff
-                globalClosestVal = candidate
+        for (ruleIndex, matches) in cache.enumerated() where !matches.isEmpty {
+            var left = 0
+            var right = matches.count
+            while left < right {
+                let mid = left + (right - left) / 2
+                if matches[mid] < exactLine { left = mid + 1 } else { right = mid }
             }
-        }
-
-        for matches in cache {
-            if !matches.isEmpty {
-                var left = 0
-                var right = matches.count
-                while left < right {
-                    let mid = left + (right - left) / 2
-                    if matches[mid] < exactLine { left = mid + 1 } else { right = mid }
+            for candidateIndex in [left, left - 1] where candidateIndex >= 0 && candidateIndex < matches.count {
+                let candidate = matches[candidateIndex]
+                guard candidate >= rangeStart, candidate <= rangeEndInclusive else { continue }
+                let diff = abs(candidate - exactLine)
+                if diff < globalMinDiff {
+                    globalMinDiff = diff
+                    globalClosestVal = candidate
+                    globalClosestRuleIndex = ruleIndex
                 }
-
-                if left < matches.count { consider(matches[left]) }
-                if left - 1 >= 0 { consider(matches[left - 1]) }
             }
         }
 
+        // The rule whose match we snapped to (if any), used for Timeline selection.
+        var snappedRuleIndex = -1
         if globalClosestVal != -1 {
             // Snap if within roughly 3 pixels in the minimap representation
             let stickyTolerance = max(1, totalCount / 1500) * 3
             if globalMinDiff <= stickyTolerance {
                 finalExactLine = globalClosestVal
+                snappedRuleIndex = globalClosestRuleIndex
             }
         }
 
@@ -340,16 +354,32 @@ extension LogViewModel {
             name: topPaneDirectScrollNotification,
             object: TopPaneDirectScrollRequest(
                 lineIndex: topPaneRow(forOriginalIndex: finalExactLine, in: openTabs[index]),
-                allowsHorizontalScroll: isRepeatedMinimapSelection
+                // Only auto-scroll long lines horizontally when a repeated minimap
+                // selection coincides with the bottom-pane scroll option being on.
+                allowsHorizontalScroll: isRepeatedMinimapSelection && bottomPaneHorizontalScroll
             )
         )
-        // If the jumped-to line is also present in the bottom (filtered) pane, scroll
-        // and select it there too, and remember it as the bottom pane's selection so it
-        // survives a tab switch.
+        // If the jumped-to line is also present in the bottom pane's filtered set,
+        // scroll the bottom pane to it (vertically centred) and record it as the
+        // bottom pane's selected line so the highlight tracks the minimap jump.
         if let bottomRow = bottomPaneRow(forOriginalIndex: finalExactLine) {
             bottomPaneSelectedOriginal[tabID] = finalExactLine
-            // Centre the line in the bottom pane (like the top pane) when possible.
-            NotificationCenter.default.post(name: bottomPaneScrollToRowCenteredNotification, object: bottomRow)
+            NotificationCenter.default.post(
+                name: bottomPaneScrollToRowCenteredNotification,
+                object: bottomRow
+            )
+        }
+        // If the snapped line belongs to a rule that also has a Timeline column,
+        // select and highlight that column's entry (mirroring a heading click) and
+        // scroll the Timeline to it.
+        if snappedRuleIndex >= 0, snappedRuleIndex < openTabs[index].activeRuleIDs.count {
+            let ruleID = openTabs[index].activeRuleIDs[snappedRuleIndex]
+            if openTabs[index].timelineActiveRuleIDs.contains(ruleID) {
+                timelineSelectedRuleID = ruleID
+                timelineSelectionIsMarks = false
+                timelineCurrentLineByTab[tabID] = finalExactLine
+                triggerTimelineJump()
+            }
         }
         // Flash the current-position indicator so the jumped-to line stands out.
         triggerMinimapShimmer()

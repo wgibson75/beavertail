@@ -259,7 +259,7 @@ struct HighlightSettingsView: View {
                                     ))
                                     .labelsHidden()
                                     .toggleStyle(.switch)
-                                    .tint(rule.isEnabled ? Color.green.opacity(0.28) : Color.red)
+                                    .tint(rule.isEnabled ? Color.green.opacity(0.16) : Color.red)
                                     .scaleEffect(0.65) // Make the switch a bit smaller to fit the row nicely
 
                                     // Pattern preview badge — always reflects the
