@@ -126,6 +126,11 @@ struct HighlightSettingsView: View {
     @State private var deletingRules: Set<UUID> = []
     @State private var showingDeleteAllAlert = false
 
+    // Multi-selection of filter rows (for "Add to New Group"), independent of the
+    // single `editingRuleID` used to load a rule into the form for editing.
+    @State private var selectedRuleIDs: Set<UUID> = []
+    @State private var selectionAnchorID: UUID?
+
     @State private var originalPattern: String = ""
     @State private var originalIsCaseSensitive: Bool = false
     @State private var originalFgColor: Color = HighlightSettingsView.defaultFgColor(.light)
@@ -520,7 +525,7 @@ struct HighlightSettingsView: View {
                 Spacer()
             }
             .contentShape(Rectangle())
-            .simultaneousGesture(TapGesture().onEnded { editingRuleID = rule.id })
+            .simultaneousGesture(TapGesture().onEnded { handleRuleTap(rule.id) })
             .offset(x: deletingRules.contains(rule.id) ? -450 : 0)
             .opacity(deletingRules.contains(rule.id) ? 0.0 : 1.0)
             .animation(.easeIn(duration: 0.15), value: deletingRules)
@@ -542,13 +547,19 @@ struct HighlightSettingsView: View {
         .tag(rule.id)
         .listRowBackground(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(editingRuleID == rule.id ? Color.primary.opacity(0.06) : Color.clear)
+                .fill(rowBackgroundColor(for: rule.id))
                 .padding(.horizontal, 4)
         )
         .animation(nil, value: editingRuleID)
         .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
         .alignmentGuide(.listRowSeparatorLeading) { d in d[.leading] - 8 }
         .alignmentGuide(.listRowSeparatorTrailing) { d in d[.trailing] + 8 }
+        .contextMenu {
+            let count = groupActionTargets(clicked: rule.id).count
+            Button(count > 1 ? "Add \(count) Filters to New Group" : "Add to New Group") {
+                addSelectionToNewGroup(clicked: rule.id)
+            }
+        }
         .onDrag {
             NSItemProvider(object: "rule:\(rule.id.uuidString)" as NSString)
         } preview: {
@@ -786,6 +797,103 @@ struct HighlightSettingsView: View {
             return true
         }
         return false
+    }
+
+    // MARK: - Multi-selection & grouping
+
+    /// Rule IDs in display order (used for ⇧-click range selection).
+    private var orderedRuleIDs: [UUID] {
+        listItems.compactMap { if case .rule(let r) = $0 { return r.id } else { return nil } }
+    }
+
+    /// Handles a click on a filter row: ⌘-click toggles the row in the multi-
+    /// selection, ⇧-click extends a range from the anchor, and a plain click selects
+    /// just that row and loads it into the form for editing (unchanged behaviour).
+    private func handleRuleTap(_ id: UUID) {
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.command) {
+            if selectedRuleIDs.contains(id) { selectedRuleIDs.remove(id) } else { selectedRuleIDs.insert(id) }
+            selectionAnchorID = id
+        } else if flags.contains(.shift) {
+            rangeSelect(to: id)
+        } else {
+            selectedRuleIDs = [id]
+            selectionAnchorID = id
+            editingRuleID = id
+        }
+    }
+
+    private func rangeSelect(to id: UUID) {
+        let ordered = orderedRuleIDs
+        let anchor = selectionAnchorID ?? editingRuleID ?? id
+        guard let a = ordered.firstIndex(of: anchor), let b = ordered.firstIndex(of: id) else {
+            selectedRuleIDs = [id]
+            selectionAnchorID = id
+            return
+        }
+        selectedRuleIDs = Set(ordered[min(a, b)...max(a, b)])
+    }
+
+    /// Background tint for a filter row: multi-selected rows use an accent tint; the
+    /// single row being edited keeps its subtle highlight.
+    private func rowBackgroundColor(for id: UUID) -> Color {
+        if selectedRuleIDs.count > 1 && selectedRuleIDs.contains(id) {
+            return Color.accentColor.opacity(0.18)
+        }
+        if editingRuleID == id { return Color.primary.opacity(0.06) }
+        return Color.clear
+    }
+
+    /// The filters a right-click "Add to New Group" acts on: the current multi-
+    /// selection when the clicked row is part of it, otherwise just the clicked row.
+    private func groupActionTargets(clicked id: UUID) -> [UUID] {
+        if selectedRuleIDs.contains(id) && selectedRuleIDs.count > 1 {
+            return orderedRuleIDs.filter { selectedRuleIDs.contains($0) }
+        }
+        return [id]
+    }
+
+    private func addSelectionToNewGroup(clicked id: UUID) {
+        let targets = groupActionTargets(clicked: id)
+        guard !targets.isEmpty, let name = promptForGroupName() else { return }
+        performAddToNewGroup(ruleIDs: targets, label: name)
+    }
+
+    /// Prompts for a group name via a modal alert. Returns nil if cancelled.
+    private func promptForGroupName() -> String? {
+        let alert = NSAlert()
+        alert.messageText = "Add to New Group"
+        alert.informativeText = "Enter a name for the new group:"
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.placeholderString = "Group name"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        return alert.runModal() == .alertFirstButtonReturn ? field.stringValue : nil
+    }
+
+    /// Moves the given filters into a new group (preserving their relative order) as
+    /// a contiguous block at the top of the list, so no existing group is split.
+    /// The two store writes coalesce into a single ⌘Z undo step.
+    private func performAddToNewGroup(ruleIDs: [UUID], label: String) {
+        let idSet = Set(ruleIDs)
+        var rules = rulesStore.rules
+        guard rules.contains(where: { idSet.contains($0.id) }) else { return }
+        let group = HighlightGroup(label: label)
+        let moving = rules.filter { idSet.contains($0.id) }.map { r -> HighlightRule in
+            var m = r
+            m.groupID = group.id
+            return m
+        }
+        rules.removeAll { idSet.contains($0.id) }
+        rules.insert(contentsOf: moving, at: 0)
+        withAnimation(.default) {
+            rulesStore.groups.insert(group, at: 0)
+            rulesStore.rules = rules
+        }
+        selectedRuleIDs = []
+        selectionAnchorID = nil
     }
 
     // MARK: - Import / export
