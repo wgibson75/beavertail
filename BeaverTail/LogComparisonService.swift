@@ -16,15 +16,19 @@ struct LogComparisonSource: Sendable {
     let count: Int
 }
 
-/// Computes the "unique" log lines between a set of *problem* logs and a set of
+/// Computes the "unique" log lines between a set of *source* logs and a set of
 /// *reference* logs by reducing every line to a normalised *signature* that ignores
 /// the volatile parts of a line (timestamps, memory addresses, handle counters,
 /// quoted labels, …).
 ///
-/// This mirrors the reference `checklog.py` tool exactly: a signature is reported
-/// only when it appears in **every** problem log (intersection) and in **none** of
-/// the reference logs; the matching lines are emitted from the **first** problem log
-/// in their original order.
+/// The reference bucket is the **union** of every reference log's signatures (a
+/// source line is "normal" if it appears in *any* reference log). The source bucket
+/// is the **intersection** of every source log's signatures (a signature must appear
+/// in *all* source logs — the symptom common to every failing run), matching the
+/// reference `checklog.py` tool. A signature is "unique" when it is in the source
+/// bucket but **not** in the reference bucket. Each surviving signature is rendered
+/// as the **first occurrence of each distinct line** taken from the first source log,
+/// in order.
 enum LogComparisonService {
 
     /// Builds the signature for a single log line. Equivalent to the reference
@@ -87,19 +91,24 @@ enum LogComparisonService {
             || (value >= 0x61 && value <= 0x66)   // a-f
     }
 
-    /// Returns the lines that are unique to the `sources` (problem) logs relative to
-    /// the `others` (reference) logs, following `checklog.py`'s `compare_logs`:
+    /// Returns the lines that are unique to the `sources` bucket relative to the
+    /// `others` (reference) bucket, treating each group as a set of signatures:
     ///
-    /// 1. Build the union of every reference log's signatures.
-    /// 2. Build each problem log's signature set; intersect them so only signatures
-    ///    present in **all** problem logs survive, then subtract the reference set.
-    /// 3. Emit the lines from the **first** problem log whose signature survived, in
-    ///    their original order, **without** de-duplication.
+    /// 1. Build the reference bucket: the **union** of every reference log's
+    ///    signatures.
+    /// 2. Build the source bucket: the **intersection** of every source log's
+    ///    signatures (a signature must appear in ALL source logs), then subtract the
+    ///    reference bucket. What remains are the signatures common to every source log
+    ///    but absent from every reference log.
+    /// 3. Emit lines from the first source log, in original order, whose signature is
+    ///    unique — showing only the **first occurrence of each distinct line** (exact
+    ///    duplicate line text is collapsed; distinct lines sharing a unique signature
+    ///    are all shown).
     ///
-    /// `sources` must be supplied in problem-log order (the order the logs were
-    /// marked); results are reported from `sources.first`. `isCancelled` is polled so
-    /// a superseded comparison can bail out promptly. `progress`, when supplied, is
-    /// incremented as lines are processed so a progress bar can track the work.
+    /// `sources` must be supplied in marked order; results are reported from
+    /// `sources.first`. `isCancelled` is polled so a superseded comparison can bail
+    /// out promptly. `progress`, when supplied, is incremented as lines are processed
+    /// so a progress bar can track the work.
     ///
     /// The per-line signature computation — by far the dominant cost — is spread
     /// across **all** CPU cores (see `signatureSet(for:)`), so a large comparison
@@ -112,7 +121,7 @@ enum LogComparisonService {
     ) -> [String] {
         guard let firstSource = sources.first else { return [] }
 
-        // 1. Reference signatures: the union across every reference log.
+        // 1. Reference bucket: the union across every reference log's signatures.
         var referenceSignatures = Set<String>()
         for source in others {
             if isCancelled() { return [] }
@@ -120,34 +129,36 @@ enum LogComparisonService {
         }
         if isCancelled() { return [] }
 
-        // 2. Per-problem-log signature sets, plus the first problem log's lines (in
-        //    order) with their signatures — the candidates for the reported output.
+        // 2. Source bucket: the INTERSECTION across every source log's signatures — a
+        //    signature survives only when it appears in EVERY source log (e.g. the
+        //    symptom common to all the failing runs), matching checklog.py. The first
+        //    source log's lines are captured in order (with signatures) so we can emit
+        //    representative lines; because the survivors are a subset of the first
+        //    log's signatures, every survivor is guaranteed a line here.
         let firstLogEntries = orderedEntries(for: firstSource, isCancelled: isCancelled, progress: progress)
         if isCancelled() { return [] }
 
-        var perLogSignatures: [Set<String>] = []
-        perLogSignatures.reserveCapacity(sources.count)
-        // The first problem log's signature set is derived from the entries we already
-        // computed above, so it isn't scanned twice.
-        perLogSignatures.append(Set(firstLogEntries.lazy.map { $0.sig }))
+        var sourceSignatures = Set(firstLogEntries.lazy.map { $0.sig })
         for source in sources.dropFirst() {
             if isCancelled() { return [] }
-            perLogSignatures.append(signatureSet(for: source, isCancelled: isCancelled, progress: progress))
+            sourceSignatures.formIntersection(signatureSet(for: source, isCancelled: isCancelled, progress: progress))
         }
 
-        // Signatures present in EVERY problem log, then minus the reference set.
-        var uniqueSignatures = perLogSignatures[0]
-        for k in 1..<perLogSignatures.count {
-            if isCancelled() { return [] }
-            uniqueSignatures.formIntersection(perLogSignatures[k])
-        }
-        uniqueSignatures.subtract(referenceSignatures)
+        // Keep only signatures present in the (intersected) source bucket but NOT in
+        // the reference bucket (the union of the opposite side's logs).
+        sourceSignatures.subtract(referenceSignatures)
 
-        // 3. Emit every matching line from the first problem log, in order, with no
-        //    de-duplication (mirrors checklog.py run without --reportonce).
+        // 3. Emit lines from the first source log (in order) whose signature is unique,
+        //    keeping only the first occurrence of each DISTINCT line (exact-duplicate
+        //    line text is collapsed). Distinct lines that share a unique signature are
+        //    all shown.
         var result: [String] = []
-        for entry in firstLogEntries where uniqueSignatures.contains(entry.sig) {
-            result.append(entry.line)
+        var emitted = Set<String>()
+        for entry in firstLogEntries where sourceSignatures.contains(entry.sig) {
+            if isCancelled() { return [] }
+            if emitted.insert(entry.line).inserted {
+                result.append(entry.line)
+            }
         }
         return result
     }
