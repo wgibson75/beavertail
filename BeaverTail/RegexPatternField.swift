@@ -22,6 +22,8 @@ struct RegexPatternField: NSViewRepresentable {
     /// Change this value to programmatically blur the field.
     var blurToken: Int
     var onSubmit: () -> Void
+    /// Called when the field resigns first responder (e.g. the user clicks away).
+    var onEndEditing: () -> Void = {}
 
     func makeNSView(context: Context) -> SelectionStyledTextField {
         let field = SelectionStyledTextField()
@@ -95,7 +97,10 @@ struct RegexPatternField: NSViewRepresentable {
             parent.text = field.stringValue
         }
 
-        func controlTextDidEndEditing(_ obj: Notification) { isEditing = false }
+        func controlTextDidEndEditing(_ obj: Notification) {
+            isEditing = false
+            parent.onEndEditing()
+        }
 
         func control(_ control: NSControl, textView: NSTextView,
                      doCommandBy commandSelector: Selector) -> Bool {

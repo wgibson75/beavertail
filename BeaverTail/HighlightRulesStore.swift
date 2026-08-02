@@ -31,6 +31,7 @@ final class HighlightRulesStore: ObservableObject {
     @Published var rules: [HighlightRule] = [] {
         didSet {
             recordUndoSnapshot(previousRules: oldValue, previousGroups: groups)
+            preserveEmptiedGroupPositions(previousRules: oldValue)
             onRulesChanged?()
         }
     }
@@ -68,6 +69,41 @@ final class HighlightRulesStore: ObservableObject {
     private var activeTextEditKey: String?
 
     var canUndo: Bool { !undoStack.isEmpty }
+
+    /// Pins any group that a rules change just left empty to the display position it
+    /// occupied, so it doesn't jump to the top of the list. The anchor is the nearest
+    /// still-existing rule that preceded the group's (now-removed) block; `nil` when the
+    /// group sat at the very top. Runs synchronously within the same change so the undo
+    /// snapshot (already taken) and persistence coalesce into one step.
+    private func preserveEmptiedGroupPositions(previousRules: [HighlightRule]) {
+        guard !isApplyingUndo else { return }
+
+        let newGroupedIDs = Set(rules.compactMap { $0.groupID })
+        let survivingRuleIDs = Set(rules.map { $0.id })
+
+        // First-member index of each group in the PREVIOUS order (so we know where each
+        // group's block used to start).
+        var firstIndex: [UUID: Int] = [:]
+        for (idx, rule) in previousRules.enumerated() {
+            if let gid = rule.groupID, firstIndex[gid] == nil { firstIndex[gid] = idx }
+        }
+
+        for gi in groups.indices where !newGroupedIDs.contains(groups[gi].id) {
+            // Only pin groups that JUST became empty (had a member previously).
+            guard let start = firstIndex[groups[gi].id] else { continue }
+            // Walk back to the nearest rule that still exists after the change.
+            var anchor: UUID?
+            var j = start - 1
+            while j >= 0 {
+                let candidate = previousRules[j].id
+                if survivingRuleIDs.contains(candidate) { anchor = candidate; break }
+                j -= 1
+            }
+            if groups[gi].anchorAfterRuleID != anchor {
+                groups[gi].anchorAfterRuleID = anchor
+            }
+        }
+    }
 
     /// Marks the next `rules`/`groups` mutation as part of an in-progress text
     /// edit (e.g. typing a group name). Successive keystrokes sharing `key` are

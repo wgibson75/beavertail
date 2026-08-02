@@ -20,7 +20,7 @@ extension LogViewModel {
             self.openTabs[i].isGeneratingTimeline = true
         }
 
-        let activeRules = highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }
+        let activeRules = activeHighlightRules
         let isFiltered = !openTabs[index].filterPattern.isEmpty
         let filteredIndices = openTabs[index].filteredIndices
         let sortedMarks = Array(openTabs[index].markedIndices).sorted()

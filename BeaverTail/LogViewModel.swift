@@ -224,6 +224,21 @@ class LogViewModel: ObservableObject {
         set { highlightRulesStore.rules = newValue }
     }
 
+    /// Rules eligible for highlighting: individually enabled, compilable, and not in a
+    /// disabled group. A group's `isEnabled` flag acts purely as a mask — disabling a
+    /// group suppresses its members' matches without changing their own toggles, and
+    /// re-enabling the group restores each member to whatever its own toggle says.
+    var activeHighlightRules: [HighlightRule] {
+        let disabledGroups = Set(
+            highlightRulesStore.groups.lazy.filter { !$0.isEnabled }.map { $0.id }
+        )
+        return highlightRules.filter { rule in
+            guard rule.isEnabled, rule.compiledRegex != nil else { return false }
+            if let gid = rule.groupID, disabledGroups.contains(gid) { return false }
+            return true
+        }
+    }
+
     @Published var filterHistory: [String] = []
 
     var recentFiles: [RecentFile] {
@@ -409,12 +424,13 @@ class LogViewModel: ObservableObject {
             self.generateHighlightDataForAllTabs()
         }
 
-        // Group metadata (label/enabled/order) changes only need persisting — the
-        // enable cascade mutates the rules array separately, which drives the rescan.
+        // A group's enabled flag masks its members' matches (see `activeHighlightRules`),
+        // so a group change needs a rescan as well as persisting.
         highlightRulesStore.onGroupsChanged = { [weak self] in
             guard let self else { return }
             self.objectWillChange.send()
             self.saveRules()
+            self.generateHighlightDataForAllTabs()
         }
 
         loadRules()
@@ -968,7 +984,7 @@ class LogViewModel: ObservableObject {
         guard let tabID = selectedTabID,
               let index = openTabs.firstIndex(where: { $0.id == tabID }),
               openTabs[index].content != nil, !openTabs[index].isCurrentlyStreaming else { return }
-        let activeRuleIDs = Set(highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }.map { $0.id })
+        let activeRuleIDs = Set(activeHighlightRules.map { $0.id })
         guard !activeRuleIDs.isEmpty else { return }
         let scanned = fullyScannedRuleIDsByTab[tabID] ?? []
         if !activeRuleIDs.isSubset(of: scanned) {
@@ -981,7 +997,7 @@ class LogViewModel: ObservableObject {
         highlightTokens[tabID]?.cancel()
         highlightTokens.removeValue(forKey: tabID)
         guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-        let activeRules = highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }
+        let activeRules = activeHighlightRules
 
         // Remove rules from fullyScanned that are no longer active, so their cache isn't erroneously reused if re-enabled.
         if let scanned = self.fullyScannedRuleIDsByTab[tabID] {
@@ -1163,7 +1179,7 @@ class LogViewModel: ObservableObject {
     func generateMinimapData(for tabID: UUID) {
         minimapTasks[tabID]?.cancel()
         guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-        let activeRules = highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }
+        let activeRules = activeHighlightRules
 
         guard let content = openTabs[index].content, content.count > 0, !activeRules.isEmpty, openTabs[index].highlightMatches.count == activeRules.count else {
             openTabs[index].minimapImage = nil

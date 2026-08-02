@@ -102,11 +102,33 @@ private enum RuleListItem: Identifiable {
     }
 }
 
-/// The exported/imported document shape (version 2). Older exports are a bare
-/// `[HighlightRule]` array; import falls back to decoding that for compatibility.
-private struct HighlightFiltersFile: Codable {
-    var groups: [HighlightGroup]
-    var rules: [HighlightRule]
+/// Drives the rules list's custom drag-and-drop. On each drag update it lets the view
+/// refresh the drop indicator (hit-tested against the backing table), and on drop it
+/// hands the dragged provider back for committing. Using a delegate (rather than
+/// `.onInsert`) is what lets us read the horizontal drop position to tell "end of a
+/// group" apart from "between groups".
+private struct RulesListDropDelegate: DropDelegate {
+    let onUpdate: () -> Void
+    let onExit: () -> Void
+    let onPerform: (NSItemProvider) -> Bool
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.plainText])
+    }
+
+    func dropEntered(info: DropInfo) { onUpdate() }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        onUpdate()
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) { onExit() }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let provider = info.itemProviders(for: [.plainText]).first else { return false }
+        return onPerform(provider)
+    }
 }
 
 struct HighlightSettingsView: View {
@@ -119,6 +141,13 @@ struct HighlightSettingsView: View {
     @State private var bgColor = HighlightSettingsView.defaultBgColor(.light)
     @State private var isCaseSensitive = false
     @State private var editingRuleID: UUID?
+    /// When set, the form is in "add to this group" mode: pressing Add creates a new
+    /// filter inside this group (Update stays disabled) and the mode persists so the
+    /// user can add several filters in a row.
+    @State private var addingToGroupID: UUID?
+    /// Draws a blue highlight around the pattern field after "+" is clicked, until the
+    /// filter is added or the field loses focus.
+    @State private var groupHighlightActive = false
     // Bump these tokens to programmatically focus / blur the pattern field.
     @State private var patternFocusToken = 0
     @State private var patternBlurToken = 0
@@ -130,6 +159,23 @@ struct HighlightSettingsView: View {
     // single `editingRuleID` used to load a rule into the form for editing.
     @State private var selectedRuleIDs: Set<UUID> = []
     @State private var selectionAnchorID: UUID?
+
+    // Auto-scrolls the rules list while dragging rows near the top/bottom edge, since
+    // SwiftUI's List does not auto-scroll during `.onDrag` / `.onInsert` reordering.
+    @State private var autoScroller = DragAutoScroller()
+
+    // Custom drag-and-drop state. We hit-test and draw the drop indicator against the
+    // List's backing NSTableView (via `dropController`) rather than SwiftUI geometry,
+    // because GeometryReader frames inside a List don't reliably match DropInfo
+    // locations on macOS. This lets the horizontal drop position distinguish
+    // "into / at the end of a group" from "between groups (ungrouped)".
+    @State private var dropController = RulesDropController()
+    @State private var draggingRuleIDs: Set<UUID> = []
+    @State private var isDraggingGroup = false
+
+    /// Pointer X (in table space) at/above which a boundary drop joins the group above
+    /// (i.e. is dropped at the END of that group) rather than staying ungrouped.
+    private static let groupIndentThreshold: CGFloat = 34
 
     @State private var originalPattern: String = ""
     @State private var originalIsCaseSensitive: Bool = false
@@ -174,23 +220,56 @@ struct HighlightSettingsView: View {
         !rulesStore.rules.contains { $0.pattern == patternInput }
     }
 
-    /// The ordered rows to display: empty groups first (as labelled drop targets),
-    /// then each filter, preceded by its group header the first time that group's
-    /// filters appear. Relies on group members being kept contiguous in `rules`.
+    /// The ordered rows to display: unanchored empty groups first, then each filter,
+    /// preceded by its group header the first time that group's filters appear. An
+    /// *anchored* empty group is emitted immediately after its anchor rule's block, so a
+    /// group keeps its place when created in-view or emptied. Relies on group members
+    /// staying contiguous.
     private var listItems: [RuleListItem] {
-        var items: [RuleListItem] = []
-        let groupedIDs = Set(rulesStore.rules.compactMap { $0.groupID })
-        for group in rulesStore.groups where !groupedIDs.contains(group.id) {
-            items.append(.group(group))
+        let rules = rulesStore.rules
+        let groups = rulesStore.groups
+        let groupedIDs = Set(rules.compactMap { $0.groupID })
+        let ruleIDs = Set(rules.map { $0.id })
+
+        // Bucket empty groups: anchored (after an existing rule's block) vs. unanchored.
+        var afterAnchored: [UUID: [HighlightGroup]] = [:]
+        var topEmpty: [HighlightGroup] = []
+        for group in groups where !groupedIDs.contains(group.id) {
+            if let anchor = group.anchorAfterRuleID, ruleIDs.contains(anchor) {
+                afterAnchored[anchor, default: []].append(group)
+            } else {
+                topEmpty.append(group)
+            }
         }
+
+        // The last member of each group, so we only place anchored groups at block ends.
+        var lastMemberOfGroup: [UUID: UUID] = [:]
+        for rule in rules where rule.groupID != nil { lastMemberOfGroup[rule.groupID!] = rule.id }
+
+        var items: [RuleListItem] = topEmpty.map { .group($0) }
         var emitted = Set<UUID>()
-        for rule in rulesStore.rules {
+        var placed = Set<UUID>()
+        for rule in rules {
             if let gid = rule.groupID, !emitted.contains(gid),
-               let group = rulesStore.groups.first(where: { $0.id == gid }) {
+               let group = groups.first(where: { $0.id == gid }) {
                 items.append(.group(group))
                 emitted.insert(gid)
             }
             items.append(.rule(rule))
+
+            let isBlockEnd = rule.groupID == nil || lastMemberOfGroup[rule.groupID!] == rule.id
+            if isBlockEnd, let pending = afterAnchored[rule.id] {
+                for group in pending {
+                    items.append(.group(group))
+                    placed.insert(group.id)
+                }
+            }
+        }
+
+        // Safety net: anchored empty groups whose anchor wasn't a block end (e.g. after
+        // reordering) still get shown rather than silently disappearing.
+        for group in afterAnchored.values.flatMap({ $0 }) where !placed.contains(group.id) {
+            items.append(.group(group))
         }
         return items
     }
@@ -210,11 +289,16 @@ struct HighlightSettingsView: View {
                         focusToken: patternFocusToken,
                         blurToken: patternBlurToken,
                         onSubmit: {
-                            if let id = editingRuleID, hasMeaningfulChanges {
+                            if let gid = addingToGroupID {
+                                if !patternInput.isEmpty, isUniqueRule { addNewRuleToGroup(gid) }
+                            } else if let id = editingRuleID, hasMeaningfulChanges {
                                 updateExistingRule(id: id)
                             } else if !patternInput.isEmpty, isUniqueRule {
                                 addNewRule(insertAfter: editingRuleID)
                             }
+                        },
+                        onEndEditing: {
+                            groupHighlightActive = false
                         }
                     )
                     .padding(.horizontal, 8)
@@ -225,7 +309,10 @@ struct HighlightSettingsView: View {
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(Color(NSColor.separatorColor), lineWidth: 1)
+                            .stroke(
+                                groupHighlightActive ? Color.blue : Color(NSColor.separatorColor),
+                                lineWidth: groupHighlightActive ? 2 : 1
+                            )
                     )
                     .frame(maxWidth: .infinity)
 
@@ -268,7 +355,11 @@ struct HighlightSettingsView: View {
                     .help("Update the selected filter with the details above")
 
                     Button("Add") {
-                        addNewRule(insertAfter: editingRuleID)
+                        if let gid = addingToGroupID {
+                            addNewRuleToGroup(gid)
+                        } else {
+                            addNewRule(insertAfter: editingRuleID)
+                        }
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(patternInput.isEmpty || !isUniqueRule)
@@ -290,20 +381,27 @@ struct HighlightSettingsView: View {
                     )
                 } else {
                     ForEach(listItems) { item in
-                        switch item {
-                        case .group(let group):
-                            groupHeaderRow(group)
-                        case .rule(let rule):
-                            ruleRow(rule)
-                        }
-                    }
-                    .onInsert(of: [UTType.plainText.identifier]) { index, providers in
-                        handleListInsert(index: index, providers: providers)
+                        rowContent(for: item)
                     }
                 }
             }
             .listStyle(.plain)
             .tint(Color.clear)
+            .background(ListScrollViewFinder {
+                autoScroller.setScrollView($0)
+                dropController.scrollView = $0
+            })
+            .onDrop(of: [UTType.plainText], delegate: RulesListDropDelegate(
+                onUpdate: { updateDropTarget() },
+                onExit: { clearDropState() },
+                onPerform: { provider in performDrop(provider: provider) }
+            ))
+            .onAppear {
+                // Reliable teardown: fires on mouse-release even when SwiftUI's drop
+                // callbacks don't (drag cancelled / dropped outside the list), so the
+                // drop indicator never lingers or is left at a stale position.
+                autoScroller.onEnded = { clearDropState() }
+            }
 
             .onChange(of: editingRuleID) { _, newValue in
                 if let id = newValue, let rule = rulesStore.rules.first(where: { $0.id == id }) {
@@ -425,6 +523,7 @@ struct HighlightSettingsView: View {
     @ViewBuilder
     private func groupHeaderRow(_ group: HighlightGroup) -> some View {
         HStack(spacing: 8) {
+            DragHandle(help: "Drag to reorder this group")
             Image(systemName: "folder.fill")
                 .font(.system(size: 12))
                 .foregroundColor(.secondary)
@@ -439,12 +538,17 @@ struct HighlightSettingsView: View {
             .scaleEffect(0.65)
             .help("Enable or disable every filter in this group")
 
-            TextField("Group name", text: Binding(
-                get: { group.label },
-                set: { setGroupLabel(group.id, $0) }
-            ))
-            .textFieldStyle(.plain)
-            .font(.system(.body).weight(.semibold))
+            GroupNameField(text: group.label) { setGroupLabel(group.id, $0) }
+
+            Button {
+                startAddToGroup(group.id)
+            } label: {
+                Image(systemName: addingToGroupID == group.id ? "plus.circle.fill" : "plus.circle")
+                    .font(.system(size: 15))
+                    .foregroundColor(.accentColor)
+            }
+            .buttonStyle(.plain)
+            .help("Add a new filter to this group using the fields above")
 
             Spacer()
 
@@ -467,7 +571,10 @@ struct HighlightSettingsView: View {
         )
         .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
         .onDrag {
-            NSItemProvider(object: "group:\(group.id.uuidString)" as NSString)
+            autoScroller.start()
+            isDraggingGroup = true
+            draggingRuleIDs = []
+            return NSItemProvider(object: "group:\(group.id.uuidString)" as NSString)
         } preview: {
             Color.clear
         }
@@ -479,6 +586,7 @@ struct HighlightSettingsView: View {
         let isGrouped = rule.groupID != nil
         HStack(spacing: 10) {
             HStack(spacing: 10) {
+                DragHandle(help: "Drag to reorder, or move in or out of a group")
                 // Indent grouped filters so their membership reads clearly.
                 if isGrouped {
                     Color.clear.frame(width: 18)
@@ -555,35 +663,158 @@ struct HighlightSettingsView: View {
         .alignmentGuide(.listRowSeparatorLeading) { d in d[.leading] - 8 }
         .alignmentGuide(.listRowSeparatorTrailing) { d in d[.trailing] + 8 }
         .contextMenu {
-            let count = groupActionTargets(clicked: rule.id).count
-            Button(count > 1 ? "Add \(count) Filters to New Group" : "Add to New Group") {
+            Button("Add to New Group") {
                 addSelectionToNewGroup(clicked: rule.id)
             }
         }
         .onDrag {
-            NSItemProvider(object: "rule:\(rule.id.uuidString)" as NSString)
+            // If the dragged row is part of a multi-selection, carry ALL selected
+            // filters (in display order) as one payload; otherwise just this row.
+            autoScroller.start()
+            isDraggingGroup = false
+            if selectedRuleIDs.contains(rule.id) && selectedRuleIDs.count > 1 {
+                let ids = orderedRuleIDs.filter { selectedRuleIDs.contains($0) }
+                draggingRuleIDs = Set(ids)
+                let payload = "rules:" + ids.map { $0.uuidString }.joined(separator: ",")
+                return NSItemProvider(object: payload as NSString)
+            }
+            draggingRuleIDs = [rule.id]
+            return NSItemProvider(object: "rule:\(rule.id.uuidString)" as NSString)
         } preview: {
-            Color.clear
+            if selectedRuleIDs.contains(rule.id) && selectedRuleIDs.count > 1 {
+                Text("\(selectedRuleIDs.count) filters")
+                    .font(.callout.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color(NSColor.controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(Color.accentColor.opacity(0.6), lineWidth: 1)
+                    )
+            } else {
+                Color.clear
+            }
         }
     }
 
     // MARK: - Drag & drop
 
-    private func handleListInsert(index: Int, providers: [NSItemProvider]) {
-        guard let provider = providers.first else { return }
+    /// One row's content (group header or filter row), keyed off the item.
+    @ViewBuilder
+    private func rowContent(for item: RuleListItem) -> some View {
+        switch item {
+        case .group(let group): groupHeaderRow(group)
+        case .rule(let rule): ruleRow(rule)
+        }
+    }
+
+    /// Clears all transient drag state (called on drop completion / drag exit).
+    private func clearDropState() {
+        dropController.hideIndicator()
+        draggingRuleIDs = []
+        isDraggingGroup = false
+        autoScroller.stop()
+    }
+
+    /// Decides which group (if any) a filter dropped at `listItems` index `k` should
+    /// join, skipping any rows currently being dragged (`moving`).
+    ///
+    /// - Right after a group header → that group (so you can drop into / at the top of
+    ///   a group, including an empty one), independent of X.
+    /// - In the middle of a group (a member directly below) → that group.
+    /// - At a group's trailing edge (header / ungrouped row / end below) → the pointer's
+    ///   X decides: indented past `groupIndentThreshold` drops at the END of the group;
+    ///   nearer the margin leaves the filter ungrouped (between groups).
+    private func adoptedGroupForDrop(items: [RuleListItem], k: Int, pointerX: CGFloat,
+                                     moving: Set<UUID>) -> UUID? {
+        // Nearest non-moving row above the drop point.
+        var aboveGroupedRuleGroup: UUID?
+        var sawAbove = false
+        var i = k - 1
+        while i >= 0 && i < items.count {
+            switch items[i] {
+            case .group(let g):
+                // If every member of this group is being dragged out, its header will
+                // vanish — don't force the moved filter back into it; keep looking up.
+                // (An already-empty group has no members and remains a valid drop target.)
+                let members = rulesStore.rules.filter { $0.groupID == g.id }
+                if !members.isEmpty && members.allSatisfy({ moving.contains($0.id) }) {
+                    i -= 1
+                    continue
+                }
+                return g.id // right after a header → into that group
+            case .rule(let r):
+                if moving.contains(r.id) { i -= 1; continue }
+                sawAbove = true
+                aboveGroupedRuleGroup = r.groupID
+                i = -1
+            }
+        }
+        guard sawAbove, let ag = aboveGroupedRuleGroup else { return nil }
+
+        // Nearest non-moving row below the drop point.
+        var below: RuleListItem?
+        var j = k
+        while j < items.count {
+            if case .rule(let r) = items[j], moving.contains(r.id) { j += 1; continue }
+            below = items[j]
+            break
+        }
+        if let below, case .rule(let br) = below, br.groupID == ag { return ag }
+
+        // Trailing edge of the group: indent decides end-of-group vs ungrouped.
+        return pointerX >= Self.groupIndentThreshold ? ag : nil
+    }
+
+    /// Live update of the indented drop indicator as the pointer moves during a drag.
+    /// Hit-testing and the indicator are handled by `dropController` against the List's
+    /// backing NSTableView, so the position is exact (SwiftUI List geometry is not).
+    private func updateDropTarget() {
+        autoScroller.start()
+        let items = listItems
+        guard !items.isEmpty, let hit = dropController.hitTest() else {
+            dropController.hideIndicator()
+            return
+        }
+        let k = min(hit.index, items.count)
+        let group: UUID? = isDraggingGroup
+            ? nil
+            : adoptedGroupForDrop(items: items, k: k, pointerX: hit.pointerX, moving: draggingRuleIDs)
+        let indent: CGFloat = group != nil ? 44 : 12
+        dropController.showIndicator(atIndex: k, indent: indent)
+    }
+
+    /// Commits a drop: parses the dragged payload and moves the affected rows to the
+    /// slot (and group) implied by the final pointer location.
+    private func performDrop(provider: NSItemProvider) -> Bool {
+        let hit = dropController.hitTest()
         _ = provider.loadObject(ofClass: NSString.self) { item, _ in
             guard let string = item as? String else { return }
             DispatchQueue.main.async {
-                if string.hasPrefix("group:"), let gid = UUID(uuidString: String(string.dropFirst(6))) {
-                    performGroupDrop(groupID: gid, listIndex: index)
+                defer { clearDropState() }
+                let items = listItems
+                guard let hit else { return }
+                let k = min(hit.index, items.count)
+                if string.hasPrefix("rules:") {
+                    let ids = string.dropFirst(6).split(separator: ",").compactMap { UUID(uuidString: String($0)) }
+                    guard !ids.isEmpty else { return }
+                    let group = adoptedGroupForDrop(items: items, k: k, pointerX: hit.pointerX, moving: Set(ids))
+                    performMultiRuleDrop(ruleIDs: ids, listIndex: k, adoptedGroup: group)
+                } else if string.hasPrefix("group:"), let gid = UUID(uuidString: String(string.dropFirst(6))) {
+                    performGroupDrop(groupID: gid, listIndex: k)
                 } else {
                     let raw = string.hasPrefix("rule:") ? String(string.dropFirst(5)) : string
                     if let rid = UUID(uuidString: raw) {
-                        performRuleDrop(ruleID: rid, listIndex: index)
+                        let group = adoptedGroupForDrop(items: items, k: k, pointerX: hit.pointerX, moving: [rid])
+                        performRuleDrop(ruleID: rid, listIndex: k, adoptedGroup: group)
                     }
                 }
             }
         }
+        return true
     }
 
     /// Number of filter rows before the given list index — i.e. the corresponding
@@ -601,22 +832,9 @@ struct HighlightSettingsView: View {
         return false
     }
 
-    private func performRuleDrop(ruleID: UUID, listIndex k: Int) {
+    private func performRuleDrop(ruleID: UUID, listIndex k: Int, adoptedGroup: UUID?) {
         let items = listItems
         guard let fromIndex = rulesStore.rules.firstIndex(where: { $0.id == ruleID }) else { return }
-
-        // Adopt the group implied by the slot just above the drop point: dropping
-        // right below a group header (or a grouped filter) joins that group; dropping
-        // below an ungrouped filter (or at the very top) leaves the filter ungrouped.
-        // This keeps a group's members contiguous by construction.
-        var adoptedGroup: UUID?
-        if k > 0, k - 1 < items.count {
-            switch items[k - 1] {
-            case .rule(let r): adoptedGroup = r.groupID
-            case .group(let g): adoptedGroup = g.id
-            }
-        }
-
         var target = rulesInsertIndex(forListIndex: k, in: items)
         withAnimation(.default) {
             var rule = rulesStore.rules.remove(at: fromIndex)
@@ -624,6 +842,34 @@ struct HighlightSettingsView: View {
             rule.groupID = adoptedGroup
             rulesStore.rules.insert(rule, at: max(0, min(target, rulesStore.rules.count)))
         }
+    }
+
+    /// Moves several selected filters together to the drop location, preserving their
+    /// relative display order, assigning them all to `adoptedGroup` (nil = ungrouped).
+    private func performMultiRuleDrop(ruleIDs: [UUID], listIndex k: Int, adoptedGroup: UUID?) {
+        let items = listItems
+        let movingSet = Set(ruleIDs)
+        let orderedMoving = orderedRuleIDs.filter { movingSet.contains($0) }
+        guard !orderedMoving.isEmpty else { return }
+
+        var rules = rulesStore.rules
+        // Drop point as an index into the flat rules array, then compensate for any
+        // moving rows that lie before it (they are removed, shifting the gap left).
+        let target = rulesInsertIndex(forListIndex: k, in: items)
+        let movingIndices = rules.enumerated().filter { movingSet.contains($0.element.id) }.map { $0.offset }
+        let removedBefore = movingIndices.filter { $0 < target }.count
+
+        let movedRules: [HighlightRule] = orderedMoving.compactMap { id in
+            guard var r = rules.first(where: { $0.id == id }) else { return nil }
+            r.groupID = adoptedGroup
+            return r
+        }
+        rules.removeAll { movingSet.contains($0.id) }
+        let insertAt = max(0, min(target - removedBefore, rules.count))
+        rules.insert(contentsOf: movedRules, at: insertAt)
+
+        withAnimation(.default) { rulesStore.rules = rules }
+        selectionAnchorID = orderedMoving.last
     }
 
     private func performGroupDrop(groupID: UUID, listIndex k: Int) {
@@ -662,17 +908,13 @@ struct HighlightSettingsView: View {
     // MARK: - Group management
 
     private func setGroupEnabled(_ id: UUID, _ enabled: Bool) {
+        // A group's enabled flag is only a mask over its members' matches — it never
+        // changes the members' own toggles. Disabling the group suppresses every
+        // member's matches; enabling it restores each member to its own toggle state.
+        // The rescan is driven by `onGroupsChanged`.
         if let gi = rulesStore.groups.firstIndex(where: { $0.id == id }) {
             rulesStore.groups[gi].isEnabled = enabled
         }
-        // Cascade to member filters in a single assignment (one rescan).
-        var rules = rulesStore.rules
-        var changed = false
-        for i in rules.indices where rules[i].groupID == id && rules[i].isEnabled != enabled {
-            rules[i].isEnabled = enabled
-            changed = true
-        }
-        if changed { rulesStore.rules = rules }
     }
 
     private func setGroupLabel(_ id: UUID, _ label: String) {
@@ -696,7 +938,89 @@ struct HighlightSettingsView: View {
     }
 
     private func newGroup() {
-        rulesStore.groups.insert(HighlightGroup(), at: 0)
+        // Never prompt — the group's label is typed inline. A deliberate grouping
+        // selection (multi-select, or a ⌘-selected filter that isn't merely the one
+        // being edited) moves those filters into the new group; a plain edit-click does
+        // NOT count as a selection.
+        let selected = orderedRuleIDs.filter { selectedRuleIDs.contains($0) }
+        let isJustEditing = selected.count == 1 && selected.first == editingRuleID
+        if !selected.isEmpty && !isJustEditing {
+            if let newID = performAddToNewGroup(ruleIDs: selected, label: "") {
+                scrollNewGroupIntoView(groupID: newID, attempt: 0)
+            }
+            return
+        }
+        insertEmptyGroupInView()
+    }
+
+    /// Inserts a new, empty group positioned in the current view (never off-screen at
+    /// the very top). The header is placed just before the block containing the topmost
+    /// visible row — snapping up to a group's header when that block is a group — and the
+    /// list scrolls so the new group is the top-most visible row.
+    private func insertEmptyGroupInView() {
+        let items = listItems
+        var group = HighlightGroup()
+
+        // Anchor the new group after the block above the topmost visible row's block, so
+        // it appears just before that block (in view) without splitting a group.
+        if let topRow = dropController.topVisibleRow(), topRow < items.count,
+           let blockStart = blockStartRuleID(atOrAbove: topRow, in: items),
+           let idx = rulesStore.rules.firstIndex(where: { $0.id == blockStart }), idx > 0 {
+            group.anchorAfterRuleID = rulesStore.rules[idx - 1].id
+        }
+
+        // Insert without animation so the table lays out at its final positions right
+        // away, making the scroll-to-reveal deterministic.
+        rulesStore.groups.insert(group, at: 0)
+
+        // After the list rebuilds, scroll the new group to the top of the viewport so it
+        // is visible without any manual scrolling.
+        scrollNewGroupIntoView(groupID: group.id, attempt: 0)
+    }
+
+    /// Scrolls the just-created group to the top of the viewport. Re-applies across the
+    /// brief settle window (rather than stopping on first success) so the final layout
+    /// wins and the new group is revealed in full — SwiftUI can reposition the backing
+    /// table right after our scroll while it finishes reloading.
+    private func scrollNewGroupIntoView(groupID: UUID, attempt: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
+            if let row = listItems.firstIndex(where: {
+                if case .group(let g) = $0 { return g.id == groupID }
+                return false
+            }) {
+                dropController.scrollRowToTop(row)
+            }
+            if attempt < 6 { scrollNewGroupIntoView(groupID: groupID, attempt: attempt + 1) }
+        }
+    }
+
+    /// The id of the first rule of the display block that contains list index `k`,
+    /// walking upward: a grouped rule snaps to its group's first member; an ungrouped
+    /// rule or group header maps to that block's first rule. Nil if none found.
+    private func blockStartRuleID(atOrAbove k: Int, in items: [RuleListItem]) -> UUID? {
+        guard k >= 0, k < items.count else { return nil }
+        switch items[k] {
+        case .rule(let rule):
+            if let gid = rule.groupID {
+                return rulesStore.rules.first(where: { $0.groupID == gid })?.id
+            }
+            return rule.id
+        case .group(let group):
+            // A group header: anchor before its first member (or, if empty, find the
+            // next rule below to anchor before).
+            if let first = rulesStore.rules.first(where: { $0.groupID == group.id }) {
+                return first.id
+            }
+            for j in (k + 1)..<items.count {
+                if case .rule(let r) = items[j] {
+                    if let gid = r.groupID {
+                        return rulesStore.rules.first(where: { $0.groupID == gid })?.id
+                    }
+                    return r.id
+                }
+            }
+            return nil
+        }
     }
 
     // MARK: - Rule management
@@ -759,10 +1083,70 @@ struct HighlightSettingsView: View {
         clearForm()
     }
 
+    /// Enter "add to this group" mode: reset the form to defaults, deselect any
+    /// editing rule (so Update stays disabled), and focus the pattern field. The
+    /// mode persists across Adds so several filters can be added in a row.
+    private func startAddToGroup(_ groupID: UUID) {
+        clearForm()
+        selectedRuleIDs = []
+        addingToGroupID = groupID
+        DispatchQueue.main.async {
+            self.patternFocusToken += 1
+            // Activate the highlight after focus lands so form-clear churn can't dismiss it.
+            self.groupHighlightActive = true
+        }
+    }
+
+    /// Adds a new filter to the given group, appending it after the group's last
+    /// member (or, for an empty group, at the group's anchored position). Keeps
+    /// add-to-group mode active and re-focuses so more filters can be added.
+    private func addNewRuleToGroup(_ groupID: UUID) {
+        var rule = HighlightRule(
+            pattern: patternInput,
+            foregroundColorHex: fgColor.toHex(),
+            backgroundColorHex: bgColor.toHex(),
+            isCaseSensitive: isCaseSensitive
+        )
+        rule.groupID = groupID
+        rule.updateCachedObjects()
+
+        if let lastIdx = rulesStore.rules.lastIndex(where: { $0.groupID == groupID }) {
+            // Append to the end of the group's contiguous block.
+            rulesStore.rules.insert(rule, at: lastIdx + 1)
+        } else if let group = rulesStore.groups.first(where: { $0.id == groupID }),
+                  let anchor = group.anchorAfterRuleID,
+                  let anchorRule = rulesStore.rules.first(where: { $0.id == anchor }) {
+            // Empty group: insert right after the anchor rule's block so we never
+            // split another group's members.
+            let insertIdx: Int
+            if let bg = anchorRule.groupID,
+               let blockEnd = rulesStore.rules.lastIndex(where: { $0.groupID == bg }) {
+                insertIdx = blockEnd + 1
+            } else if let anchorIdx = rulesStore.rules.firstIndex(where: { $0.id == anchor }) {
+                insertIdx = anchorIdx + 1
+            } else {
+                insertIdx = rulesStore.rules.count
+            }
+            rulesStore.rules.insert(rule, at: min(insertIdx, rulesStore.rules.count))
+        } else {
+            // Empty, unanchored group (rendered at the top): insert at the front.
+            rulesStore.rules.insert(rule, at: 0)
+        }
+
+        // Reset the fields but keep add-to-group mode active for the next filter.
+        let group = addingToGroupID
+        clearForm()
+        addingToGroupID = group
+        groupHighlightActive = false
+        DispatchQueue.main.async { self.patternFocusToken += 1 }
+    }
+
     private func startNewRule() {
         // Edits are detached from the selected rule, so simply reset the form
         // to defaults and move focus to the pattern field to start a new filter.
         clearForm()
+        addingToGroupID = nil
+        groupHighlightActive = false
         // Move focus to the pattern field so the user can start typing straight away.
         DispatchQueue.main.async {
             self.patternFocusToken += 1
@@ -820,6 +1204,8 @@ struct HighlightSettingsView: View {
             selectedRuleIDs = [id]
             selectionAnchorID = id
             editingRuleID = id
+            addingToGroupID = nil
+            groupHighlightActive = false
         }
     }
 
@@ -873,27 +1259,34 @@ struct HighlightSettingsView: View {
         return alert.runModal() == .alertFirstButtonReturn ? field.stringValue : nil
     }
 
-    /// Moves the given filters into a new group (preserving their relative order) as
-    /// a contiguous block at the top of the list, so no existing group is split.
-    /// The two store writes coalesce into a single ⌘Z undo step.
-    private func performAddToNewGroup(ruleIDs: [UUID], label: String) {
+    /// Moves the given filters into a new group (preserving their relative order) as a
+    /// contiguous block positioned just above the TOP-MOST selected filter, so the group
+    /// appears next to the filters it was made from (and no existing group is split).
+    /// The two store writes coalesce into a single ⌘Z undo step. Returns the new group's
+    /// id (or nil if nothing moved).
+    @discardableResult
+    private func performAddToNewGroup(ruleIDs: [UUID], label: String) -> UUID? {
         let idSet = Set(ruleIDs)
         var rules = rulesStore.rules
-        guard rules.contains(where: { idSet.contains($0.id) }) else { return }
+        guard let firstIndex = rules.firstIndex(where: { idSet.contains($0.id) }) else { return nil }
         let group = HighlightGroup(label: label)
         let moving = rules.filter { idSet.contains($0.id) }.map { r -> HighlightRule in
             var m = r
             m.groupID = group.id
             return m
         }
+        // Every element before the top-most selected filter is non-moving and stays put,
+        // so the reduced array keeps `firstIndex` of them — insert the block right there.
         rules.removeAll { idSet.contains($0.id) }
-        rules.insert(contentsOf: moving, at: 0)
+        let insertAt = min(firstIndex, rules.count)
+        rules.insert(contentsOf: moving, at: insertAt)
         withAnimation(.default) {
             rulesStore.groups.insert(group, at: 0)
             rulesStore.rules = rules
         }
         selectedRuleIDs = []
         selectionAnchorID = nil
+        return group.id
     }
 
     // MARK: - Import / export
@@ -907,8 +1300,7 @@ struct HighlightSettingsView: View {
             do {
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                let file = HighlightFiltersFile(groups: rulesStore.groups, rules: rulesStore.rules)
-                let data = try encoder.encode(file)
+                let data = try encoder.encode(makeExportDocument())
                 try data.write(to: url)
             } catch {
                 let alert = NSAlert()
@@ -918,6 +1310,44 @@ struct HighlightSettingsView: View {
                 alert.runModal()
             }
         }
+    }
+
+    /// Builds the nested export document from the current flat rules + groups, emitting
+    /// each group (with its members nested) at the position of its first member, and
+    /// any empty groups up front — mirroring how the list is displayed.
+    private func makeExportDocument() -> HighlightFiltersDocument {
+        let rules = rulesStore.rules
+        let groups = rulesStore.groups
+        let groupedIDs = Set(rules.compactMap { $0.groupID })
+
+        func dto(_ rule: HighlightRule) -> HighlightFilterRuleDTO {
+            .init(pattern: rule.pattern,
+                  foregroundColorHex: rule.foregroundColorHex,
+                  backgroundColorHex: rule.backgroundColorHex,
+                  isCaseSensitive: rule.isCaseSensitive,
+                  isEnabled: rule.isEnabled)
+        }
+
+        var items: [HighlightFilterItem] = []
+        // Empty groups (no members) are preserved at the top.
+        for group in groups where !groupedIDs.contains(group.id) {
+            items.append(.group(.init(groupName: group.label, isEnabled: group.isEnabled, rules: [])))
+        }
+        var emitted = Set<UUID>()
+        for rule in rules {
+            guard let gid = rule.groupID else {
+                items.append(.rule(dto(rule)))
+                continue
+            }
+            if emitted.contains(gid) { continue }
+            emitted.insert(gid)
+            let group = groups.first(where: { $0.id == gid })
+            let members = rules.filter { $0.groupID == gid }.map(dto)
+            items.append(.group(.init(groupName: group?.label ?? "",
+                                      isEnabled: group?.isEnabled ?? true,
+                                      rules: members)))
+        }
+        return HighlightFiltersDocument(rules: items)
     }
 
     private func importRules() {
@@ -931,13 +1361,10 @@ struct HighlightSettingsView: View {
             do {
                 let data = try Data(contentsOf: url)
                 let decoder = JSONDecoder()
-                // Prefer the v2 grouped format; fall back to a bare rules array so
-                // files saved by earlier versions still import correctly.
-                if let file = try? decoder.decode(HighlightFiltersFile.self, from: data) {
-                    var rules = file.rules
-                    for i in rules.indices { rules[i].updateCachedObjects() }
-                    rulesStore.groups = file.groups
-                    rulesStore.rules = rules
+                // Prefer the nested grouped format; fall back to a bare rules array so
+                // files saved by earlier (pre-grouping) versions still import correctly.
+                if let doc = try? decoder.decode(HighlightFiltersDocument.self, from: data) {
+                    applyImportedDocument(doc)
                 } else {
                     var rules = try decoder.decode([HighlightRule].self, from: data)
                     for i in rules.indices { rules[i].updateCachedObjects() }
@@ -953,11 +1380,56 @@ struct HighlightSettingsView: View {
             }
         }
     }
+
+    /// Flattens the nested import document into the store's `rules` (each tagged with its
+    /// group's freshly-minted `id`) and `groups`, preserving order.
+    private func applyImportedDocument(_ doc: HighlightFiltersDocument) {
+        func rule(_ dto: HighlightFilterRuleDTO, groupID: UUID?) -> HighlightRule {
+            HighlightRule(pattern: dto.pattern,
+                          foregroundColorHex: dto.foregroundColorHex,
+                          backgroundColorHex: dto.backgroundColorHex,
+                          isCaseSensitive: dto.isCaseSensitive,
+                          isEnabled: dto.isEnabled,
+                          groupID: groupID)
+        }
+
+        var newRules: [HighlightRule] = []
+        var newGroups: [HighlightGroup] = []
+        for item in doc.rules {
+            switch item {
+            case .rule(let dto):
+                newRules.append(rule(dto, groupID: nil))
+            case .group(let groupDTO):
+                let group = HighlightGroup(label: groupDTO.groupName, isEnabled: groupDTO.isEnabled)
+                newGroups.append(group)
+                newRules.append(contentsOf: groupDTO.rules.map { rule($0, groupID: group.id) })
+            }
+        }
+        rulesStore.groups = newGroups
+        rulesStore.rules = newRules
+    }
+}
+
+// Drag-handle affordance: a subtle grip glyph shown at the leading edge of each
+// draggable row (filter or group header) to signal that rows can be dragged to
+// reorder / move between groups. Shows a grab cursor on hover.
+private struct DragHandle: View {
+    var help: String
+    var body: some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(Color(NSColor.tertiaryLabelColor))
+            .frame(width: 14)
+            .contentShape(Rectangle())
+            .help(help)
+            .onHover { hovering in
+                if hovering { NSCursor.openHand.push() } else { NSCursor.pop() }
+            }
+    }
 }
 
 // Lightweight stand-in used when the list is empty
-private struct ContentUnavailableLabel: View {
-    let text: String
+private struct ContentUnavailableLabel: View {    let text: String
     let systemImage: String
     var body: some View {
         HStack {

@@ -182,7 +182,7 @@ extension LogViewModel {
               let tabIndex = openTabs.firstIndex(where: { $0.id == tabID })
         else { return }
 
-        let activeRules = highlightRules.filter { $0.isEnabled && $0.compiledRegex != nil }
+        let activeRules = activeHighlightRules
         guard !activeRules.isEmpty else { return }
 
         if openTabs[tabIndex].highlightMatches.isEmpty && openTabs[tabIndex].content?.count ?? 0 > 0 {

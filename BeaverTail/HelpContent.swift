@@ -109,13 +109,31 @@ enum HelpContent {
                 "Each filter has an enable/disable switch — green when enabled, red when disabled. Disabled filters "
                 + "are ignored and appear dimmed."),
             HelpItem(shortcut: nil, description:
-                "Drag and drop filters to change the order in which they are applied. "
-                + "Changes are reflected instantly without re-running the filter."),
+                "Drag the grip handle at the left of a filter to change the order in which filters are applied. "
+                + "Select several filters first — ⌘-click to toggle individual filters, ⇧-click to select a range — "
+                + "to drag them all at once. Changes are reflected instantly without re-running the filter."),
             HelpItem(shortcut: nil, description:
-                "Group filters to manage them together: press 'New Group', give it an optional name, then drag "
-                + "filters onto the group to add them. A group's switch enables or disables every filter it "
-                + "contains. Drag a whole group to reorder it, drag filters in or out to change their membership, "
-                + "and use a group's ✕ button to remove the group (its filters remain, ungrouped)."),
+                "Group filters to manage them together. Press 'New Group' to add a group whose name you type "
+                + "directly in its header; the new group appears in view so you never have to scroll to find it. "
+                + "A filter can belong to at most one group."),
+            HelpItem(shortcut: nil, description:
+                "To group existing filters, select them (⌘-click and ⇧-click), then either press 'New Group' or "
+                + "right-click and choose 'Add to New Group'. The selected filters move into a new group created "
+                + "next to them, ready to be named."),
+            HelpItem(shortcut: nil, description:
+                "Press the '+' on a group's header to add a new filter straight into that group using the fields "
+                + "above. A blue outline around the pattern field shows which group the next filter will join; only "
+                + "'Add' is available in this mode, and the fields reset after each add so you can add several "
+                + "filters in a row. Clicking outside the pattern field, or selecting a filter row, ends the mode."),
+            HelpItem(shortcut: nil, description:
+                "A group's enable/disable switch acts as a mask: disabling a group suppresses matches for every "
+                + "filter it contains without changing their individual switches, and enabling the group restores "
+                + "each filter to its own switch. A filter therefore matches only when both it and its group are enabled."),
+            HelpItem(shortcut: nil, description:
+                "Drag a group's grip handle to reorder the whole group; drag filters in or out to change their "
+                + "membership (drop toward the right edge of a group to add to it, or toward the left margin to leave "
+                + "them ungrouped). Use a group's ✕ button to remove the group — its filters remain, ungrouped, and "
+                + "the other groups keep their positions."),
             HelpItem(shortcut: "⌘ + Z", description:
                 "Undo the last change made in the Highlight Filters window — adding, updating, deleting, reordering, "
                 + "grouping or ungrouping, moving a filter between groups, or toggling enablement. Up to the last "
@@ -135,7 +153,7 @@ enum HelpContent {
             HelpItem(shortcut: nil, description:
                 "Marked lines display a dark blue circle with a yellow edge in the gutter."),
             HelpItem(shortcut: nil, description:
-                "Once marks are present, Previous (‹) and Next (›) navigation buttons slide into the filter bar. "
+                "Once marks are present, up (previous) and down (next) chevron buttons slide into the filter bar. "
                 + "Each press jumps to the previous or next block of adjacent marked lines, scrolling both panes "
                 + "so the block is visible at the top of the lower pane."),
             HelpItem(shortcut: nil, description:
@@ -163,7 +181,7 @@ enum HelpContent {
         HelpSection(title: "Navigation", items: [
             HelpItem(shortcut: "⌘ + C", description:
                 "Right-click selected lines or press ⌘ + C to copy selected rows. In the upper pane you can also "
-                + "click to highlight a portion of a line and use 'Copy' from the right-click menu, "
+                + "drag to highlight a portion of a line and use 'Copy Selection' from the right-click menu, "
                 + "or ⌘ + C to copy only the highlighted text."),
             HelpItem(shortcut: nil, description:
                 "Click a single line in the lower pane to jump to the corresponding line in the upper pane. "
