@@ -1240,23 +1240,14 @@ struct HighlightSettingsView: View {
     }
 
     private func addSelectionToNewGroup(clicked id: UUID) {
+        // Never prompt — create the group inline with an empty label (typed directly
+        // in the header) positioned just above the selected filters, then scroll it
+        // into view so its name field is ready to edit.
         let targets = groupActionTargets(clicked: id)
-        guard !targets.isEmpty, let name = promptForGroupName() else { return }
-        performAddToNewGroup(ruleIDs: targets, label: name)
-    }
-
-    /// Prompts for a group name via a modal alert. Returns nil if cancelled.
-    private func promptForGroupName() -> String? {
-        let alert = NSAlert()
-        alert.messageText = "Add to New Group"
-        alert.informativeText = "Enter a name for the new group:"
-        alert.addButton(withTitle: "Create")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        field.placeholderString = "Group name"
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        return alert.runModal() == .alertFirstButtonReturn ? field.stringValue : nil
+        guard !targets.isEmpty else { return }
+        if let newID = performAddToNewGroup(ruleIDs: targets, label: "") {
+            scrollNewGroupIntoView(groupID: newID, attempt: 0)
+        }
     }
 
     /// Moves the given filters into a new group (preserving their relative order) as a
