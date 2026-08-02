@@ -239,15 +239,7 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
         let dateStr = formatOrdinalDate(date)
         let isFiltered = (delegate as? NativeLogViewer.Coordinator)?.isFiltered ?? false
         let bubbleOpacity = isFiltered ? 0.5 : 0.65
-        let bubble = Text(dateStr)
-            .font(.system(size: 13, weight: .medium, design: .rounded))
-            .foregroundColor(.white)
-            .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: true)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color(NSColor.controlAccentColor).opacity(bubbleOpacity))
-            .cornerRadius(5)
+        let bubble = TimestampBubbleView(text: dateStr, baseOpacity: bubbleOpacity)
         let hostingController = NSHostingController(rootView: bubble)
         hostingController.view.wantsLayer = true
         hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
