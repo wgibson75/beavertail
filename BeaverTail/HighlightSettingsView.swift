@@ -194,6 +194,31 @@ struct HighlightSettingsView: View {
             : Color(red: 229.0 / 255.0, green: 229.0 / 255.0, blue: 229.0 / 255.0)   // light gray
     }
 
+    /// "On" tint for the enable/disable switches. Must be FULLY OPAQUE: a translucent
+    /// tint (e.g. `Color.green.opacity(0.16)`) can cause AppKit to render the switch's
+    /// white knob at the same low alpha during state changes, making the position
+    /// indicator disappear when the switch is turned off. This uses an appearance-
+    /// adaptive solid green that approximates a faint green track over the row
+    /// background in both light and dark mode, while keeping the knob always visible.
+    private static let enabledSwitchTint = Color(nsColor: NSColor(name: nil) { appearance in
+        if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+            return NSColor(srgbRed: 0.31, green: 0.52, blue: 0.31, alpha: 1) // faint green (dark)
+        } else {
+            return NSColor(srgbRed: 0.83, green: 0.95, blue: 0.83, alpha: 1) // faint green (light)
+        }
+    })
+
+    /// "Off" tint for the enable/disable switches. Also FULLY OPAQUE (see
+    /// `enabledSwitchTint`) so the switch's white knob stays visible when disabled.
+    /// An appearance-adaptive faint red mirrors the enabled green.
+    private static let disabledSwitchTint = Color(nsColor: NSColor(name: nil) { appearance in
+        if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+            return NSColor(srgbRed: 0.52, green: 0.31, blue: 0.31, alpha: 1) // faint red (dark)
+        } else {
+            return NSColor(srgbRed: 0.97, green: 0.83, blue: 0.83, alpha: 1) // faint red (light)
+        }
+    })
+
     private var hasMeaningfulChanges: Bool {
         patternInput != originalPattern
             || isCaseSensitive != originalIsCaseSensitive
@@ -298,7 +323,10 @@ struct HighlightSettingsView: View {
                             }
                         },
                         onEndEditing: {
-                            groupHighlightActive = false
+                            // Deferred to avoid mutating state during a SwiftUI view
+                            // update: end-editing can fire while the field is being
+                            // blurred/removed as part of a re-render.
+                            DispatchQueue.main.async { groupHighlightActive = false }
                         }
                     )
                     .padding(.horizontal, 8)
@@ -520,6 +548,13 @@ struct HighlightSettingsView: View {
 
     // MARK: - Rows
 
+    /// Whether the given rule belongs to a group that is currently disabled. Members of
+    /// a disabled group are shown greyed out to indicate they are inactive.
+    private func isInDisabledGroup(_ rule: HighlightRule) -> Bool {
+        guard let gid = rule.groupID else { return false }
+        return rulesStore.groups.first(where: { $0.id == gid })?.isEnabled == false
+    }
+
     @ViewBuilder
     private func groupHeaderRow(_ group: HighlightGroup) -> some View {
         HStack(spacing: 8) {
@@ -527,18 +562,22 @@ struct HighlightSettingsView: View {
             Image(systemName: "folder.fill")
                 .font(.system(size: 12))
                 .foregroundColor(.secondary)
+                .opacity(group.isEnabled ? 1.0 : 0.45)
 
             Toggle("", isOn: Binding(
                 get: { group.isEnabled },
                 set: { setGroupEnabled(group.id, $0) }
             ))
             .labelsHidden()
-            .toggleStyle(.switch)
-            .tint(group.isEnabled ? Color.green.opacity(0.16) : Color.red)
+            .toggleStyle(ColoredSwitchToggleStyle(
+                onTint: Self.enabledSwitchTint,
+                offTint: Self.disabledSwitchTint
+            ))
             .scaleEffect(0.65)
             .help("Enable or disable every filter in this group")
 
             GroupNameField(text: group.label) { setGroupLabel(group.id, $0) }
+                .opacity(group.isEnabled ? 1.0 : 0.45)
 
             Button {
                 startAddToGroup(group.id)
@@ -584,6 +623,10 @@ struct HighlightSettingsView: View {
     private func ruleRow(_ rule: HighlightRule) -> some View {
         let index = rulesStore.rules.firstIndex(where: { $0.id == rule.id }) ?? 0
         let isGrouped = rule.groupID != nil
+        // Members of a disabled group are shown greyed out to indicate they're inactive
+        // (the group's enabled flag masks their matches), mirroring how an individually
+        // disabled filter is dimmed.
+        let groupDisabled = isInDisabledGroup(rule)
         HStack(spacing: 10) {
             HStack(spacing: 10) {
                 DragHandle(help: "Drag to reorder, or move in or out of a group")
@@ -606,8 +649,10 @@ struct HighlightSettingsView: View {
                     }
                 ))
                 .labelsHidden()
-                .toggleStyle(.switch)
-                .tint(rule.isEnabled ? Color.green.opacity(0.16) : Color.red)
+                .toggleStyle(ColoredSwitchToggleStyle(
+                    onTint: Self.enabledSwitchTint,
+                    offTint: Self.disabledSwitchTint
+                ))
                 .scaleEffect(0.65) // Make the switch a bit smaller to fit the row nicely
 
                 // Pattern preview badge — always reflects the rule's STORED values;
@@ -649,6 +694,7 @@ struct HighlightSettingsView: View {
             .buttonStyle(.plain)
             .help("Delete rule")
         }
+        .opacity(groupDisabled ? 0.45 : 1.0)
         .padding(.vertical, 2)
         .padding(.horizontal, 8)
         .contentShape(Rectangle())
@@ -1398,43 +1444,5 @@ struct HighlightSettingsView: View {
         }
         rulesStore.groups = newGroups
         rulesStore.rules = newRules
-    }
-}
-
-// Drag-handle affordance: a subtle grip glyph shown at the leading edge of each
-// draggable row (filter or group header) to signal that rows can be dragged to
-// reorder / move between groups. Shows a grab cursor on hover.
-private struct DragHandle: View {
-    var help: String
-    var body: some View {
-        Image(systemName: "line.3.horizontal")
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundColor(Color(NSColor.tertiaryLabelColor))
-            .frame(width: 14)
-            .contentShape(Rectangle())
-            .help(help)
-            .onHover { hovering in
-                if hovering { NSCursor.openHand.push() } else { NSCursor.pop() }
-            }
-    }
-}
-
-// Lightweight stand-in used when the list is empty
-private struct ContentUnavailableLabel: View {    let text: String
-    let systemImage: String
-    var body: some View {
-        HStack {
-            Spacer()
-            VStack(spacing: 6) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 22))
-                    .foregroundStyle(.tertiary)
-                Text(text)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.vertical, 20)
-            Spacer()
-        }
     }
 }
