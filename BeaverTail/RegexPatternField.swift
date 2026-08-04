@@ -64,7 +64,10 @@ struct RegexPatternField: NSViewRepresentable {
 
         if context.coordinator.lastFocusToken != focusToken {
             context.coordinator.lastFocusToken = focusToken
-            DispatchQueue.main.async {
+            // Hop at user-interactive QoS to match the main thread's QoS. Using a
+            // default-QoS async block here causes a priority inversion (the
+            // user-interactive main thread ends up waiting on lower-QoS work).
+            DispatchQueue.main.async(qos: .userInteractive) {
                 guard let window = nsView.window else { return }
                 window.makeFirstResponder(nsView)
                 nsView.currentEditor()?.selectedRange = NSRange(location: nsView.stringValue.count, length: 0)
@@ -72,7 +75,7 @@ struct RegexPatternField: NSViewRepresentable {
         }
         if context.coordinator.lastBlurToken != blurToken {
             context.coordinator.lastBlurToken = blurToken
-            DispatchQueue.main.async {
+            DispatchQueue.main.async(qos: .userInteractive) {
                 if let window = nsView.window, window.firstResponder == nsView.currentEditor() {
                     window.makeFirstResponder(nil)
                 }

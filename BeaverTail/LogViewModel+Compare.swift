@@ -353,6 +353,21 @@ extension LogViewModel {
         openTabs[idx].filteredIndices = []
         openTabs[idx].filterMessage = nil
 
+        // The results tab is reused across comparisons (same tab id), so its previous
+        // highlight-scan cache refers to the *old* content's line indices. Without
+        // clearing it, `generateHighlightData` would see these rules as already
+        // "fully scanned" for this tab and reuse the stale matches instead of
+        // rescanning the new content — leaving the bottom pane's matching lines
+        // uncoloured until the highlight group is toggled. Invalidate it here so the
+        // fresh content is always rescanned from scratch (mirrors the live-tailing
+        // reload reset).
+        openTabs[idx].highlightMatches = []
+        openTabs[idx].activeRuleIDs = []
+        openTabs[idx].activeRuleSignatures = []
+        openTabs[idx].timelineActiveRuleIDs = []
+        openTabs[idx].timelineMatches = []
+        fullyScannedRuleIDsByTab[tabID] = []
+
         if lines.isEmpty {
             openTabs[idx].content = nil
             openTabs[idx].statusLines = ["No unique lines found."]
