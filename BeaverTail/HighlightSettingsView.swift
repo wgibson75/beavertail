@@ -210,12 +210,12 @@ struct HighlightSettingsView: View {
 
     /// "Off" tint for the enable/disable switches. Also FULLY OPAQUE (see
     /// `enabledSwitchTint`) so the switch's white knob stays visible when disabled.
-    /// An appearance-adaptive faint red mirrors the enabled green.
+    /// An appearance-adaptive neutral gray track (no colour shade) for the off state.
     private static let disabledSwitchTint = Color(nsColor: NSColor(name: nil) { appearance in
         if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
-            return NSColor(srgbRed: 0.52, green: 0.31, blue: 0.31, alpha: 1) // faint red (dark)
+            return NSColor(srgbRed: 0.30, green: 0.30, blue: 0.30, alpha: 1) // neutral gray (dark)
         } else {
-            return NSColor(srgbRed: 0.97, green: 0.83, blue: 0.83, alpha: 1) // faint red (light)
+            return NSColor(srgbRed: 0.90, green: 0.90, blue: 0.90, alpha: 1) // neutral gray (light)
         }
     })
 
