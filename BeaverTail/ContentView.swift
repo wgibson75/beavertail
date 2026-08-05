@@ -824,6 +824,31 @@ private struct TimelinePaneView: View {
                             }
                     }
                 }
+                // While a highlight-filter change is being reprocessed for a large
+                // log, the previous Timeline entries stay on screen (via the cached
+                // `timelineImage`), so the full-screen "Processing…" branch below is
+                // never reached. Float a pinned banner on top of those stale entries
+                // so the user knows an update is in progress; it clears automatically
+                // once both the highlight scan and timeline render have finished.
+                .overlay {
+                    if viewModel.currentTab?.timelineImage != nil,
+                       viewModel.currentTab?.isProcessingHighlights == true
+                           || viewModel.currentTab?.isGeneratingTimeline == true {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Processing highlight filters…")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.regularMaterial, in: Capsule())
+                        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
+                        .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
+                        .transition(.opacity)
+                    }
+                }
                 if showFilterDropdown && !viewModel.filterHistory.isEmpty {
                     FilterHistoryDropdown(
                         history: viewModel.filterHistory,
