@@ -15,9 +15,11 @@ struct ResetFocusButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "arrow.counterclockwise")
-                .font(.system(size: 10, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(isHovering ? Color.accentColor : Color.secondary)
-                .frame(width: 20, height: 20)
+                // Fill the frame supplied by the caller so the control can be sized
+                // to match the minimap width and the log-tab height.
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(isHovering

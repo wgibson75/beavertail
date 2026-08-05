@@ -152,9 +152,19 @@ struct ContentView: View {
                 viewModel.showAllLines()
             }
             .help("Show all hidden lines")
-            // Match the minimap column width so the icon sits centred
-            // directly above the minimap.
-            .frame(width: 30)
+            // Size the control to match the minimap column width (30) and give it a
+            // fixed height matching the log-tab chips (11pt text + 5pt vertical
+            // padding ≈ 24pt). A fixed height is essential: using maxHeight:.infinity
+            // makes the control greedy and expands the whole tab row to fill the
+            // window. It sits inline with the tabs, centred over the minimap column
+            // at the trailing edge.
+            //
+            // Inset the drawn button by 3pt on each side (within the reserved 30pt
+            // column) so its highlighted border/glow isn't clipped by the window's
+            // right edge, while the overall footprint still matches the minimap width
+            // and the button stays centred.
+            .padding(.horizontal, 3)
+            .frame(width: 30, height: 24)
             .transition(.opacity.combined(with: .scale))
         }
     }
