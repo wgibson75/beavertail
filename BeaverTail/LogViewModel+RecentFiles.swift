@@ -50,6 +50,7 @@ extension LogViewModel {
     }
 
     func saveRecentFiles() {
+        guard !Self.isUITesting else { return }
         if let data = try? JSONEncoder().encode(RecentFilesTracker.shared.recentFiles),
            let string = String(data: data, encoding: .utf8) {
             recentFilesData = string

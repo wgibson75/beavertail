@@ -140,6 +140,7 @@ struct ContentView: View {
             isEnabled: !tab.isUniqueLinesTab,
             menu: { tabContextMenu(for: tab) }
         ))
+        .accessibilityIdentifier("logTab-\(tab.name)")
     }
 
     /// Reset-focus control shown above the minimap when the current tab has a subset
@@ -152,6 +153,7 @@ struct ContentView: View {
                 viewModel.showAllLines()
             }
             .help("Show all hidden lines")
+            .accessibilityIdentifier("resetHiddenLinesButton")
             // Size the control to match the minimap column width (30) and give it a
             // fixed height matching the log-tab chips (11pt text + 5pt vertical
             // padding ≈ 24pt). A fixed height is essential: using maxHeight:.infinity
@@ -266,6 +268,7 @@ struct ContentView: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
                     .padding(.top, 4)
+                    .accessibilityIdentifier("openLogFileButton")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -394,12 +397,14 @@ struct ContentView: View {
                 .help("Decrease text size")
                 .disabled(viewModel.fontSize <= 8)
                 .opacity(viewModel.fontSize <= 8 ? 0.4 : 1)
+                .accessibilityIdentifier("fontDecreaseButton")
 
                 Text("\(Int(viewModel.fontSize))pt")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
                     .fixedSize()
+                    .accessibilityIdentifier("fontSizeLabel")
 
                 Button {
                     viewModel.fontSize = min(24, viewModel.fontSize + 1)
@@ -411,6 +416,7 @@ struct ContentView: View {
                 .help("Increase text size")
                 .disabled(viewModel.fontSize >= 24)
                 .opacity(viewModel.fontSize >= 24 ? 0.4 : 1)
+                .accessibilityIdentifier("fontIncreaseButton")
             }
             .padding(.leading, 8)
 
@@ -429,6 +435,7 @@ struct ContentView: View {
             }
             .toggleStyle(.button)
             .help("Set highlight filters")
+            .accessibilityIdentifier("highlightFiltersToggle")
 
             Toggle(isOn: $viewModel.showTimestampBubble) {
                 Label("Show timestamp labels", image: "tsIcon")
@@ -451,18 +458,21 @@ struct ContentView: View {
             }
             .toggleStyle(.button)
             .help("Show line numbers")
+            .accessibilityIdentifier("lineNumbersToggle")
 
             Toggle(isOn: $viewModel.showMinimap) {
                 Label("Minimap", systemImage: "sidebar.right")
             }
             .toggleStyle(.button)
             .help("Show minimap")
+            .accessibilityIdentifier("minimapToggle")
 
             Toggle(isOn: $viewModel.showTimeline) {
                 Label("Timeline", systemImage: "clock")
             }
             .toggleStyle(.button)
             .help("Show highlight timeline")
+            .accessibilityIdentifier("timelineToggle")
         }
     }
 }

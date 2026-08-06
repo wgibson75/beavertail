@@ -44,6 +44,7 @@ struct RegexTextField: NSViewRepresentable {
     func makeNSView(context: Context) -> FocusableTextField {
         let field = FocusableTextField()
         field.placeholderString = placeholder
+        field.setAccessibilityIdentifier("filterField")
         field.bezelStyle = .roundedBezel
         field.isBordered = true
         field.isEditable = true

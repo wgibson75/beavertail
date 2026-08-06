@@ -49,6 +49,12 @@ enum FilterDisplayMode: String, CaseIterable, Identifiable {
 
 @MainActor
 class LogViewModel: ObservableObject {
+    /// True when the app was launched by the UI-test runner (`-uitesting`). Used to
+    /// keep those runs deterministic and hermetic: the previous session is not
+    /// restored and no session/recent-files state is written back to UserDefaults,
+    /// so UI tests neither depend on nor pollute the developer's real saved state.
+    nonisolated static let isUITesting = ProcessInfo.processInfo.arguments.contains("-uitesting")
+
     /// Shown in the bottom pane when a filter is entered while the file is still
     /// being indexed; the scan is deferred until loading finishes.
     static let deferredFilterMessage = "Filtering will begin once the file has finished loading…"
@@ -438,7 +444,11 @@ class LogViewModel: ObservableObject {
         highlightRulesStore.resetUndoHistory()
         loadFilterHistory()
         loadRecentFiles()
-        DispatchQueue.main.async { self.loadSavedTabsSession() }
+        // Skip restoring the previous session under UI testing so those runs start
+        // from a clean, deterministic empty state.
+        if !Self.isUITesting {
+            DispatchQueue.main.async { self.loadSavedTabsSession() }
+        }
 
         // Flush the session synchronously the moment the app begins terminating,
         // before the Swift concurrency runtime shuts down and cancels the debounce task.
@@ -849,10 +859,15 @@ class LogViewModel: ObservableObject {
         // Run the heavy parallel scan on a plain GCD queue (NOT a Swift Task) so
         // the blocking `concurrentPerform` inside cannot stall the Swift
         // concurrency cooperative pool / main-thread progress timer.
+        //
+        // `.enforceQoS` pins this block — and therefore the `concurrentPerform`
+        // helper threads it spins up — to `.userInitiated`, so the parallel scan
+        // workers all run at a single, known QoS rather than some being brought up
+        // at the Default QoS by libdispatch.
         let token = ScanCancellationToken()
         activeFilterToken = token
         filteringTabID = tabID
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        DispatchQueue.global(qos: .userInitiated).async(qos: .userInitiated, flags: .enforceQoS) { [weak self] in
             let t0 = DispatchTime.now()
             var finalCount = 0
             content.filterMatches(matcher: matcher, progress: progress, cancellation: token) { matches in

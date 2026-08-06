@@ -6,6 +6,7 @@ extension LogViewModel {
     // MARK: - Session Persistence
 
     func saveLoadedTabsSession() {
+        guard !Self.isUITesting else { return }
         sessionSaveDebounceTask?.cancel()
         sessionSaveDebounceTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 500_000_000)
@@ -15,6 +16,7 @@ extension LogViewModel {
     }
 
     func flushSaveLoadedTabsSession() {
+        guard !Self.isUITesting else { return }
         var serializedMetadata: [SavedTabMetadata] = []
         for tab in openTabs {
             // The synthetic "Unique lines" results tab has no backing file, so it is

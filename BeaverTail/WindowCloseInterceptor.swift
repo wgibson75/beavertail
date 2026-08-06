@@ -44,6 +44,15 @@ struct WindowCloseInterceptor: NSViewRepresentable {
 
         func attach(to window: NSWindow) {
             guard managedWindow !== window else { return }
+            // Under UI testing, opt this window out of macOS state restoration. A
+            // persisted "zero windows" snapshot (which a machine can accumulate from
+            // heavy real use) makes SwiftUI's `WindowGroup` restore no window at all
+            // on launch — the app shows a menu bar but no window, and every window-
+            // dependent UI test fails. Non-restorable windows always launch fresh, so
+            // the tests stay independent of whatever saved state the host carries.
+            if LogViewModel.isUITesting {
+                window.isRestorable = false
+            }
             // Chain any pre-existing delegate so we don't break SwiftUI internals
             previousDelegate = window.delegate
             managedWindow = window

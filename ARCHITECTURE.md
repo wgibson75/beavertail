@@ -62,9 +62,9 @@ Introduced to lift "core logic" out of the previously monolithic `LogViewModel`:
 
 Unit tests live in the **`BeaverTailTests`** target (a hosted
 `com.apple.product-type.bundle.unit-test` bundle) and use `@testable import
-BeaverTail`. They are kept **separate from any future UI tests** — this target
-contains no `XCUIApplication`/`XCUIElement` usage; it exercises logic directly
-and asserts on return values and state without rendering any view.
+BeaverTail`. They are kept **separate from the UI tests** (see below) — this
+target contains no `XCUIApplication`/`XCUIElement` usage; it exercises logic
+directly and asserts on return values and state without rendering any view.
 
 The clean layering above is what makes this possible: because the Services,
 plus the pure logic on the Models and ViewModel, take plain value inputs and
@@ -96,11 +96,109 @@ xcodebuild test -project BeaverTail.xcodeproj -scheme BeaverTail \
   -destination 'platform=macOS' -only-testing:BeaverTailTests
 ```
 
-UI-level behaviour (Highlight Filters interactions, the Reset button, Timeline
-overlays, panel/alert flows) and external-dependency integration (the
-`UpdateService.fetchLatestRelease` network path via a `URLProtocol` stub,
-`openRecentFile`) are intentionally **out of scope** for this target and belong
-in a separate UI-test / integration target.
+UI-level behaviour is covered separately (see below). External-dependency
+integration (the `UpdateService.fetchLatestRelease` network path via a
+`URLProtocol` stub, `openRecentFile`) remains **out of scope** for both targets
+and belongs in a future integration target.
+
+### UI tests
+
+UI tests live in the **`BeaverTailUITests`** target (a
+`com.apple.product-type.bundle.ui-testing` bundle). These are **black-box**
+tests: they launch the real, built app and drive it through the accessibility
+hierarchy via `XCUIApplication` — there is no `@testable import`, so they see
+only what a user would.
+
+Three mechanisms keep these runs fast, deterministic, and non-destructive:
+
+- **A `-uitesting` launch argument** puts the app into a hermetic mode
+  (`LogViewModel.isUITesting`): the previous session is not restored, no
+  session/recent-files state is written back to `UserDefaults`, and the
+  automatic GitHub update check is suppressed — so tests neither depend on nor
+  pollute the developer's real saved state, and no networked alert interferes.
+- **Pinned view preferences via the UserDefaults *argument domain*.** Several
+  view toggles (Timeline, Minimap, line numbers, font size, …) are `@AppStorage`
+  values, which read the developer's real `UserDefaults` — `-uitesting` alone
+  does not reset them, so they would leak into tests (e.g. the Timeline pane
+  showing instead of the filter pane). `launchApp` passes `-key value` pairs
+  (e.g. `-saved_show_timeline NO`) that populate the argument domain: they apply
+  to that launch only, are never persisted, and so leave real settings untouched.
+  (Values must not be empty strings — the app treats bare, non-`-` arguments as
+  file paths to open, and `""` resolves to an existing directory.)
+- **Opening files by path argument.** `AppDelegate` opens any file paths passed
+  on the command line, so a test can open a temporary log deterministically
+  without driving the system `NSOpenPanel`. Shared helpers in
+  `UITestSupport.swift` create/clean up temp logs, launch and activate the app,
+  apply filters, open tab context menus, and poll for value changes.
+
+**macOS 26.x window-presentation workaround.** Under XCUITest on macOS 26.x, the
+SwiftUI `WindowGroup` can launch with **zero windows** — the app is foreground
+and the menu bar is present, but no window is ever created, so every UI test
+times out. To stay robust, the app (only under `-uitesting`) installs a pure
+**AppKit fallback window** from `AppDelegate`: shortly after launch, if no
+content window exists, it creates an `NSWindow` hosting the same `ContentView`,
+bound to the one shared `LogViewModel`. On macOS versions where the `WindowGroup`
+does present, the fallback detects the existing window and is skipped (no
+duplicate). Because the fallback appears a moment after launch — and the
+`WindowGroup`'s `ContentView` body may never run on 26.x — file-open requests are
+handled **centrally in `AppDelegate`** (an observer of `openFileURLNotification`
+loading into the shared view model) rather than via a `ContentView.onReceive`.
+This makes file loading independent of whether/when any window is instantiated,
+so files passed at launch load reliably regardless of the window path taken.
+
+**Thread Performance Checker disabled for the test action.** The scheme's Test
+action sets `disablePerformanceAntipatternChecker = "YES"`. XCUITest's automation
+transport synchronously blocks the runner's user-interactive main thread on an
+XPC round-trip (during `typeText`/`waitForExistence`, etc.) that is serviced at
+the Default QoS, which the Thread Performance Checker reports as an `[Internal]`
+priority-inversion "…waiting on a lower QoS thread running at Default…" against
+the driving test method. These originate in the framework, not in app or test
+code (an app-side QoS change to the filter scan had no effect on them), so the
+checker is turned off for the test run to remove the false positives. The more
+important **Main Thread Checker remains enabled**, so genuine
+UI-updates-off-the-main-thread bugs are still caught.
+
+Stable selectors come from **accessibility identifiers** on the high-value
+controls (the Highlight Filters toggle; the view-toggle and font-stepper toolbar
+items; the tab items and their Close buttons; the filter field; the font-size
+label; the Reset-hidden-lines button). A few macOS/SwiftUI realities shape how
+elements are matched:
+
+- A titled `Button`, or a control whose parent view carries its own
+  `accessibilityIdentifier`, may not surface that identifier — so those are
+  matched by **title/label** instead (the dependable handle for an `AXButton`).
+- `.toggleStyle(.button)` toolbar toggles surface as a `CheckBox` whose on/off
+  state is read from `value` (`0`/`1`), not `isSelected`.
+- `Label`/summary text is often exposed via `value` rather than `label`, so
+  those assertions read `value` (or are rephrased to observe a state change).
+
+Coverage:
+
+| Suite | What is covered |
+| --- | --- |
+| `SmokeUITests` | Clean-launch empty state renders; opening a file replaces the empty state with tab/content. |
+| `MenuUITests` | Presence of core File/App/Help menu commands; "Save to File…" is disabled until a unique-lines results tab is active. |
+| `HighlightFiltersWindowUITests` | The toolbar toggle opens and closes the standalone Highlight Filters window. |
+| `CompareUITests` | The mark → compare → results flow: marking reveals Clear items; comparison commands are gated on having a Good and a Bad; end-to-end unique-lines creates a results tab and enables "Save to File…". |
+| `FilteringUITests` | The bottom-pane regex filter: matching shows results, non-matching shows "No lines matched", an invalid regex is handled gracefully, and clearing restores the prompt. |
+| `ToolbarUITests` | View toggles (Minimap/Timeline/line numbers) flip on/off; the font stepper updates its label and clamps at the 8–24pt bounds. |
+| `LineHidingUITests` | Hiding lines from the top-pane menu surfaces the Reset affordance and changes the summary; Reset restores the full view. |
+| `TabManagementUITests` | Multiple files create tabs; ⌘W closes the active tab (not the window); closing the last tab returns to the empty state. |
+| `TimelineOverlayUITests` | The Timeline "Processing highlight filters…" overlay is never left stuck after a filter change (transient appearance is best-effort). |
+| `HelpUITests` | The Help sheet opens from the menu and its search box filters topics. |
+
+Deliberately **kept out** of the UI target as too brittle or not observable
+via the accessibility API: pixel/appearance assertions (toggle-indicator
+visibility, group dimming, glow, exact button geometry), real
+`NSOpenPanel`/`NSSavePanel` dialogs, and gesture-heavy minimap drag/scroll
+sync — these remain manual/visual checks.
+
+Run them with:
+
+```sh
+xcodebuild test -project BeaverTail.xcodeproj -scheme BeaverTail \
+  -destination 'platform=macOS' -only-testing:BeaverTailUITests
+```
 
 ## Roadmap — continuing the migration
 

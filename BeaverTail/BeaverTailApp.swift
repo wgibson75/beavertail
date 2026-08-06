@@ -25,10 +25,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// from the app's own Help text.
     private let helpSearchHandler = HelpSearchHandler()
 
+    /// The single view model shared by both the SwiftUI `WindowGroup` and the
+    /// AppKit fallback window used under UI testing. Sharing one instance keeps the
+    /// menu commands (which act on this view model) in sync with whichever window
+    /// is actually visible.
+    @MainActor static let sharedViewModel = LogViewModel()
+
+    /// Retains the AppKit fallback window created under UI testing on macOS versions
+    /// where the SwiftUI `WindowGroup` fails to present a window under XCUITest.
+    private var uiTestWindow: NSWindow?
+
+    /// Retains the block-based observer that loads file-open requests into the shared
+    /// view model. Kept for the app's lifetime (the delegate lives that long).
+    private var fileOpenObserver: NSObjectProtocol?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Register a search handler so the standard Help ▸ Search field searches
         // BeaverTail's Help text and opens the Help window at the chosen topic.
         NSApp.registerUserInterfaceItemSearchHandler(helpSearchHandler)
+
+        // Centralise file-open handling in the delegate so it does NOT depend on a
+        // SwiftUI `ContentView` being instantiated (and its `.onReceive` registered).
+        // On macOS 26.x under XCUITest the `WindowGroup` can come up with zero windows
+        // — its `ContentView` body never runs — and the AppKit fallback window is
+        // created a moment later, so a file-open notification posted at launch would
+        // otherwise be missed entirely (files never load). Loading into the single
+        // shared view model here guarantees the file loads regardless of which window
+        // (if any) is on screen; every window observes this same view model and renders
+        // its state as soon as it appears. Registered before the command-line files are
+        // posted below so those initial opens are caught.
+        fileOpenObserver = NotificationCenter.default.addObserver(
+            forName: openFileURLNotification, object: nil, queue: .main
+        ) { note in
+            guard let url = note.object as? URL else { return }
+            MainActor.assumeIsolated { Self.sharedViewModel.loadNewTab(from: url) }
+        }
 
         // Register for kAEOpenDocuments Apple Events — this fires reliably
         // when `open -a BeaverTail file.log` is used, both on fresh launch
@@ -50,11 +81,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NotificationCenter.default.post(name: openFileURLNotification, object: url)
         }
 
-        // Check GitHub for a newer release (unless the user has disabled it).
-        // Delayed slightly so the main window is on screen before any alert.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            UpdateChecker.checkAutomatically()
+        // Check GitHub for a newer release (unless the user has disabled it, or the
+        // app was launched for UI testing — where a networked alert would interfere
+        // with the tests).
+        if !ProcessInfo.processInfo.arguments.contains("-uitesting") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                UpdateChecker.checkAutomatically()
+            }
         }
+
+        // On macOS 26.x, SwiftUI's `WindowGroup` can fail to present a window when
+        // the app is launched under XCUITest (the app is foreground and the menu bar
+        // is present, but there are zero windows — so every UI test times out). If
+        // that happens, fall back to creating a real AppKit window hosting the same
+        // `ContentView`. This is pure AppKit and does not depend on WindowGroup's
+        // launch-presentation behaviour, so it is immune to that regression.
+        if LogViewModel.isUITesting {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                MainActor.assumeIsolated { self?.presentUITestWindowIfNeeded() }
+            }
+        }
+    }
+
+    /// Creates an AppKit window hosting `ContentView` if — under UI testing — the
+    /// SwiftUI `WindowGroup` did not present one. Skipped when a content window
+    /// already exists (e.g. macOS 26.5 and earlier), so there is never a duplicate.
+    @MainActor
+    private func presentUITestWindowIfNeeded() {
+        let hasContentWindow = NSApp.windows.contains {
+            $0.canBecomeMain && !($0 is NSPanel)
+        }
+        guard !hasContentWindow else { return }
+
+        let viewModel = Self.sharedViewModel
+        let root = ContentView()
+            .environmentObject(viewModel)
+        let hosting = NSHostingController(rootView: root)
+        let window = NSWindow(contentViewController: hosting)
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.title = "BeaverTail"
+        window.setContentSize(NSSize(width: 1100, height: 700))
+        window.isRestorable = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        uiTestWindow = window
     }
 
     @objc func handleOpenDocumentsEvent(
@@ -115,7 +186,10 @@ struct BeaverTailApp: App {
     // Using @State instead of @StateObject prevents the entire App menu from redrawing
     // whenever LogViewModel `@Published` properties (like openTabs) are repeatedly
     // updated during file loading, regex filtering, and minimap rendering.
-    @State private var viewModel = LogViewModel()
+    // Shares the delegate's single instance so the SwiftUI window, the AppKit
+    // fallback window (used under UI testing), and the menu commands all act on the
+    // same view model.
+    @State private var viewModel = AppDelegate.sharedViewModel
     @StateObject private var recentTracker = RecentFilesTracker.shared
     @StateObject private var commandState = AppCommandState.shared
 
@@ -127,12 +201,15 @@ struct BeaverTailApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(viewModel)
-                .onReceive(NotificationCenter.default.publisher(for: openFileURLNotification)) { note in
-                    guard let url = note.object as? URL else { return }
-                    viewModel.loadNewTab(from: url)
-                }
         }
         .defaultSize(width: 1100, height: 700)
+        // Ask macOS to present the main window on launch. NOTE: on macOS 26.x under
+        // XCUITest this is not sufficient on its own (the WindowGroup can still come
+        // up with zero windows), which is why AppDelegate installs an AppKit fallback
+        // window under UI testing. We deliberately do NOT disable scene restoration
+        // here — suppressing restoration was observed to itself cause zero-window
+        // launches on newer macOS.
+        .defaultLaunchBehavior(.presented)
         .commands {
             // Add "Install btail CLI" into the system BeaverTail app menu,
             // above the standard "Hide BeaverTail" item.
