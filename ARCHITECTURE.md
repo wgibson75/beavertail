@@ -8,20 +8,20 @@ keep them separated, and how to continue the migration.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  App            BeaverTailApp, AppDelegate                    │  Scene & lifecycle wiring only
+│  App          BeaverTailApp, AppDelegate                    │  Scene & lifecycle wiring only
 ├─────────────────────────────────────────────────────────────┤
-│  Views          ContentView, HelpView, HighlightSettingsView,│  SwiftUI / AppKit presentation.
-│                 LogMinimapView, LogRowView, NativeLogViewer   │  Observe the view model, send intents.
+│  Views        ContentView, HelpView, HighlightSettingsView, │  SwiftUI / AppKit presentation.
+│               LogMinimapView, LogRowView, NativeLogViewer   │  Observe the view model, send intents.
 ├─────────────────────────────────────────────────────────────┤
-│  ViewModels     LogViewModel (+ extensions),                  │  Presentation state + orchestration.
-│                 HighlightRulesStore                           │  No file I/O, networking, or CoreGraphics.
+│  ViewModels   LogViewModel (+ extensions),                  │  Presentation state + orchestration.
+│               HighlightRulesStore                           │  No file I/O, networking, or CoreGraphics.
 ├─────────────────────────────────────────────────────────────┤
-│  Services       FileExportService, SessionStore,             │  Reusable, UI-free, testable units of
-│                 UpdateService, CLIInstaller,                  │  work: I/O, networking, rendering,
-│                 TimelineImageRenderer, IndexScanScheduler     │  serialisation, scheduling.
+│  Services     FileExportService, SessionStore,              │  Reusable, UI-free, testable units of
+│               UpdateService, CLIInstaller,                  │  work: I/O, networking, rendering,
+│               TimelineImageRenderer, IndexScanScheduler     │  serialisation, scheduling.
 ├─────────────────────────────────────────────────────────────┤
-│  Models         LogLine, LogTab, LogContent, HighlightRule,  │  Plain data + domain logic.
-│                 HelpContent, RecentFile                       │
+│  Models       LogLine, LogTab, LogContent, HighlightRule,   │  Plain data + domain logic.
+│               HelpContent, RecentFile                       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
