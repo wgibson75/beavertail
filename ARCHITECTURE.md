@@ -7,22 +7,22 @@ keep them separated, and how to continue the migration.
 ## Layers
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  App          BeaverTailApp, AppDelegate                    │  Scene & lifecycle wiring only
-├─────────────────────────────────────────────────────────────┤
-│  Views        ContentView, HelpView, HighlightSettingsView, │  SwiftUI / AppKit presentation.
-│               LogMinimapView, LogRowView, NativeLogViewer   │  Observe the view model, send intents.
-├─────────────────────────────────────────────────────────────┤
-│  ViewModels   LogViewModel (+ extensions),                  │  Presentation state + orchestration.
-│               HighlightRulesStore                           │  No file I/O, networking, or CoreGraphics.
-├─────────────────────────────────────────────────────────────┤
-│  Services     FileExportService, SessionStore,              │  Reusable, UI-free, testable units of
-│               UpdateService, CLIInstaller,                  │  work: I/O, networking, rendering,
-│               TimelineImageRenderer, IndexScanScheduler     │  serialisation, scheduling.
-├─────────────────────────────────────────────────────────────┤
-│  Models       LogLine, LogTab, LogContent, HighlightRule,   │  Plain data + domain logic.
-│               HelpContent, RecentFile                       │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  App            BeaverTailApp, AppDelegate                   │  Scene & lifecycle wiring only
+├──────────────────────────────────────────────────────────────┤
+│  Views          ContentView, HelpView, HighlightSettingsView,│  SwiftUI / AppKit presentation.
+│                 LogMinimapView, LogRowView, NativeLogViewer  │  Observe the view model, send intents.
+├──────────────────────────────────────────────────────────────┤
+│  ViewModels     LogViewModel (+ extensions),                 │  Presentation state + orchestration.
+│                 HighlightRulesStore                          │  No file I/O, networking, or CoreGraphics.
+├──────────────────────────────────────────────────────────────┤
+│  Services       FileExportService, SessionStore,             │  Reusable, UI-free, testable units of
+│                 UpdateService, CLIInstaller,                 │  work: I/O, networking, rendering,
+│                 TimelineImageRenderer, IndexScanScheduler    │  serialisation, scheduling.
+├──────────────────────────────────────────────────────────────┤
+│  Models         LogLine, LogTab, LogContent, HighlightRule,  │  Plain data + domain logic.
+│                 HelpContent, RecentFile                      │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ## Separation rules
@@ -57,6 +57,50 @@ Introduced to lift "core logic" out of the previously monolithic `LogViewModel`:
 `UpdateChecker` remains as the *presentation coordinator* (it owns the
 `NSAlert`s and decides when to check), delegating all networking/version math to
 `UpdateService` — a clean split between "decide & present" and "do the work".
+
+## Testing
+
+Unit tests live in the **`BeaverTailTests`** target (a hosted
+`com.apple.product-type.bundle.unit-test` bundle) and use `@testable import
+BeaverTail`. They are kept **separate from any future UI tests** — this target
+contains no `XCUIApplication`/`XCUIElement` usage; it exercises logic directly
+and asserts on return values and state without rendering any view.
+
+The clean layering above is what makes this possible: because the Services,
+plus the pure logic on the Models and ViewModel, take plain value inputs and
+return plain results, they can be tested without a running UI.
+
+Coverage by layer:
+
+| Layer / unit | What is covered |
+| --- | --- |
+| `LogComparisonService` | Line-signature normalisation; union/intersection "unique lines" set logic; cancellation; parallel-scan correctness. |
+| `LineMatcher` / `LogContent` | Pattern classification, required-literal extraction; memory-mapped indexing (CRLF, trailing newline, empty file); parallel `filterMatches` / `extractAllMatches`. |
+| `TimelineImageRenderer` | Bucketing, highest-priority line claiming, filtered vs. unfiltered columns, marks column, determinism, cancellation. |
+| `SessionStore` | Session JSON round-trip; bookmark encode/resolve incl. malformed and deleted-file failure modes. |
+| `FileExportService` | Filename suggestion; buffered writing incl. the >1 MB flush path. |
+| `UpdateService` | Version normalisation (`v`-strip) and component-wise comparison. |
+| `IndexScanScheduler` | Mutual exclusion, prioritisation, cancellation, single-holder invariant under concurrency. |
+| `HighlightRule` / `HighlightFiltersDocument` | Codable round-trips, legacy-data defaults, regex compilation, group-vs-rule disambiguation. |
+| `LogTab` / providers | Visible-bounds maths, `FilteredLineProvider` / `RangeLineProvider` indexing, Codable & equality. |
+| `LogViewModel` (+ extensions) | Coordinate mapping & match jumps (Navigation); line-visibility / time-period history; filter-history & recent-files dedup/truncation; tab marking and the end-to-end "Find Unique Lines" pipeline. |
+
+ViewModel tests that touch the `@MainActor LogViewModel` snapshot and restore the
+persistence `UserDefaults` keys (and the `RecentFilesTracker` singleton) so they
+run in isolation and leave the developer's real saved state untouched.
+
+Run them with:
+
+```sh
+xcodebuild test -project BeaverTail.xcodeproj -scheme BeaverTail \
+  -destination 'platform=macOS' -only-testing:BeaverTailTests
+```
+
+UI-level behaviour (Highlight Filters interactions, the Reset button, Timeline
+overlays, panel/alert flows) and external-dependency integration (the
+`UpdateService.fetchLatestRelease` network path via a `URLProtocol` stub,
+`openRecentFile`) are intentionally **out of scope** for this target and belong
+in a separate UI-test / integration target.
 
 ## Roadmap — continuing the migration
 
