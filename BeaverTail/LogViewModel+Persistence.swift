@@ -151,7 +151,7 @@ extension LogViewModel {
                             self.applyFilter(with: savedPattern)
                         }
                         self.generateHighlightData(for: id)
-                        self.syncCurrentFilterPattern()
+                        self.syncTabOptions()
                         if self.selectedTabID == id { self.startLiveTailingForActiveTab() }
                     }
                 }

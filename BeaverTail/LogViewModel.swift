@@ -767,12 +767,23 @@ class LogViewModel: ObservableObject {
         openTabs[tabIndex].displayedIndices = result
     }
 
-    /// Keeps currentFilterPattern in sync with the selected tab's saved pattern.
+    /// Resets the Filter field to the selected tab's saved pattern and mirrors its
+    /// per-tab options. Use ONLY on a genuine tab switch, where the field must
+    /// reflect the newly-selected tab. It must NOT be called from asynchronous
+    /// load-/scan-completion handlers: overwriting the field there would discard a
+    /// new pattern the user is typing while a large log finishes loading (or the
+    /// first filter scan completes), making the field revert to the old filter.
     func syncCurrentFilterPattern() {
         currentFilterPattern = currentTab?.filterPattern ?? ""
         currentActiveFilterPattern = currentFilterPattern
-        // Mirror the per-tab Aa / Follow options into the bound published vars
-        // without triggering their write-back into the tab.
+        syncTabOptions()
+    }
+
+    /// Mirrors the selected tab's per-tab Aa / Follow options into the bound
+    /// published vars WITHOUT touching the Filter field. Safe to call from
+    /// asynchronous completion handlers because it never overwrites a filter
+    /// pattern the user may currently be editing.
+    func syncTabOptions() {
         isSyncingTabState = true
         isCaseInsensitive = currentTab?.isCaseInsensitive ?? true
         followTail = currentTab?.followTail ?? true
@@ -890,7 +901,7 @@ class LogViewModel: ObservableObject {
                     if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
                         self.openTabs[freshIndex].filteredIndices = matches
                         self.updateDisplayedIndices(for: freshIndex)
-                        self.syncCurrentFilterPattern()
+                        self.syncTabOptions()
                         // NOTE: the timeline is intentionally NOT regenerated on every
                         // intermediate update. For a filter matching millions of lines
                         // its filtered-intersection pass is O(matches × rules) and would
