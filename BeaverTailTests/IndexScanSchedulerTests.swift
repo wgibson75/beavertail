@@ -29,15 +29,17 @@ final class IndexScanSchedulerTests: XCTestCase {
         scheduler.setPriorityTab(idA)
 
         let acquired = expectation(description: "idB acquired after prioritisation")
-        DispatchQueue.global().async {
+        // Dedicated thread (not the shared GCD pool) so full-suite pool saturation
+        // can't delay this block past the timeout and cause an intermittent failure.
+        let worker = Thread {
             if scheduler.acquire(tabID: idB) { acquired.fulfill() }
             scheduler.release()
         }
+        worker.start()
         // idB is not the priority tab, so it parks until we prioritise it.
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
-            scheduler.setPriorityTab(idB)
-        }
-        wait(for: [acquired], timeout: 3)
+        Thread.sleep(forTimeInterval: 0.1)
+        scheduler.setPriorityTab(idB)
+        wait(for: [acquired], timeout: 5)
     }
 
     // MARK: - Mutual exclusion
@@ -49,15 +51,17 @@ final class IndexScanSchedulerTests: XCTestCase {
         XCTAssertTrue(scheduler.acquire(tabID: id)) // first holder holds the slot
 
         let secondAcquired = expectation(description: "second acquire proceeds after release")
-        DispatchQueue.global().async {
+        // Dedicated thread (not the shared GCD pool) so full-suite pool saturation
+        // can't delay this block past the timeout and cause an intermittent failure.
+        let worker = Thread {
             if scheduler.acquire(tabID: id) { secondAcquired.fulfill() }
             scheduler.release()
         }
+        worker.start()
         // The second acquire must wait until the first holder releases the slot.
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
-            scheduler.release()
-        }
-        wait(for: [secondAcquired], timeout: 3)
+        Thread.sleep(forTimeInterval: 0.1)
+        scheduler.release()
+        wait(for: [secondAcquired], timeout: 5)
     }
 
     // MARK: - Cancellation
@@ -67,16 +71,30 @@ final class IndexScanSchedulerTests: XCTestCase {
         let idA = UUID(), idB = UUID()
         scheduler.setPriorityTab(idA)
 
+        let started = expectation(description: "acquire thread started")
         let returned = expectation(description: "cancelled acquire returns false")
-        DispatchQueue.global().async {
+
+        // Run the parked acquire on a dedicated thread rather than the shared GCD
+        // global-queue pool. When the full suite runs, the pool can be saturated by
+        // the other concurrency tests (which park several threads in cond.wait()),
+        // which would otherwise delay this test's dispatched blocks past the timeout
+        // and make it fail intermittently. A dedicated thread is always schedulable.
+        let worker = Thread {
+            started.fulfill()
             let ok = scheduler.acquire(tabID: idB) // parks (idB not priority)
             XCTAssertFalse(ok, "a cancelled tab's acquire must return false")
             returned.fulfill()
         }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
-            scheduler.cancel(tabID: idB)
-        }
-        wait(for: [returned], timeout: 3)
+        worker.start()
+
+        // Ensure the worker is running, give it a moment to reach the park, then
+        // cancel from the test's own thread. Cancellation is correct whether or not
+        // the worker has parked yet, so this can't lose a wakeup.
+        wait(for: [started], timeout: 5)
+        Thread.sleep(forTimeInterval: 0.1)
+        scheduler.cancel(tabID: idB)
+
+        wait(for: [returned], timeout: 5)
     }
 
     // MARK: - Edge cases
