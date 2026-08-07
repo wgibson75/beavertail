@@ -1038,16 +1038,27 @@ class LogViewModel: ObservableObject {
         guard let content = openTabs[index].content, content.count > 0, !activeRules.isEmpty else {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                if let i = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                    self.openTabs[i].highlightMatches = []
-                    self.openTabs[i].activeRuleIDs = []
-                    self.openTabs[i].activeRuleSignatures = []
-                    self.openTabs[i].timelineActiveRuleIDs = []
-                    self.openTabs[i].isProcessingHighlights = false
-                    self.fullyScannedRuleIDsByTab[tabID] = []
-                    self.generateMinimapData(for: tabID)
-                    self.generateTimelineData(for: tabID)
-                }
+                // This clear was scheduled because there were no active rules at call
+                // time. If rules have since become active before this deferred block
+                // runs — e.g. an import sets `groups` then `rules` in the same tick, so
+                // this empty-rules pass (from the groups change) is queued *behind* the
+                // real scan set up by the rules change — a newer generateHighlightData
+                // has already taken over. Bailing here avoids wiping its freshly-built
+                // `highlightMatches`/`activeRuleIDs` (which would make the in-flight scan
+                // discard its results, leaving the log unhighlighted until a manual
+                // filter toggle).
+                guard let i = self.openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+                let realScanTookOver = !self.activeHighlightRules.isEmpty
+                    && (self.openTabs[i].content?.count ?? 0) > 0
+                if realScanTookOver { return }
+                self.openTabs[i].highlightMatches = []
+                self.openTabs[i].activeRuleIDs = []
+                self.openTabs[i].activeRuleSignatures = []
+                self.openTabs[i].timelineActiveRuleIDs = []
+                self.openTabs[i].isProcessingHighlights = false
+                self.fullyScannedRuleIDsByTab[tabID] = []
+                self.generateMinimapData(for: tabID)
+                self.generateTimelineData(for: tabID)
             }
             return
         }
