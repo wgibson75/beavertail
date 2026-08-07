@@ -115,6 +115,12 @@ class LogViewModel: ObservableObject {
         }
     }
 
+    /// When set, requests the tab strip to horizontally scroll the identified tab
+    /// into view. Used after a session restore so the previously-active tab — which
+    /// may sit off the right-hand edge behind the other restored tabs — is brought
+    /// into view on launch. The view clears this back to `nil` once it has scrolled.
+    @Published var tabToRevealID: UUID?
+
     /// Keeps the ⌘S "Save to File…" command enabled only while the unsaved
     /// "unique lines" results tab is selected. Only republishes on a genuine change,
     /// so the menus don't rebuild on every frequent `openTabs` update.

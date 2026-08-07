@@ -7,7 +7,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @EnvironmentObject private var viewModel: LogViewModel
+    @EnvironmentObject var viewModel: LogViewModel
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
@@ -15,133 +15,10 @@ struct ContentView: View {
     /// Section of the Help window to scroll to when opened from the Help menu search.
     @State private var helpInitialSection: String?
     @State private var showFilterDropdown = false
-    @State private var draggingTabID: UUID?
+    @State var draggingTabID: UUID?
     @State private var isFileDropTargeted = false
     /// Tab currently under the mouse pointer, used to glow its heading + background.
-    @State private var hoveredTabID: UUID?
-
-    /// A single tab "chip" in the tab strip. Extracted from `body` so the very large
-    /// main view expression stays within the Swift type-checker's reach.
-    private func tabView(for tab: LogTab) -> some View {
-        let isSelected = viewModel.selectedTabID == tab.id
-        let isDragging = draggingTabID == tab.id
-        let isHovered = hoveredTabID == tab.id
-        // The selected tab is highlighted on its own and must not react to hover;
-        // only unselected tabs glow (subtly) under the pointer.
-        let showHoverGlow = isHovered && !isSelected && !isDragging
-        return HStack(spacing: 5) {
-            Text(tab.name)
-                .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-                .foregroundStyle(isSelected ? AnyShapeStyle(Color.primary) : AnyShapeStyle(Color.secondary))
-                .lineLimit(1)
-                .brightness(showHoverGlow ? 0.16 : 0)
-                .shadow(color: Color.accentColor.opacity(showHoverGlow ? 0.4 : 0), radius: showHoverGlow ? 5 : 0)
-                .animation(.easeOut(duration: 0.16), value: isHovered)
-
-            Button {
-                viewModel.closeTab(id: tab.id)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.tertiary)
-            }
-            .buttonStyle(.plain)
-            .opacity(isDragging ? 0 : 1)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background {
-            ZStack {
-                // Subtle neutral hover wash for unselected tabs (Apple-style light
-                // highlight). The selected tab never shows this.
-                if showHoverGlow {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color.primary.opacity(0.06))
-                }
-                // Selected tab: a softly raised, neutral card with a gentle shadow —
-                // the standard macOS selected-tab appearance. Hidden while dragging so
-                // the origin reads as a gap.
-                if isSelected && !isDragging {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color(NSColor.controlBackgroundColor))
-                        .shadow(color: .black.opacity(0.16), radius: 2.5, y: 1)
-                }
-                // Good/Bad/unique colour tint, layered over the raised card (selected)
-                // or shown as a flat wash (unselected), so tabs stay colour-coded while
-                // keeping the standard look.
-                if tab.isUniqueLinesTab && !isDragging {
-                    // Unsaved unique-lines results tab: a yellow tint to signal it
-                    // hasn't been saved yet. Once saved it becomes a normal tab.
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color.yellow.opacity(isSelected ? 0.30 : 0.18))
-                        .help("Unique lines — not yet saved")
-                } else if let mark = tab.mark, !isDragging {
-                    let markColor = mark == .good ? Color.green : Color.red
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(markColor.opacity(isSelected ? 0.26 : 0.15))
-                        .help(mark == .good ? "Marked as Good Log" : "Marked as Bad Log")
-                }
-                // Crisp hairline border on top of the selected card so the active tab
-                // is cleanly outlined regardless of any colour tint beneath.
-                if isSelected && !isDragging {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(Color(NSColor.separatorColor), lineWidth: 0.5)
-                }
-                // Placeholder "slot" shown at the dragged tab's current position: a
-                // soft, dashed outline that clearly marks where the tab will land.
-                if isDragging {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color.accentColor.opacity(0.10))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .strokeBorder(
-                                    Color.accentColor.opacity(0.55),
-                                    style: StrokeStyle(lineWidth: 1, dash: [4, 3])
-                                )
-                        )
-                }
-            }
-            .animation(.easeOut(duration: 0.16), value: isHovered)
-        }
-        .contentShape(Rectangle())
-        // Collapse the dragged tab into a slim placeholder so the surrounding tabs
-        // visibly open up a gap for it.
-        .opacity(isDragging ? 0.5 : 1.0)
-        .scaleEffect(isDragging ? 0.92 : 1.0, anchor: .center)
-        .animation(.spring(response: 0.28, dampingFraction: 0.72), value: isDragging)
-        .onHover { hovering in
-            if hovering {
-                hoveredTabID = tab.id
-            } else if hoveredTabID == tab.id {
-                hoveredTabID = nil
-            }
-        }
-        .onTapGesture {
-            viewModel.selectedTabID = tab.id
-            viewModel.triggerLazyLoadForTab(id: tab.id)
-        }
-        .onDrag {
-            draggingTabID = tab.id
-            return NSItemProvider(object: tab.id.uuidString as NSString)
-        } preview: {
-            // A floating "lifted" card that follows the pointer, so the user can
-            // clearly see the tab being moved.
-            TabDragPreview(name: tab.name)
-        }
-        .onDrop(
-            of: [UTType.plainText],
-            delegate: TabDropDelegate(
-                targetTab: tab,
-                tabs: $viewModel.openTabs,
-                draggingTabID: $draggingTabID
-            )
-        )
-        .modifier(ConditionalTabContextMenu(
-            isEnabled: !tab.isUniqueLinesTab,
-            menu: { tabContextMenu(for: tab) }
-        ))
-        .accessibilityIdentifier("logTab-\(tab.name)")
-    }
+    @State var hoveredTabID: UUID?
 
     /// Reset-focus control shown above the minimap when the current tab has a subset
     /// of its lines focused. Extracted from `body` so the (very large) main view
@@ -183,10 +60,14 @@ struct ContentView: View {
             // TAB STRIP
             if !viewModel.openTabs.isEmpty {
                 HStack(spacing: 0) {
+                ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 2) {
                         ForEach(viewModel.openTabs) { tab in
                             tabView(for: tab)
+                                // Tag each tab so the ScrollViewReader can bring the
+                                // selected/restored tab into view (see below).
+                                .id(tab.id)
                         }
 
                         // Spacer fills the remaining strip width so the whole
@@ -214,6 +95,22 @@ struct ContentView: View {
                     // Belt-and-braces: the scroll content fills the full clip width
                     // so the Spacer always stretches to the right edge.
                     .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                }
+                // On launch a restored session may select a tab that sits off the
+                // right-hand edge (all other tabs are to its left). Scroll it into
+                // view once the strip is laid out so the user can see which log is
+                // currently visible.
+                .onAppear { revealSelectedTab(using: proxy, animated: false) }
+                // A restore sets `tabToRevealID`; honour it and then clear it.
+                .onChange(of: viewModel.tabToRevealID) { _, newID in
+                    guard newID != nil else { return }
+                    revealSelectedTab(using: proxy, animated: false)
+                    viewModel.tabToRevealID = nil
+                }
+                // Keep the selected tab visible whenever the selection changes.
+                .onChange(of: viewModel.selectedTabID) { _, _ in
+                    revealSelectedTab(using: proxy, animated: true)
+                }
                 }
 
                     // Reset control, on the same row as the log tabs and centred
@@ -360,7 +257,7 @@ struct ContentView: View {
     /// comparison, and run the comparison once both a good and a bad log exist. Only
     /// attached to real log tabs (never the synthetic "Unique lines" results tab).
     @ViewBuilder
-    private func tabContextMenu(for tab: LogTab) -> some View {
+    func tabContextMenu(for tab: LogTab) -> some View {
         Toggle("Mark as Good", isOn: Binding(
             get: { tab.mark == .good },
             set: { viewModel.markTab(id: tab.id, as: $0 ? .good : nil) }
@@ -485,7 +382,7 @@ struct ContentView: View {
 
 /// Attaches a context menu only when `isEnabled` is true, so tabs without any menu
 /// items (the synthetic "Unique lines" results tab) show no empty popup on right-click.
-private struct ConditionalTabContextMenu<Menu: View>: ViewModifier {
+struct ConditionalTabContextMenu<Menu: View>: ViewModifier {
     let isEnabled: Bool
     @ViewBuilder let menu: () -> Menu
 
@@ -1277,7 +1174,7 @@ private struct FilterBarView: View {
 
 // MARK: - Tab Drag-to-Reorder
 
-private struct TabDropDelegate: DropDelegate {
+struct TabDropDelegate: DropDelegate {
     let targetTab: LogTab
     @Binding var tabs: [LogTab]
     @Binding var draggingTabID: UUID?
@@ -1312,7 +1209,7 @@ private struct TabDropDelegate: DropDelegate {
 
 /// The floating card shown under the pointer while a log tab is being dragged,
 /// giving a tactile "lifted" feel instead of the tab simply vanishing.
-private struct TabDragPreview: View {
+struct TabDragPreview: View {
     let name: String
 
     var body: some View {

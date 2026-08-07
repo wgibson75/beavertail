@@ -85,6 +85,10 @@ extension LogViewModel {
         let targetID = restoredSelectedID ?? openTabs.first?.id
         if let targetID {
             selectedTabID = targetID
+            // Ask the tab strip to scroll this tab into view: after a restore it can
+            // sit off the right-hand edge (all other tabs are to its left), so without
+            // this the user can't see which log is currently visible.
+            tabToRevealID = targetID
             triggerLazyLoadForTab(id: targetID)
         }
     }
