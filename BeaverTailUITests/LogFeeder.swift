@@ -57,6 +57,14 @@ final class LogFeeder {
         }
         thread.name = "uitest.logfeeder"
         thread.stackSize = 512 * 1024
+        // Run the feeder at user-interactive QoS to MATCH the XCTest main thread that
+        // waits on it. The test's (user-interactive) thread blocks on this feeder in two
+        // ways: contending for `lock` in write()/emitLineContaining(), and joining it in
+        // stopVolumeStream(). A raw Thread otherwise runs at Default QoS, so those waits
+        // are a user-interactive thread waiting on a lower-QoS thread — the exact
+        // priority inversion the Thread Performance Checker reports. Matching the QoS
+        // removes the inversion at its source.
+        thread.qualityOfService = .userInteractive
         self.thread = thread
         thread.start()
     }
