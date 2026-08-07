@@ -288,6 +288,12 @@ struct ContentView: View {
             .frame(width: 0, height: 0)
         }
         .frame(minWidth: 800, minHeight: 500)
+        .overlay(alignment: .topTrailing) {
+            // Test-only accessibility probe (see `UITestProbe`); `-uitesting` only.
+            if LogViewModel.isUITesting {
+                UITestProbe(viewModel: viewModel)
+            }
+        }
         .toolbar {
             mainToolbarContent
         }
@@ -954,6 +960,7 @@ private struct TimelineHeadingView: View {
             }
         }
         .help("Left-click for the next match, right-click for the previous match of \(rule.pattern)")
+        .accessibilityIdentifier("timelineHeading")
     }
 }
 
@@ -1260,6 +1267,7 @@ private struct FilterBarView: View {
             }
             .toggleStyle(.button)
             .help("Follow Tail: when active, the view automatically scrolls to show new log lines as they are appended")
+            .accessibilityIdentifier("followToggle")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

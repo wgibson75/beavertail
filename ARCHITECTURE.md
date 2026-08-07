@@ -109,13 +109,25 @@ tests: they launch the real, built app and drive it through the accessibility
 hierarchy via `XCUIApplication` — there is no `@testable import`, so they see
 only what a user would.
 
-Three mechanisms keep these runs fast, deterministic, and non-destructive:
+The suite is **`TailingTests`**, which exercises live-tailing (Follow): it opens
+a log that is actively appended to and asserts that the **minimap** and the
+**Timeline View** keep summarising it correctly. These two cases
+(`testMinimapTailing`, `testTimelineViewTailing`,
+`testMinimapRegionSelectionWhileTailing`) are intentionally a foundation
+to be extended; the harness they establish (live feed, injected filters, probe)
+is the reusable part.
+
+Several mechanisms keep these runs fast, deterministic, and non-destructive:
 
 - **A `-uitesting` launch argument** puts the app into a hermetic mode
-  (`LogViewModel.isUITesting`): the previous session is not restored, no
-  session/recent-files state is written back to `UserDefaults`, and the
-  automatic GitHub update check is suppressed — so tests neither depend on nor
-  pollute the developer's real saved state, and no networked alert interferes.
+  (`LogViewModel.isUITesting`): the previous session is not restored, the
+  automatic GitHub update check is suppressed, and **no persisted application
+  state is written back to `UserDefaults`** — session bookmarks, recent files,
+  highlight rules/groups, the **Filter history** (the previous-filter list shown
+  under the Filter box), and the filter display-mode preference are all guarded
+  behind `isUITesting`, so tests neither depend on nor pollute the developer's
+  real saved state. The Filter history additionally starts EMPTY under
+  `-uitesting` (its load is skipped too), so tests never read it either.
 - **Pinned view preferences via the UserDefaults *argument domain*.** Several
   view toggles (Timeline, Minimap, line numbers, font size, …) are `@AppStorage`
   values, which read the developer's real `UserDefaults` — `-uitesting` alone
@@ -125,11 +137,31 @@ Three mechanisms keep these runs fast, deterministic, and non-destructive:
   to that launch only, are never persisted, and so leave real settings untouched.
   (Values must not be empty strings — the app treats bare, non-`-` arguments as
   file paths to open, and `""` resolves to an existing directory.)
+- **Self-contained highlight filters.** The tests must not depend on whatever
+  filters the developer has configured. `launchApp` injects a known filter set by
+  passing `-saved_highlight_rules <json>` (built by `HighlightFilterSpec`, whose
+  keys mirror `HighlightRule`'s `Codable` shape) through the same argument domain,
+  so the app decodes them into real, active rules for that launch only.
+- **A live log feed (`LogFeeder`).** A self-contained Swift port of
+  `scripts/writelog.py`: it streams the same word-pool lines, in the same format,
+  with the same 1-second-window rate limiting, up to the target **250 KB/s** — so
+  the tests do not shell out to Python. It also injects "marker" lines guaranteed
+  to contain a given token, letting a test make a specific highlight filter start
+  matching at a controlled moment (so the Timeline's heading count grows
+  deterministically). All writes share one lock, so the volume stream and marker
+  injections safely interleave on the same file handle.
+- **An accessibility probe (`UITestProbe`).** The minimap and Timeline are drawn
+  as bitmaps with no accessible content, so a black-box test cannot otherwise
+  inspect them. Rendered **only** under `-uitesting`, this probe surfaces a few
+  internal signals as readable accessibility text — total line count, whether the
+  minimap/Timeline bitmaps have rendered, the highlight-match total, and the
+  Timeline heading count — which the tests poll to assert that tailing keeps the
+  summaries up to date. It contributes nothing to the shipping UI.
 - **Opening files by path argument.** `AppDelegate` opens any file paths passed
   on the command line, so a test can open a temporary log deterministically
   without driving the system `NSOpenPanel`. Shared helpers in
   `UITestSupport.swift` create/clean up temp logs, launch and activate the app,
-  apply filters, open tab context menus, and poll for value changes.
+  enable Follow, apply filters, and poll the probe for value changes.
 
 **macOS 26.x window-presentation workaround.** Under XCUITest on macOS 26.x, the
 SwiftUI `WindowGroup` can launch with **zero windows** — the app is foreground
@@ -159,9 +191,9 @@ important **Main Thread Checker remains enabled**, so genuine
 UI-updates-off-the-main-thread bugs are still caught.
 
 Stable selectors come from **accessibility identifiers** on the high-value
-controls (the Highlight Filters toggle; the view-toggle and font-stepper toolbar
-items; the tab items and their Close buttons; the filter field; the font-size
-label; the Reset-hidden-lines button). A few macOS/SwiftUI realities shape how
+controls (the Follow toggle; the view-toggle and font-stepper toolbar items; the
+tab items; the filter field; the Timeline headings; plus the `probe.*`
+identifiers exposed by `UITestProbe`). A few macOS/SwiftUI realities shape how
 elements are matched:
 
 - A titled `Button`, or a control whose parent view carries its own
@@ -171,21 +203,14 @@ elements are matched:
   state is read from `value` (`0`/`1`), not `isSelected`.
 - `Label`/summary text is often exposed via `value` rather than `label`, so
   those assertions read `value` (or are rephrased to observe a state change).
+- Bitmap-only views (minimap, Timeline) have no accessible content, so the tests
+  read their state from `UITestProbe` rather than inspecting pixels.
 
 Coverage:
 
 | Suite | What is covered |
 | --- | --- |
-| `SmokeUITests` | Clean-launch empty state renders; opening a file replaces the empty state with tab/content. |
-| `MenuUITests` | Presence of core File/App/Help menu commands; "Save to File…" is disabled until a unique-lines results tab is active. |
-| `HighlightFiltersWindowUITests` | The toolbar toggle opens and closes the standalone Highlight Filters window. |
-| `CompareUITests` | The mark → compare → results flow: marking reveals Clear items; comparison commands are gated on having a Good and a Bad; end-to-end unique-lines creates a results tab and enables "Save to File…". |
-| `FilteringUITests` | The bottom-pane regex filter: matching shows results, non-matching shows "No lines matched", an invalid regex is handled gracefully, and clearing restores the prompt. |
-| `ToolbarUITests` | View toggles (Minimap/Timeline/line numbers) flip on/off; the font stepper updates its label and clamps at the 8–24pt bounds. |
-| `LineHidingUITests` | Hiding lines from the top-pane menu surfaces the Reset affordance and changes the summary; Reset restores the full view. |
-| `TabManagementUITests` | Multiple files create tabs; ⌘W closes the active tab (not the window); closing the last tab returns to the empty state. |
-| `TimelineOverlayUITests` | The Timeline "Processing highlight filters…" overlay is never left stuck after a filter change (transient appearance is best-effort). |
-| `HelpUITests` | The Help sheet opens from the menu and its search box filters topics. |
+| `TailingTests` | Live-tailing (Follow). `testMinimapTailing`: with the minimap on, the minimap renders and keeps summarising the log as it grows, and reflects highlighted entries as matching lines are appended. `testTimelineViewTailing`: with the Timeline on and a filter applied, the Timeline renders and its heading count grows deterministically as newly-tailed lines start matching additional (self-contained) highlight filters. |
 
 Deliberately **kept out** of the UI target as too brittle or not observable
 via the accessibility API: pixel/appearance assertions (toggle-indicator

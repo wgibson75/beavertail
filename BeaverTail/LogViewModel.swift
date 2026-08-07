@@ -290,6 +290,11 @@ class LogViewModel: ObservableObject {
     /// Per-tab timeline draw task. Internal so `LogViewModel+Timeline.swift` can drive it.
     var timelineTasks: [UUID: Task<Void, Never>] = [:]
     var liveTailTasks: [UUID: Task<Void, Never>] = [:]
+    /// Throttle state for coalescing minimap/timeline regeneration during high-rate
+    /// live tailing (see `throttledRegenerateLiveTail`): the last time a regeneration
+    /// ran per tab, and which tabs already have a trailing regeneration scheduled.
+    var lastLiveTailRegen: [UUID: DispatchTime] = [:]
+    var pendingLiveTailRegen: Set<UUID> = []
     private var highlightTasks: [UUID: Task<Void, Never>] = [:]
     /// Per-tab cancellation token for the highlight match scan. Checked inside the
     /// scan's `concurrentPerform` worker threads (where `Task.isCancelled` is
@@ -408,7 +413,11 @@ class LogViewModel: ObservableObject {
     var filterDisplayMode: FilterDisplayMode {
         get { FilterDisplayMode(rawValue: filterDisplayModeRaw) ?? .marksAndMatches }
         set {
-            filterDisplayModeRaw = newValue.rawValue
+            // Don't persist the display-mode preference under UI testing (keeps the
+            // developer's saved setting untouched — matches the other isolation guards).
+            if !Self.isUITesting {
+                filterDisplayModeRaw = newValue.rawValue
+            }
             objectWillChange.send()
             updateAllDisplayedIndices()
         }
@@ -440,6 +449,8 @@ class LogViewModel: ObservableObject {
         }
 
         loadRules()
+        // Under UI testing, override with the injected self-contained rule set.
+        loadUITestHighlightRules()
         // The initial load populated the store; don't let ⌘Z undo it away.
         highlightRulesStore.resetUndoHistory()
         loadFilterHistory()

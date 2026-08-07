@@ -108,9 +108,16 @@ extension LogViewModel {
                                         let baseOffset = content.count
                                         content.appendLines(finalLines)
                                         self.appendHighlightsForLiveTail(with: finalLines, startingAt: baseOffset)
-                                        self.generateMinimapData(for: tabID)
-                                        self.generateTimelineData(for: tabID)
+                                        // Append to the filtered set BEFORE regenerating the summaries, so
+                                        // the Timeline render sees this batch's newly-matched lines in the
+                                        // same pass (headings then reflect new matches a batch sooner).
                                         self.appendFilterForLiveTail(with: finalLines, startingAt: baseOffset)
+                                        // Coalesce minimap/timeline regeneration. Regenerating on every
+                                        // ~200ms batch cancels the previous (utility-priority) render before
+                                        // it can finish, so under high-rate tailing the panes never settle
+                                        // and the Timeline sticks on "Processing highlight filters…". Throttle
+                                        // to a completed render at most ~every 500ms (with a trailing pass).
+                                        self.throttledRegenerateLiveTail(for: tabID)
                                         self.objectWillChange.send()
                                         if self.followTail {
                                             DispatchQueue.main.async {
@@ -140,6 +147,46 @@ extension LogViewModel {
             task.cancel()
         }
         liveTailTasks.removeAll()
+    }
+
+    /// Regenerates the minimap and Timeline for `tabID`, but at most once per
+    /// `interval` while live-tailing, coalescing bursts. During high-rate tailing the
+    /// raw appends arrive every ~200ms; regenerating on each one cancels the previous
+    /// render before it finishes, so nothing ever settles and the Timeline is stuck
+    /// showing "Processing highlight filters…". This runs the first regeneration
+    /// immediately (leading edge) and, for any further appends inside the window,
+    /// schedules exactly one trailing regeneration at the window's end — so a completed
+    /// render lands promptly and the final state is always drawn once the burst ends.
+    /// Low-rate tailing (batches further apart than `interval`) is unaffected: each
+    /// batch regenerates immediately.
+    func throttledRegenerateLiveTail(for tabID: UUID) {
+        let interval: UInt64 = 500_000_000 // 500ms
+        let now = DispatchTime.now()
+        let last = lastLiveTailRegen[tabID] ?? DispatchTime(uptimeNanoseconds: 0)
+        let elapsed = now.uptimeNanoseconds &- last.uptimeNanoseconds
+
+        if elapsed >= interval {
+            lastLiveTailRegen[tabID] = now
+            generateMinimapData(for: tabID)
+            generateTimelineData(for: tabID)
+            return
+        }
+
+        // Inside the throttle window: ensure exactly one trailing regeneration fires
+        // at the end of the window so the latest appended lines are rendered.
+        guard !pendingLiveTailRegen.contains(tabID) else { return }
+        pendingLiveTailRegen.insert(tabID)
+        let remaining = interval &- elapsed
+        DispatchQueue.main.asyncAfter(deadline: .now() + .nanoseconds(Int(remaining))) { [weak self] in
+            guard let self else { return }
+            self.pendingLiveTailRegen.remove(tabID)
+            // Skip if the tab has since closed.
+            guard self.openTabs.contains(where: { $0.id == tabID }) else { return }
+            self.lastLiveTailRegen[tabID] = DispatchTime.now()
+            self.generateMinimapData(for: tabID)
+            self.generateTimelineData(for: tabID)
+            self.objectWillChange.send()
+        }
     }
 
     func appearanceChanged(isDark: Bool) {

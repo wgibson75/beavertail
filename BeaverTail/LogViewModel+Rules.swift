@@ -6,6 +6,10 @@ extension LogViewModel {
     // MARK: - Rules
 
     func saveRules() {
+        // Never persist rule changes under UI testing — the tests inject a
+        // self-contained rule set and must not overwrite the developer's real
+        // saved highlight filters (mirrors the session/recent-files guards).
+        guard !Self.isUITesting else { return }
         if let encoded = try? JSONEncoder().encode(highlightRules),
            let string = String(data: encoded, encoding: .utf8) {
             if rulesData != string { rulesData = string }
@@ -39,4 +43,26 @@ extension LogViewModel {
         }
     }
 
+    /// Under UI testing only, loads a self-contained highlight-rule set from a JSON
+    /// file whose path is passed as `-uitest_highlight_rules_path=<path>`, overriding
+    /// whatever `@AppStorage` held. This keeps the tests independent of (and, together
+    /// with the `saveRules` guard, non-destructive to) the developer's real filters.
+    ///
+    /// A file + single `-`-prefixed argument is used rather than injecting the JSON
+    /// through the UserDefaults *argument domain*: a value starting with `[` is
+    /// mis-handled there (the app then silently falls back to the real saved filters),
+    /// and a lone `-key=value` token is ignored by both the argument domain and the
+    /// `AppDelegate` file-open path filter.
+    func loadUITestHighlightRules() {
+        guard Self.isUITesting else { return }
+        let prefix = "-uitest_highlight_rules_path="
+        guard let arg = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix(prefix) })
+        else { return }
+        let path = String(arg.dropFirst(prefix.count))
+        guard let data = FileManager.default.contents(atPath: path),
+              var decoded = try? JSONDecoder().decode([HighlightRule].self, from: data)
+        else { return }
+        for idx in 0 ..< decoded.count { decoded[idx].updateCachedObjects() }
+        highlightRules = decoded
+    }
 }

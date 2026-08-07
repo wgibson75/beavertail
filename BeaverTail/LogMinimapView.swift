@@ -183,6 +183,12 @@ struct LogMinimapView: View {
                 }
             )
         }
+        // Expose the minimap as a single, locatable accessibility element so UI
+        // tests can drag out a region and click an entry via coordinates. (The
+        // minimap is a bitmap with gesture handlers and no other accessible content,
+        // so grouping it has no meaningful effect on VoiceOver.)
+        .accessibilityElement()
+        .accessibilityIdentifier("logMinimap")
     }
 }
 
