@@ -815,7 +815,7 @@ class LogViewModel: ObservableObject {
             return
         }
 
-        guard let matcher = LineMatcher.make(pattern: pattern, caseInsensitive: isCaseInsensitive) else {
+        guard let matcher = FilteringEngine.compile(pattern: pattern, caseInsensitive: isCaseInsensitive) else {
             filterTimer?.invalidate(); filterTimer = nil
             openTabs[tabIndex].filteredIndices = []
             openTabs[tabIndex].filterMessage = "Invalid Regular Expression"
@@ -1088,7 +1088,7 @@ class LogViewModel: ObservableObject {
                 } else {
                     newCache.append([])
                 }
-                if let m = LineMatcher.make(pattern: activeRules[i].pattern, caseInsensitive: !activeRules[i].isCaseSensitive) {
+                if let m = FilteringEngine.compile(pattern: activeRules[i].pattern, caseInsensitive: !activeRules[i].isCaseSensitive) {
                     matchersToRun.append((globalIndex: i, matcher: m))
                 }
             }

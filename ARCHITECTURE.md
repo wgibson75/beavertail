@@ -55,6 +55,7 @@ Introduced to lift "core logic" out of the previously monolithic `LogViewModel`:
 | `LogComparisonService` | Pure log-line signature + good/bad "unique lines" comparison. | `LogViewModel+Compare` |
 | `LiveTailService` | File-monitoring state machine (poll → deleted / rotated / appended events) + line decoding for Follow. | `LogViewModel+LiveTailing` |
 | `FileLoadService` | Memory-maps a log and builds its line index incrementally, publishing throttled partial snapshots. | `LogViewModel.loadNewTab` / `triggerLazyLoadForTab` |
+| `FilteringEngine` | Compiles filter/highlight patterns into `LineMatcher`s (literal / literal-alternation / regex + required-literal pre-filter) and matches lines. | `LogContent` (`LineMatcher`) |
 | `IndexScanScheduler` | Coordinates CPU-heavy index scans across tabs. | (already a service) |
 
 `UpdateChecker` remains as the *presentation coordinator* (it owns the
@@ -80,7 +81,8 @@ Coverage by layer:
 | `LogComparisonService` | Line-signature normalisation; union/intersection "unique lines" set logic; cancellation; parallel-scan correctness. |
 | `LiveTailService` | Line decoding (`.newlines`-set splitting, partial-line remainder carry-over, no-newline buffering); the monitor's poll state machine — unchanged/appended/rotated-or-truncated/deleted transitions against real temp files. |
 | `FileLoadService` | The publish-throttle decision (first snapshot always fires, then coalesced by elapsed time); incremental map + index end-to-end against real temp files (fully-indexed result, at-least-one partial, empty file, missing-file throw). |
-| `LineMatcher` / `LogContent` | Pattern classification, required-literal extraction; memory-mapped indexing (CRLF, trailing newline, empty file); parallel `filterMatches` / `extractAllMatches`. |
+| `FilteringEngine` / `LineMatcher` | Pattern classification (literal, literal-alternation, regex + derived pre-filter), required-literal extraction; pure per-line `matches` across every matcher kind (sensitive/insensitive literals, alternation, regex). |
+| `LogContent` | Memory-mapped indexing (CRLF, trailing newline, empty file); parallel `filterMatches` / `extractAllMatches`. |
 | `TimelineImageRenderer` | Bucketing, highest-priority line claiming, filtered vs. unfiltered columns, marks column, determinism, cancellation. |
 | `MinimapImageRenderer` | The pure `minimapFills` bucketing core: MANY-lines density bands with highest-priority colouring and alpha scaling; FEW-lines full-band draw order (low-priority first); visible-range restriction; empty-range handling; cancellation. |
 | `SessionStore` | Session JSON round-trip; bookmark encode/resolve incl. malformed and deleted-file failure modes. |
@@ -236,15 +238,13 @@ xcodebuild test -project BeaverTail.xcodeproj -scheme BeaverTail \
 The same extract-into-a-service pattern should be applied next to the remaining
 in-view-model core logic, in rough priority order:
 
-1. **`FilteringEngine`** — move regex compilation/matching (`LineMatcher`) out of
-   the `LogContent` model into a dedicated matching service.
-2. **Model cleanup** — move transient presentation state (`minimapImage`,
+1. **Model cleanup** — move transient presentation state (`minimapImage`,
    `timelineImage`, `selectedFraction`, `isGeneratingTimeline`) off `LogTab`, and
    split `HighlightRule`'s cached `NSColor`/`NSRegularExpression` from its Codable
    data.
-3. **Replace UI Notifications** (e.g. `topPaneScrollToBottomNotification`) posted
+2. **Replace UI Notifications** (e.g. `topPaneScrollToBottomNotification`) posted
    from the view model with observable state the views derive behaviour from.
-4. **Inject `RecentFilesTracker`** instead of using the global singleton.
+3. **Inject `RecentFilesTracker`** instead of using the global singleton.
 
 Already completed on this path:
 
@@ -258,6 +258,10 @@ Already completed on this path:
   (with publish throttling) previously inlined in `LogViewModel.loadNewTab` and
   `triggerLazyLoadForTab`; both call sites now share it and only orchestrate tab
   state.
+- The **`FilteringEngine`** extraction — the regex compilation (`LineMatcher`) and
+  pure per-line matching previously living in the `LogContent` model file; the
+  model now owns only the memory-mapped byte scanning that consumes the compiled
+  matcher, and the view model compiles patterns via `FilteringEngine.compile`.
 
 Each step is independent and can land incrementally while keeping the app
 building — verify with:
