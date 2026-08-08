@@ -16,8 +16,8 @@ extension LogViewModel {
         guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
 
         DispatchQueue.main.async { [weak self] in
-            guard let self, let i = self.openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-            self.openTabs[i].isGeneratingTimeline = true
+            guard let self, self.openTabs.contains(where: { $0.id == tabID }) else { return }
+            self.isGeneratingTimelineByTab[tabID] = true
         }
 
         let activeRules = activeHighlightRules
@@ -44,10 +44,10 @@ extension LogViewModel {
               cache.count == activeRuleIDsCache.count else {
             DispatchQueue.main.async { [weak self] in
                 guard let self, let i = self.openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-                self.openTabs[i].timelineImage = nil
+                self.timelineImageByTab[tabID] = nil
                 self.openTabs[i].timelineMatches = []
                 self.openTabs[i].timelineActiveRuleIDs = []
-                self.openTabs[i].isGeneratingTimeline = false
+                self.isGeneratingTimelineByTab[tabID] = false
             }
             return
         }
@@ -89,17 +89,17 @@ extension LogViewModel {
                 guard let self else { return }
                 if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
                     if let result {
-                        self.openTabs[freshIndex].timelineImage = result.image
+                        self.timelineImageByTab[tabID] = result.image
                         self.openTabs[freshIndex].timelineMatches = result.matches
                         self.openTabs[freshIndex].timelineActiveRuleIDs = result.activeRuleIDs
                     } else {
                         // Nothing matched the filter — clear so the view shows the
                         // "No Highlight Rules matched" message instead of a blank pane.
-                        self.openTabs[freshIndex].timelineImage = nil
+                        self.timelineImageByTab[tabID] = nil
                         self.openTabs[freshIndex].timelineMatches = []
                         self.openTabs[freshIndex].timelineActiveRuleIDs = []
                     }
-                    self.openTabs[freshIndex].isGeneratingTimeline = false
+                    self.isGeneratingTimelineByTab[tabID] = false
                     self.objectWillChange.send()
                 }
             }

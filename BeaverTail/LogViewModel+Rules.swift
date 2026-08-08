@@ -37,8 +37,7 @@ extension LogViewModel {
         }
         if !savedRules.isEmpty,
            let data = savedRules.data(using: .utf8),
-           var decoded = try? JSONDecoder().decode([HighlightRule].self, from: data) {
-            for idx in 0 ..< decoded.count { decoded[idx].updateCachedObjects() }
+           let decoded = try? JSONDecoder().decode([HighlightRule].self, from: data) {
             highlightRules = decoded
         }
     }
@@ -60,9 +59,8 @@ extension LogViewModel {
         else { return }
         let path = String(arg.dropFirst(prefix.count))
         guard let data = FileManager.default.contents(atPath: path),
-              var decoded = try? JSONDecoder().decode([HighlightRule].self, from: data)
+              let decoded = try? JSONDecoder().decode([HighlightRule].self, from: data)
         else { return }
-        for idx in 0 ..< decoded.count { decoded[idx].updateCachedObjects() }
         highlightRules = decoded
     }
 }

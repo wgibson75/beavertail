@@ -42,7 +42,6 @@ struct LogTab: Identifiable, Equatable, Codable {
     /// Optional message shown in the filtered pane (e.g. invalid regex).
     var filterMessage: String?
 
-    var selectedFraction: CGFloat?
     var filterPattern: String = ""
     /// Per-tab "Set Point in Time" reference timestamp, used to show elapsed time in
     /// the timestamp bubble. Isolated to this tab so it never affects other tabs.
@@ -52,9 +51,7 @@ struct LogTab: Identifiable, Equatable, Codable {
     /// Per-tab auto-follow of new log lines (Follow toggle). Default: on.
     var followTail: Bool = true
 
-    var minimapImage: NSImage?
     var minimapMatches: [Int] = []
-    var timelineImage: NSImage?
 
     /// Comparison classification (good/bad) applied via the tab's right-click menu.
     /// `nil` when the tab is unmarked. Not persisted across launches.
@@ -71,7 +68,6 @@ struct LogTab: Identifiable, Equatable, Codable {
     var activeRuleIDs: [UUID] = []
     var timelineMatches: [[Int]] = []
     var timelineActiveRuleIDs: [UUID] = []
-    var isGeneratingTimeline: Bool = false
     /// True while the highlight-rule scan is running against the log (after the
     /// file finishes loading, before match results are ready). Drives the
     /// "Processing highlight filters…" message in the Timeline pane.
@@ -184,16 +180,12 @@ struct LogTab: Identifiable, Equatable, Codable {
         markedIndices: Set<Int> = [],
         displayedIndices: [Int] = [],
         filterMessage: String? = nil,
-        selectedFraction: CGFloat? = nil,
-        minimapImage: NSImage? = nil,
         minimapMatches: [Int] = [],
-        timelineImage: NSImage? = nil,
         highlightMatches: [[Int]] = [],
         activeRuleSignatures: [String] = [],
         activeRuleIDs: [UUID] = [],
         timelineMatches: [[Int]] = [],
         timelineActiveRuleIDs: [UUID] = [],
-        isGeneratingTimeline: Bool = false,
         isCurrentlyStreaming: Bool = false,
         filterPattern: String = "",
         isCaseInsensitive: Bool = true,
@@ -208,14 +200,11 @@ struct LogTab: Identifiable, Equatable, Codable {
         self.markedIndices = markedIndices
         self.displayedIndices = displayedIndices
         self.filterMessage = filterMessage
-        self.selectedFraction = selectedFraction
-        self.timelineImage = timelineImage
         self.highlightMatches = highlightMatches
         self.activeRuleSignatures = activeRuleSignatures
         self.activeRuleIDs = activeRuleIDs
         self.timelineMatches = timelineMatches
         self.timelineActiveRuleIDs = timelineActiveRuleIDs
-        self.isGeneratingTimeline = isGeneratingTimeline
         self.isCurrentlyStreaming = isCurrentlyStreaming
         self.filterPattern = filterPattern
         self.isCaseInsensitive = isCaseInsensitive
@@ -240,14 +229,11 @@ struct LogTab: Identifiable, Equatable, Codable {
         filteredIndices = []
         displayedIndices = markedIndices.sorted()
         filterMessage = nil
-        selectedFraction = nil
-        timelineImage = nil
         highlightMatches = []
         activeRuleSignatures = []
         activeRuleIDs = []
         timelineMatches = []
         timelineActiveRuleIDs = []
-        isGeneratingTimeline = false
         isCurrentlyStreaming = false
     }
 

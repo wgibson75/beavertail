@@ -196,7 +196,7 @@ extension LogViewModel {
                let bounds = openTabs[index].visibleBounds(for: content.count) {
                 target = min(max(target, bounds.lower), bounds.upper)
             }
-            openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: target, in: openTabs[index])
+            selectedFractionByTab[tabID] = minimapFraction(forOriginalIndex: target, in: openTabs[index])
         }
         // Nudge SwiftUI so the top pane picks up the new lineProvider/lineCount.
         objectWillChange.send()

@@ -77,8 +77,8 @@ final class NavigationCoordinateTests: XCTestCase {
     }
 
     func testSelectedOriginalIndexUsesStoredFraction() {
-        var tab = makeTab(lineCount: 100)
-        tab.selectedFraction = 0.5
+        let tab = makeTab(lineCount: 100)
+        viewModel.selectedFractionByTab[tab.id] = 0.5
         XCTAssertEqual(viewModel.selectedOriginalIndex(in: tab), 50)
     }
 

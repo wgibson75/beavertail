@@ -67,8 +67,6 @@ extension LogViewModel {
                 markedIndices: Set(metadata.markedIndices ?? []),
                 displayedIndices: (metadata.markedIndices ?? []).sorted(),
                 filterMessage: nil,
-                selectedFraction: nil,
-                minimapImage: nil,
                 isCurrentlyStreaming: false,
                 filterPattern: metadata.filterPattern,
                 isCaseInsensitive: metadata.isCaseInsensitive ?? true,

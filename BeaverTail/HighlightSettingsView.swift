@@ -1093,7 +1093,6 @@ struct HighlightSettingsView: View {
             rule.foregroundColorHex = fgColor.toHex()
             rule.backgroundColorHex = bgColor.toHex()
             rule.isCaseSensitive = isCaseSensitive
-            rule.updateCachedObjects()
             rulesStore.rules[index] = rule
         }
         // Keep the entry selected and re-baseline the "original" snapshot to the
@@ -1118,7 +1117,6 @@ struct HighlightSettingsView: View {
            let existing = rulesStore.rules.first(where: { $0.id == existingID }) {
             rule.groupID = existing.groupID
         }
-        rule.updateCachedObjects()
 
         if let existingID = existingID,
            let index = rulesStore.rules.firstIndex(where: { $0.id == existingID }) {
@@ -1154,7 +1152,6 @@ struct HighlightSettingsView: View {
             isCaseSensitive: isCaseSensitive
         )
         rule.groupID = groupID
-        rule.updateCachedObjects()
 
         if let lastIdx = rulesStore.rules.lastIndex(where: { $0.groupID == groupID }) {
             // Append to the end of the group's contiguous block.
@@ -1403,8 +1400,7 @@ struct HighlightSettingsView: View {
                 if let doc = try? decoder.decode(HighlightFiltersDocument.self, from: data) {
                     applyImportedDocument(doc)
                 } else {
-                    var rules = try decoder.decode([HighlightRule].self, from: data)
-                    for i in rules.indices { rules[i].updateCachedObjects() }
+                    let rules = try decoder.decode([HighlightRule].self, from: data)
                     rulesStore.groups = []
                     rulesStore.rules = rules
                 }

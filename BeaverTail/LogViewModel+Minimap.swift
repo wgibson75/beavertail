@@ -22,7 +22,7 @@ extension LogViewModel {
               content.count > 0,
               !activeRules.isEmpty,
               openTabs[index].highlightMatches.count == activeRules.count else {
-            openTabs[index].minimapImage = nil
+            minimapImageByTab[tabID] = nil
             return
         }
 
@@ -54,8 +54,8 @@ extension LogViewModel {
             guard let image = MinimapImageRenderer.render(input), !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                    self.openTabs[freshIndex].minimapImage = image
+                if self.openTabs.contains(where: { $0.id == tabID }) {
+                    self.minimapImageByTab[tabID] = image
                 }
             }
         }

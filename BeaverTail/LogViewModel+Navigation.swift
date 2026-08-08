@@ -66,7 +66,7 @@ extension LogViewModel {
     /// an original line index using the tab's *current* visible range. Returns `nil`
     /// when nothing is currently selected.
     func selectedOriginalIndex(in tab: LogTab) -> Int? {
-        guard let fraction = tab.selectedFraction else { return nil }
+        guard let fraction = selectedFractionByTab[tab.id] else { return nil }
         let span = tab.lineCount
         guard span > 0 else { return nil }
         guard span > 1 else { return visibleLowerBound(of: tab) }
@@ -141,7 +141,7 @@ extension LogViewModel {
         timelineSelectionIsMarks = false
 
         isScrubbingMinimap = false
-        openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: targetLine, in: openTabs[index])
+        selectedFractionByTab[tabID] = minimapFraction(forOriginalIndex: targetLine, in: openTabs[index])
         // Heading navigation must never trigger the top pane's horizontal
         // auto-scroll — even when the heading has a single entry and repeated
         // clicks re-target the already-selected row. Post an explicit request with
@@ -192,7 +192,7 @@ extension LogViewModel {
 
         let cachedMatches = openTabs[index].timelineMatches
         guard mappedRuleIndex >= 0, mappedRuleIndex < cachedMatches.count, !cachedMatches[mappedRuleIndex].isEmpty else {
-            openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: exactLine, in: openTabs[index])
+            selectedFractionByTab[tabID] = minimapFraction(forOriginalIndex: exactLine, in: openTabs[index])
             // Horizontal auto-scroll of long lines is only allowed on a repeated
             // click of the same entry AND when the bottom-pane scroll option is on.
             let isRepeatedTimelineClick = timelineCurrentLineByTab[tabID] == exactLine
@@ -237,7 +237,7 @@ extension LogViewModel {
 
         // We set scrubbing minimap to false because we want it to snap
         isScrubbingMinimap = false
-        openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: closestVal, in: openTabs[index])
+        selectedFractionByTab[tabID] = minimapFraction(forOriginalIndex: closestVal, in: openTabs[index])
         // Horizontal auto-scroll of long lines is only allowed on a repeated click
         // of the same entry AND when the bottom-pane scroll option is enabled.
         let isRepeatedTimelineClick = timelineCurrentLineByTab[tabID] == closestVal
@@ -259,7 +259,7 @@ extension LogViewModel {
         guard let tabID = selectedTabID, let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
         let totalCount = openTabs[index].lineCount
         guard totalCount > 0 else { return }
-        openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: originalIndex, in: openTabs[index])
+        selectedFractionByTab[tabID] = minimapFraction(forOriginalIndex: originalIndex, in: openTabs[index])
         // Post an explicit request carrying the caller's horizontal-scroll intent.
         // Programmatic "jump to a new line" callers (time-period selection, zoom
         // step-back, single bottom-pane clicks, mark navigation) pass `false`, so the
@@ -349,7 +349,7 @@ extension LogViewModel {
         } ?? false
         lastMinimapSelectedLineByTab[tabID] = finalExactLine
         isScrubbingMinimap = false
-        openTabs[index].selectedFraction = minimapFraction(forOriginalIndex: finalExactLine, in: openTabs[index])
+        selectedFractionByTab[tabID] = minimapFraction(forOriginalIndex: finalExactLine, in: openTabs[index])
         NotificationCenter.default.post(
             name: topPaneDirectScrollNotification,
             object: TopPaneDirectScrollRequest(
@@ -386,9 +386,9 @@ extension LogViewModel {
     }
 
     func jumpToFraction(_ fraction: CGFloat) {
-        guard let tabID = selectedTabID, let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        guard let tabID = selectedTabID, openTabs.contains(where: { $0.id == tabID }) else { return }
         isScrubbingMinimap = true
-        openTabs[index].selectedFraction = max(0, min(1, fraction))
+        selectedFractionByTab[tabID] = max(0, min(1, fraction))
     }
 
     func updateMinimapFromLineIndex(_ index: Int) {
@@ -397,7 +397,7 @@ extension LogViewModel {
         guard totalCount > 0 else { return }
         // `index` is an ORIGINAL line index (from `provider.originalIndex(at:)`);
         // convert it into the minimap image's visible-range fraction.
-        openTabs[tabIdx].selectedFraction = minimapFraction(forOriginalIndex: index, in: openTabs[tabIdx])
+        selectedFractionByTab[tabID] = minimapFraction(forOriginalIndex: index, in: openTabs[tabIdx])
         // Flash the current-position indicator so a top-pane line click is reflected
         // by the minimap's glow/shimmer at the new position.
         triggerMinimapShimmer()

@@ -82,7 +82,7 @@ enum FilteringEngine {
 /// (a literal that every match MUST contain), so the regex engine only runs on the
 /// few lines that could actually match. This is the key trick fast tools like
 /// Klogg / ripgrep use.
-enum LineMatcher {
+nonisolated enum LineMatcher {
     case literalSensitive(needle: [UInt8])
     case literalInsensitiveASCII(needleLower: [UInt8])
     /// Pure alternation of literals (e.g. `a|bb|ccc`) — matched in a single byte

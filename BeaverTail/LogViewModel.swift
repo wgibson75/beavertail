@@ -140,8 +140,13 @@ class LogViewModel: ObservableObject {
     var hiddenLineCounts: (above: Int, below: Int)? { currentTab?.hiddenLineCounts }
     var filteredProvider: LineProvider { currentTab?.filteredProvider ?? ArrayLineProvider(lines: []) }
     var filteredCount: Int { currentTab?.filteredCount ?? 0 }
-    var selectedFraction: CGFloat? { currentTab?.selectedFraction ?? nil }
-    var minimapImage: NSImage? { currentTab?.minimapImage ?? nil }
+    var selectedFraction: CGFloat? { selectedTabID.flatMap { selectedFractionByTab[$0] } }
+    var minimapImage: NSImage? { selectedTabID.flatMap { minimapImageByTab[$0] } }
+    /// Finished timeline image for the selected tab. Transient presentation state
+    /// held off the `LogTab` model (keyed by tab id in `timelineImageByTab`).
+    var timelineImage: NSImage? { selectedTabID.flatMap { timelineImageByTab[$0] } }
+    /// Whether the selected tab's timeline is currently being (re)generated.
+    var isGeneratingTimeline: Bool { selectedTabID.map { isGeneratingTimelineByTab[$0] ?? false } ?? false }
 
     @Published var isCaseInsensitive: Bool = true {
         didSet {
@@ -312,6 +317,14 @@ class LogViewModel: ObservableObject {
     /// re-pointed at whichever tab is selected (a paused background build keeps its
     /// entry until it completes or its tab is closed).
     var loadProgressByTab: [UUID: ScanProgress] = [:]
+    /// Transient per-tab presentation state moved off the `LogTab` model: the
+    /// finished minimap/timeline images, the current-position selection fraction,
+    /// and whether the timeline is regenerating. `@Published` so the views react,
+    /// keyed by tab id, and cleared when a tab closes.
+    @Published var minimapImageByTab: [UUID: NSImage] = [:]
+    @Published var timelineImageByTab: [UUID: NSImage] = [:]
+    @Published var selectedFractionByTab: [UUID: CGFloat] = [:]
+    @Published var isGeneratingTimelineByTab: [UUID: Bool] = [:]
     var sessionSaveDebounceTask: Task<Void, Never>?
     private var activeTailSource: DispatchSourceFileSystemObject?
     private var activeTailFileDescriptor: Int32 = -1
@@ -511,8 +524,6 @@ class LogViewModel: ObservableObject {
             content: nil,
             statusLines: ["Indexing log from disk… Please wait."],
             filteredIndices: [],
-            selectedFraction: nil,
-            minimapImage: nil,
             isCurrentlyStreaming: true,
             followTail: false
         )
@@ -605,6 +616,10 @@ class LogViewModel: ObservableObject {
             cancelUniqueLinesGeneration()
         }
         loadProgressByTab.removeValue(forKey: id)
+        minimapImageByTab.removeValue(forKey: id)
+        timelineImageByTab.removeValue(forKey: id)
+        selectedFractionByTab.removeValue(forKey: id)
+        isGeneratingTimelineByTab.removeValue(forKey: id)
         minimapTasks[id]?.cancel()
         minimapTasks.removeValue(forKey: id)
         highlightTasks[id]?.cancel()
@@ -835,7 +850,7 @@ class LogViewModel: ObservableObject {
         // refills progressively as matches arrive; the timeline clears here and is
         // regenerated once the scan completes.
         openTabs[tabIndex].filteredIndices = []
-        openTabs[tabIndex].timelineImage = nil
+        timelineImageByTab[tabID] = nil
         openTabs[tabIndex].timelineMatches = []
         openTabs[tabIndex].timelineActiveRuleIDs = []
         updateDisplayedIndices(for: tabIndex)

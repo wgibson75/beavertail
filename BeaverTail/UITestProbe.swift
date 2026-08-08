@@ -61,7 +61,7 @@ struct UITestProbe: View {
             probeText(Key.totalLineCount, "\(viewModel.totalLineCount)")
             probeText(Key.minimapRendered, viewModel.minimapImage != nil ? "1" : "0")
             probeText(Key.highlightMatchCount, "\(highlightMatchCount)")
-            probeText(Key.timelineRendered, viewModel.currentTab?.timelineImage != nil ? "1" : "0")
+            probeText(Key.timelineRendered, viewModel.timelineImage != nil ? "1" : "0")
             probeText(Key.timelineHeadingCount, "\(viewModel.currentTab?.timelineActiveRuleIDs.count ?? 0)")
             probeText(Key.activeRuleCount, "\(viewModel.activeHighlightRules.count)")
             probeText(Key.visibleLineCount, "\(viewModel.currentTab?.lineCount ?? 0)")

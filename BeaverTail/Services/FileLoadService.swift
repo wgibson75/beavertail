@@ -20,7 +20,7 @@ enum FileLoadService {
     /// segment is always published immediately so lines appear as early as
     /// possible; further partials inside this window are coalesced so a fast scan
     /// of a huge file doesn't flood the main thread with reloads.
-    static let publishThrottleMilliseconds: UInt64 = 100
+    nonisolated static let publishThrottleMilliseconds: UInt64 = 100
 
     /// Whether a partial snapshot should be published now.
     ///

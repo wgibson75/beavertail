@@ -627,7 +627,7 @@ private struct TimelinePaneView: View {
                                                     .foregroundStyle(.secondary)
                                             }
                                             .frame(maxWidth: .infinity, minHeight: geometry.size.height)
-                                        } else if let image = viewModel.currentTab?.timelineImage {
+                                        } else if let image = viewModel.timelineImage {
                                             let displayedHeight = max(geometry.size.height, image.size.height)
                                             ZStack(alignment: .top) {
                                                 Image(nsImage: image)
@@ -709,7 +709,7 @@ private struct TimelinePaneView: View {
                                                 .frame(width: 0, height: 0)
                                             }
                                         } else if viewModel.currentTab?.isProcessingHighlights == true
-                                                    || viewModel.currentTab?.isGeneratingTimeline == true {
+                                                    || viewModel.isGeneratingTimeline {
                                             VStack(spacing: 10) {
                                                 ProgressView()
                                                     .controlSize(.small)
@@ -754,9 +754,9 @@ private struct TimelinePaneView: View {
                 // so the user knows an update is in progress; it clears automatically
                 // once both the highlight scan and timeline render have finished.
                 .overlay {
-                    if viewModel.currentTab?.timelineImage != nil,
+                    if viewModel.timelineImage != nil,
                        viewModel.currentTab?.isProcessingHighlights == true
-                           || viewModel.currentTab?.isGeneratingTimeline == true {
+                           || viewModel.isGeneratingTimeline {
                         HStack(spacing: 8) {
                             ProgressView()
                                 .controlSize(.small)
