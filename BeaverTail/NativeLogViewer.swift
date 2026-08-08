@@ -102,6 +102,14 @@ private final class LogTableView: NSTableView, NSMenuItemValidation {
         win.level = .floating
         win.ignoresMouseEvents = true
         win.hidesOnDeactivate = true
+        // A programmatically-created NSWindow defaults to `isReleasedWhenClosed == true`,
+        // which makes `close()` *autorelease* the window. Since `dateWindow` is also a
+        // strong stored property that ARC releases when this table view deinits, that
+        // extra autorelease double-frees the window — the freed object is then released
+        // again when the main run loop drains its autorelease pool, crashing in
+        // `objc_release` inside `objc_autoreleasePoolPop`. Letting ARC be the sole owner
+        // (isReleasedWhenClosed = false) makes `close()` safe.
+        win.isReleasedWhenClosed = false
         return win
     }()
     private var layoutObservers: [NSObjectProtocol] = []
