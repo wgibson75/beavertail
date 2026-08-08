@@ -52,6 +52,7 @@ Introduced to lift "core logic" out of the previously monolithic `LogViewModel`:
 | `CLIInstaller` (`BTailInstaller`) | Installs the `btail` shell helper (filesystem + shell). | `BeaverTailApp` |
 | `TimelineImageRenderer` | Pure Core Graphics rendering of the per-rule density timeline. | `LogViewModel+Timeline` |
 | `LogComparisonService` | Pure log-line signature + good/bad "unique lines" comparison. | `LogViewModel+Compare` |
+| `LiveTailService` | File-monitoring state machine (poll → deleted / rotated / appended events) + line decoding for Follow. | `LogViewModel+LiveTailing` |
 | `IndexScanScheduler` | Coordinates CPU-heavy index scans across tabs. | (already a service) |
 
 `UpdateChecker` remains as the *presentation coordinator* (it owns the
@@ -75,6 +76,7 @@ Coverage by layer:
 | Layer / unit | What is covered |
 | --- | --- |
 | `LogComparisonService` | Line-signature normalisation; union/intersection "unique lines" set logic; cancellation; parallel-scan correctness. |
+| `LiveTailService` | Line decoding (`.newlines`-set splitting, partial-line remainder carry-over, no-newline buffering); the monitor's poll state machine — unchanged/appended/rotated-or-truncated/deleted transitions against real temp files. |
 | `LineMatcher` / `LogContent` | Pattern classification, required-literal extraction; memory-mapped indexing (CRLF, trailing newline, empty file); parallel `filterMatches` / `extractAllMatches`. |
 | `TimelineImageRenderer` | Bucketing, highest-priority line claiming, filtered vs. unfiltered columns, marks column, determinism, cancellation. |
 | `SessionStore` | Session JSON round-trip; bookmark encode/resolve incl. malformed and deleted-file failure modes. |
@@ -230,21 +232,25 @@ xcodebuild test -project BeaverTail.xcodeproj -scheme BeaverTail \
 The same extract-into-a-service pattern should be applied next to the remaining
 in-view-model core logic, in rough priority order:
 
-1. **`LiveTailService`** — file-monitoring state machine currently in
-   `LogViewModel+LiveTailing` (uses `FileHandle`/`FileManager` directly).
-2. **`MinimapImageRenderer`** — pure Core Graphics rendering in
+1. **`MinimapImageRenderer`** — pure Core Graphics rendering in
    `LogViewModel.generateMinimapData` (mirror of `TimelineImageRenderer`).
-3. **`FileLoadService`** — memory-map + incremental index build in
+2. **`FileLoadService`** — memory-map + incremental index build in
    `LogViewModel.loadNewTab` / `triggerLazyLoadForTab`.
-4. **`FilteringEngine`** — move regex compilation/matching (`LineMatcher`) out of
+3. **`FilteringEngine`** — move regex compilation/matching (`LineMatcher`) out of
    the `LogContent` model into a dedicated matching service.
-5. **Model cleanup** — move transient presentation state (`minimapImage`,
+4. **Model cleanup** — move transient presentation state (`minimapImage`,
    `timelineImage`, `selectedFraction`, `isGeneratingTimeline`) off `LogTab`, and
    split `HighlightRule`'s cached `NSColor`/`NSRegularExpression` from its Codable
    data.
-6. **Replace UI Notifications** (e.g. `topPaneScrollToBottomNotification`) posted
+5. **Replace UI Notifications** (e.g. `topPaneScrollToBottomNotification`) posted
    from the view model with observable state the views derive behaviour from.
-7. **Inject `RecentFilesTracker`** instead of using the global singleton.
+6. **Inject `RecentFilesTracker`** instead of using the global singleton.
+
+Already completed on this path: the **`LiveTailService`** extraction (the
+file-monitoring state machine previously inlined in `LogViewModel+LiveTailing`,
+which used `FileHandle`/`FileManager` directly)e
+file-monitoring state machine previously inlined in `LogViewModel+LiveTailing`,
+which used `FileHandle`/`FileManager` directly).
 
 Each step is independent and can land incrementally while keeping the app
 building — verify with:

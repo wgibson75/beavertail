@@ -15,59 +15,30 @@ extension LogViewModel {
         guard !tab.isUniqueLinesTab else { return }
         let fileURL = tab.fileURL
         let tabID = tab.id
+        let hasInitialContent = tab.content != nil
 
         let tailTask = Task.detached(priority: .utility) { [weak self] in
-            var lastKnownSize: UInt64 = 0
-            var wasFilePresent = true
-            if let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path) {
-                lastKnownSize = (attributes[.size] as? UInt64) ?? 0
-            } else {
-                wasFilePresent = tab.content != nil
-            }
-            var remainderData = Data()
+            // The file-monitoring state machine (last-known size, remainder bytes,
+            // presence) and all FileHandle/FileManager I/O live in the service; this
+            // loop only reacts to the events it emits.
+            let monitor = LiveTailFileMonitor(fileURL: fileURL, hasInitialContent: hasInitialContent)
 
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 if Task.isCancelled { break }
 
-                guard let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
-                      let currentSize = attributes[.size] as? UInt64 else {
-                    // File may be deleted or moved.
-                    if wasFilePresent {
-                        wasFilePresent = false
-                        lastKnownSize = 0
-                        remainderData = Data()
-                        await MainActor.run { [weak self] in
-                            guard let self = self else { return }
-                            if let idx = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                                self.openTabs[idx].content = nil
-                                self.openTabs[idx].filteredIndices = []
-                                self.openTabs[idx].highlightMatches = []
-                                self.openTabs[idx].markedIndices = []
-                                self.openTabs[idx].timelineMatches = []
-                                self.openTabs[idx].activeRuleIDs = []
-                                self.openTabs[idx].activeRuleSignatures = []
-                                self.openTabs[idx].timelineActiveRuleIDs = []
-                                self.openTabs[idx].statusLines = ["Unable to open file... File may have been deleted or moved."]
-                                self.fullyScannedRuleIDsByTab[tabID] = []
-                                self.updateDisplayedIndices(for: idx)
-                                self.generateMinimapData(for: tabID)
-                                self.generateTimelineData(for: tabID)
-                                self.objectWillChange.send()
-                            }
-                        }
-                    }
+                switch monitor.poll() {
+                case .noChange:
                     continue
-                }
 
-                if currentSize < lastKnownSize || !wasFilePresent {
-                    // Log rotated or truncated, OR log file re-created/written to after being deleted.
-                    lastKnownSize = 0
-                    remainderData = Data()
+                case .fileDisappeared:
+                    await MainActor.run { [weak self] in
+                        self?.handleLiveTailFileDisappeared(tabID: tabID)
+                    }
 
-                    // We need to re-read the file completely. To avoid blocking the tailing thread long,
-                    // we can trigger the standard lazy load (which resets content on a background task properly)
-                    // and bail this obsolete live tail stream.
+                case .reset:
+                    // Re-read the file completely via the standard lazy load (which resets
+                    // content on a background task properly) and bail this obsolete stream.
                     await MainActor.run { [weak self] in
                         guard let self = self else { return }
                         if let idx = self.openTabs.firstIndex(where: { $0.id == tabID }) {
@@ -76,69 +47,63 @@ extension LogViewModel {
                         }
                     }
                     return
-                }
 
-                if currentSize > lastKnownSize {
-                    guard let fileHandle = try? FileHandle(forReadingFrom: fileURL) else { continue }
-                    do {
-                        try fileHandle.seek(toOffset: lastKnownSize)
-                        let bytesToRead = currentSize - lastKnownSize
-                        let readCount = min(bytesToRead, 50 * 1024 * 1024)
-                        if let newData = try fileHandle.read(upToCount: Int(readCount)), !newData.isEmpty {
-                            lastKnownSize += UInt64(newData.count)
-
-                            var dataToProcess = remainderData
-                            dataToProcess.append(newData)
-
-                            if let lastNewline = dataToProcess.lastIndex(of: 0x0A) {
-                                let completeData = dataToProcess.prefix(upTo: lastNewline + 1)
-                                remainderData = Data(dataToProcess.suffix(from: lastNewline + 1))
-
-                                let text = String(decoding: completeData, as: UTF8.self)
-                                var linesArray = text.components(separatedBy: .newlines).map { $0.replacingOccurrences(of: "\r", with: "") }
-                                if linesArray.last?.isEmpty == true { linesArray.removeLast() }
-
-                                let finalLines = linesArray
-                                guard !finalLines.isEmpty else { continue }
-
-                                await MainActor.run { [weak self] in
-                                    guard let self = self else { return }
-                                    if let idx = self.openTabs.firstIndex(where: { $0.id == tabID }),
-                                       let content = self.openTabs[idx].content {
-                                        let baseOffset = content.count
-                                        content.appendLines(finalLines)
-                                        self.appendHighlightsForLiveTail(with: finalLines, startingAt: baseOffset)
-                                        // Append to the filtered set BEFORE regenerating the summaries, so
-                                        // the Timeline render sees this batch's newly-matched lines in the
-                                        // same pass (headings then reflect new matches a batch sooner).
-                                        self.appendFilterForLiveTail(with: finalLines, startingAt: baseOffset)
-                                        // Coalesce minimap/timeline regeneration. Regenerating on every
-                                        // ~200ms batch cancels the previous (utility-priority) render before
-                                        // it can finish, so under high-rate tailing the panes never settle
-                                        // and the Timeline sticks on "Processing highlight filters…". Throttle
-                                        // to a completed render at most ~every 500ms (with a trailing pass).
-                                        self.throttledRegenerateLiveTail(for: tabID)
-                                        self.objectWillChange.send()
-                                        if self.followTail {
-                                            DispatchQueue.main.async {
-                                                NotificationCenter.default.post(name: topPaneScrollToBottomNotification, object: nil)
-                                                // Note: we already post bottom pane notification in appendFilterForLiveTail
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                remainderData = dataToProcess
-                            }
-                        }
-                    } catch {
-                        print("Live tail read error: \(error)")
+                case .appended(let lines):
+                    await MainActor.run { [weak self] in
+                        self?.handleLiveTailAppend(lines, tabID: tabID)
                     }
-                    try? fileHandle.close()
                 }
             }
         }
         liveTailTasks[tabID] = tailTask
+    }
+
+    /// Applies a "file deleted or moved" event to the tab: clears its content and
+    /// derived state and surfaces the error status.
+    func handleLiveTailFileDisappeared(tabID: UUID) {
+        guard let idx = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        openTabs[idx].content = nil
+        openTabs[idx].filteredIndices = []
+        openTabs[idx].highlightMatches = []
+        openTabs[idx].markedIndices = []
+        openTabs[idx].timelineMatches = []
+        openTabs[idx].activeRuleIDs = []
+        openTabs[idx].activeRuleSignatures = []
+        openTabs[idx].timelineActiveRuleIDs = []
+        openTabs[idx].statusLines = ["Unable to open file... File may have been deleted or moved."]
+        fullyScannedRuleIDsByTab[tabID] = []
+        updateDisplayedIndices(for: idx)
+        generateMinimapData(for: tabID)
+        generateTimelineData(for: tabID)
+        objectWillChange.send()
+    }
+
+    /// Appends newly-tailed lines to the tab's content and updates the derived
+    /// filter/highlight/summary state.
+    func handleLiveTailAppend(_ finalLines: [String], tabID: UUID) {
+        guard let idx = openTabs.firstIndex(where: { $0.id == tabID }),
+              let content = openTabs[idx].content else { return }
+
+        let baseOffset = content.count
+        content.appendLines(finalLines)
+        appendHighlightsForLiveTail(with: finalLines, startingAt: baseOffset)
+        // Append to the filtered set BEFORE regenerating the summaries, so the
+        // Timeline render sees this batch's newly-matched lines in the same pass
+        // (headings then reflect new matches a batch sooner).
+        appendFilterForLiveTail(with: finalLines, startingAt: baseOffset)
+        // Coalesce minimap/timeline regeneration. Regenerating on every ~200ms batch
+        // cancels the previous (utility-priority) render before it can finish, so under
+        // high-rate tailing the panes never settle and the Timeline sticks on
+        // "Processing highlight filters…". Throttle to a completed render at most
+        // ~every 500ms (with a trailing pass).
+        throttledRegenerateLiveTail(for: tabID)
+        objectWillChange.send()
+        if followTail {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: topPaneScrollToBottomNotification, object: nil)
+                // Note: we already post the bottom pane notification in appendFilterForLiveTail.
+            }
+        }
     }
 
     func stopLiveTailing() {
