@@ -138,4 +138,60 @@ final class CompareTests: XCTestCase {
         XCTAssertEqual(resultsTabs.count, 1, "the results tab must be reused, not duplicated")
         XCTAssertEqual(resultsTabs.first?.content?.line(at: 0), "gamma")
     }
+
+    // MARK: - Comparison pipeline — Results tab positioning
+
+    /// The results tab must land immediately after the right-most marked tab,
+    /// regardless of the marked tabs' array positions (e.g. after being moved).
+    func testResultsTabPositionedAfterRightMostMarkedTab() async {
+        let a = makeTab(name: "a", lines: ["alpha"])
+        let good = makeTab(name: "good", lines: ["alpha", "beta"])
+        let bad = makeTab(name: "bad", lines: ["beta", "gamma"])
+        let z = makeTab(name: "z", lines: ["zeta"])
+        // Marked tabs sit in the middle; unmarked tabs on either side.
+        viewModel.openTabs = [a, good, bad, z]
+        viewModel.markTab(id: good.id, as: .good)
+        viewModel.markTab(id: bad.id, as: .bad)
+
+        viewModel.findUniqueLines(preferring: .bad)
+        await viewModel.uniqueLinesTask?.value
+
+        let names = viewModel.openTabs.map(\.name)
+        XCTAssertEqual(names, ["a", "good", "bad", LogViewModel.uniqueLinesTabName, "z"])
+    }
+
+    /// Reproduces the reported bug: after a first comparison creates the results tab,
+    /// re-marking a different (moved) set of tabs and comparing again must move the
+    /// reused results tab next to the new right-most marked tab — not leave it stranded.
+    func testReusedResultsTabRepositionsAfterReMarking() async {
+        let a = makeTab(name: "a", lines: ["alpha", "beta"])
+        let b = makeTab(name: "b", lines: ["beta", "gamma"])
+        let c = makeTab(name: "c", lines: ["alpha", "delta"])
+        let d = makeTab(name: "d", lines: ["delta", "omega"])
+        viewModel.openTabs = [a, b, c, d]
+
+        // First comparison on the left pair → results tab created after `b`.
+        viewModel.markTab(id: a.id, as: .good)
+        viewModel.markTab(id: b.id, as: .bad)
+        viewModel.findUniqueLines(preferring: .bad)
+        await viewModel.uniqueLinesTask?.value
+        XCTAssertEqual(
+            viewModel.openTabs.map(\.name),
+            ["a", "b", LogViewModel.uniqueLinesTabName, "c", "d"]
+        )
+
+        // Re-mark the right pair and compare again — the reused results tab must move.
+        viewModel.clearAllTabMarks()
+        viewModel.markTab(id: c.id, as: .good)
+        viewModel.markTab(id: d.id, as: .bad)
+        viewModel.findUniqueLines(preferring: .bad)
+        await viewModel.uniqueLinesTask?.value
+
+        XCTAssertEqual(
+            viewModel.openTabs.map(\.name),
+            ["a", "b", "c", "d", LogViewModel.uniqueLinesTabName],
+            "the reused results tab should follow the new right-most marked tab"
+        )
+        XCTAssertEqual(viewModel.openTabs.filter { $0.isUniqueLinesTab }.count, 1)
+    }
 }

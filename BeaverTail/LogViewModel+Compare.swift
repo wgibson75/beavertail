@@ -315,32 +315,57 @@ extension LogViewModel {
     }
 
     /// Returns the id of the single results tab, creating and selecting it if needed.
+    ///
+    /// The results tab is (re)positioned immediately after the right-most tab marked
+    /// Good or Bad on *every* comparison — not just when first created — so it always
+    /// sits next to the logs being compared. Without this, a *reused* results tab from
+    /// an earlier comparison would be stranded at its old position whenever the marked
+    /// tabs were moved or re-marked in the meantime.
     private func ensureUniqueLinesTab() -> UUID {
+        let tabID: UUID
         if let existing = openTabs.first(where: { $0.isUniqueLinesTab }) {
-            selectedTabID = existing.id
-            return existing.id
-        }
-        let newID = UUID()
-        var tab = LogTab(
-            id: newID,
-            name: Self.uniqueLinesTabName,
-            fileURL: Self.uniqueLinesPlaceholderURL,
-            content: nil,
-            statusLines: ["Finding unique lines…"],
-            isCurrentlyStreaming: false,
-            followTail: false
-        )
-        tab.isUniqueLinesTab = true
-        // Position the results tab immediately after the right-most tab marked Good
-        // or Bad, so it appears next to the logs being compared and is easy to find.
-        // Fall back to the end if nothing is marked.
-        if let lastMarkedIndex = openTabs.lastIndex(where: { $0.mark != nil }) {
-            openTabs.insert(tab, at: lastMarkedIndex + 1)
+            tabID = existing.id
         } else {
+            let newID = UUID()
+            var tab = LogTab(
+                id: newID,
+                name: Self.uniqueLinesTabName,
+                fileURL: Self.uniqueLinesPlaceholderURL,
+                content: nil,
+                statusLines: ["Finding unique lines…"],
+                isCurrentlyStreaming: false,
+                followTail: false
+            )
+            tab.isUniqueLinesTab = true
             openTabs.append(tab)
+            tabID = newID
         }
-        selectedTabID = newID
-        return newID
+        repositionUniqueLinesTab(tabID)
+        selectedTabID = tabID
+        return tabID
+    }
+
+    /// Moves the results tab so it sits immediately after the right-most tab marked
+    /// Good or Bad (ignoring the results tab itself). Falls back to the end of the
+    /// strip when nothing is marked. Works whether the tab is being created or reused.
+    private func repositionUniqueLinesTab(_ tabID: UUID) {
+        guard let currentIndex = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+
+        // Right-most marked tab, excluding the results tab itself, computed against the
+        // current array before the results tab is removed.
+        let lastMarkedIndex = openTabs.lastIndex(where: { $0.mark != nil && $0.id != tabID })
+
+        let tab = openTabs.remove(at: currentIndex)
+        let insertionIndex: Int
+        if let lastMarkedIndex {
+            // Removing the results tab shifts any index that sat to its right down by
+            // one, so adjust before inserting after the right-most marked tab.
+            let adjusted = lastMarkedIndex > currentIndex ? lastMarkedIndex - 1 : lastMarkedIndex
+            insertionIndex = adjusted + 1
+        } else {
+            insertionIndex = openTabs.count
+        }
+        openTabs.insert(tab, at: insertionIndex)
     }
 
     /// Loads the computed unique lines into the results tab (as in-memory content),
