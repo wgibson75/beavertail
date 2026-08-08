@@ -291,7 +291,8 @@ class LogViewModel: ObservableObject {
     )
     /// Prioritises the visible tab's index scan over background scans.
     let scanScheduler = IndexScanScheduler()
-    private var minimapTasks: [UUID: Task<Void, Never>] = [:]
+    /// Per-tab minimap draw task. Internal so `LogViewModel+Minimap.swift` can drive it.
+    var minimapTasks: [UUID: Task<Void, Never>] = [:]
     private var lastMinimapUpdate: [UUID: DispatchTime] = [:]
     /// Per-tab timeline draw task. Internal so `LogViewModel+Timeline.swift` can drive it.
     var timelineTasks: [UUID: Task<Void, Never>] = [:]
@@ -1224,113 +1225,6 @@ class LogViewModel: ObservableObject {
 
                     if isFinal || discoveredNewRules {
                         self.generateTimelineData(for: tabID)
-                    }
-                }
-            }
-        }
-    }
-
-    func generateMinimapData(for tabID: UUID) {
-        minimapTasks[tabID]?.cancel()
-        guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-        let activeRules = activeHighlightRules
-
-        guard let content = openTabs[index].content, content.count > 0, !activeRules.isEmpty, openTabs[index].highlightMatches.count == activeRules.count else {
-            openTabs[index].minimapImage = nil
-            return
-        }
-
-        let cache = openTabs[index].highlightMatches
-        let colors = activeRules.map { $0.nsBackgroundColor.cgColor }
-
-        let totalLines = content.count
-        // Restrict the minimap to the visible range when lines are hidden so its
-        // highlights don't reference lines the user has hidden.
-        let vBounds = openTabs[index].visibleBounds(for: totalLines)
-        let rangeStart = vBounds?.lower ?? 0
-        let rangeEnd = vBounds.map { $0.upper + 1 } ?? totalLines
-        let rangeSpan = max(0, rangeEnd - rangeStart)
-        minimapTasks[tabID] = Task.detached(priority: .utility) { [weak self] in
-            let imgWidth = 30, imgHeight = minimapImageHeight
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            guard rangeSpan > 0, let ctx = CGContext(
-                data: nil, width: imgWidth, height: imgHeight,
-                bitsPerComponent: 8, bytesPerRow: imgWidth * 4, space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-            ) else { return }
-
-            ctx.translateBy(x: 0, y: CGFloat(imgHeight))
-            ctx.scaleBy(x: 1.0, y: -1.0)
-
-            let bSearch: ([Int], Int) -> Int = { arr, el in
-                var low = 0
-                var high = arr.count
-                while low < high {
-                    let mid = low + (high - low) / 2
-                    if arr[mid] < el { low = mid + 1 } else { high = mid }
-                }
-                return low
-            }
-
-            for bucket in 0..<imgHeight where rangeSpan >= imgHeight {
-                if Task.isCancelled { return }
-                let bucketStart = rangeStart + Int(Double(bucket) * Double(rangeSpan) / Double(imgHeight))
-                if bucketStart >= rangeEnd { break }
-
-                let bucketEnd = bucket == imgHeight - 1
-                    ? rangeEnd
-                    : rangeStart + Int(Double(bucket + 1) * Double(rangeSpan) / Double(imgHeight))
-                let linesInBucket = bucketEnd - bucketStart
-                if linesInBucket <= 0 { continue }
-
-                var matchCount = 0
-                var matchColor: CGColor?
-
-                for mIdx in 0..<cache.count {
-                    let matches = cache[mIdx]
-                    let lower = bSearch(matches, bucketStart)
-                    let upper = bSearch(matches, bucketEnd)
-                    let count = upper - lower
-                    if count > 0 {
-                        matchCount += count
-                        if matchColor == nil { matchColor = colors[mIdx] }
-                    }
-                }
-
-                guard matchCount > 0, let color = matchColor else { continue }
-                let density = CGFloat(matchCount) / CGFloat(linesInBucket) // Note: total sampled is now actual lines
-                let alpha = max(0.45, min(1.0, density * 5.0)) // scaled to accommodate
-                if let scaledColor = color.copy(alpha: alpha) {
-                    ctx.setFillColor(scaledColor)
-                    ctx.fill(CGRect(x: 0, y: bucket, width: imgWidth, height: 1))
-                }
-            }
-
-            // FEW lines (fewer visible lines than pixel rows): each visible line spans
-            // one or more pixel rows. Fill each matched line's FULL band, top-anchored,
-            // so the first visible line's highlight begins at the very top of the
-            // minimap and stays aligned with the current-position indicator. Draw
-            // lower-priority rules first so the highest-priority rule wins on overlap.
-            if rangeSpan < imgHeight {
-                for mIdx in stride(from: cache.count - 1, through: 0, by: -1) {
-                    if Task.isCancelled { return }
-                    guard mIdx < colors.count, let color = colors[mIdx].copy(alpha: 1.0) else { continue }
-                    ctx.setFillColor(color)
-                    for line in cache[mIdx] where line >= rangeStart && line < rangeEnd {
-                        let rel = line - rangeStart
-                        let yTop = Int(Double(rel) * Double(imgHeight) / Double(rangeSpan))
-                        let yBot = Int(Double(rel + 1) * Double(imgHeight) / Double(rangeSpan))
-                        ctx.fill(CGRect(x: 0, y: yTop, width: imgWidth, height: max(1, yBot - yTop)))
-                    }
-                }
-            }
-
-            if let finalCGImage = ctx.makeImage() {
-                let finalBitmap = NSImage(cgImage: finalCGImage, size: NSSize(width: imgWidth, height: imgHeight))
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
-                        self.openTabs[freshIndex].minimapImage = finalBitmap
                     }
                 }
             }
