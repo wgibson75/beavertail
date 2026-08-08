@@ -37,8 +37,8 @@ extension LogViewModel {
         // and pin it to the top of both panes so it doesn't appear to jump to a
         // different line. Deferred so the panes have rebuilt with the new range first.
         DispatchQueue.main.async {
-            NotificationCenter.default.post(name: topPaneScrollToRowNotification, object: 0)
-            NotificationCenter.default.post(name: bottomPaneScrollToRowNotification, object: 0)
+            self.topPaneScrollEvents.send(.toRow(0, centered: false))
+            self.bottomPaneScrollEvents.send(.toRow(0, centered: false))
         }
     }
 
@@ -110,7 +110,7 @@ extension LogViewModel {
             if selectionChanged {
                 self?.syncSelectionFromFilteredIndex(targetSelected)
             }
-            NotificationCenter.default.post(name: bottomPaneScrollToRowNotification, object: 0)
+            self?.bottomPaneScrollEvents.send(.toRow(0, centered: false))
         }
     }
 

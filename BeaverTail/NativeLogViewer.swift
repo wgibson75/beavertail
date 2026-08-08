@@ -3,6 +3,7 @@
 //  BeaverTail
 //
 import AppKit
+import Combine
 import SwiftUI
 // MARK: - LogTableView
 // NSTableView subclass that adds right-click "Copy" context menu and ⌘C support.
@@ -729,8 +730,10 @@ struct NativeLogViewer: NSViewRepresentable {
     let highlightMatches: [[Int]]
     let activeRuleIDs: [UUID]
     let selectedFraction: CGFloat?
-    let directScrollNotificationName: Notification.Name?
-    let tailScrollNotificationName: Notification.Name
+    /// View-model-owned stream of scroll commands for this pane, replacing the
+    /// former global `NotificationCenter` scroll channels. Subscribed once in
+    /// `makeNSView`; the subscription is retained by the coordinator.
+    let scrollCommands: AnyPublisher<PaneScrollCommand, Never>
     let showLineNumbers: Bool
     let showTimestampBubble: Bool
     var bottomPaneHorizontalScroll: Bool = false
@@ -755,8 +758,8 @@ struct NativeLogViewer: NSViewRepresentable {
     /// Initializer for the Top Pane (Full Unfiltered Log View)
     init(
         provider: LineProvider, textColor: NSColor, rules: [HighlightRule], highlightMatches: [[Int]], activeRuleIDs: [UUID], selectedFraction: CGFloat?,
-        directScrollNotificationName: Notification.Name?,
-        tailScrollNotificationName: Notification.Name, showLineNumbers: Bool,
+        scrollCommands: AnyPublisher<PaneScrollCommand, Never>,
+        showLineNumbers: Bool,
         showTimestampBubble: Bool,
         referenceTimestamp: Date? = nil,
         fontSize: CGFloat = 12,
@@ -783,8 +786,7 @@ struct NativeLogViewer: NSViewRepresentable {
         self.highlightMatches = highlightMatches
         self.activeRuleIDs = activeRuleIDs
         self.selectedFraction = selectedFraction
-        self.directScrollNotificationName = directScrollNotificationName
-        self.tailScrollNotificationName = tailScrollNotificationName
+        self.scrollCommands = scrollCommands
         self.showLineNumbers = showLineNumbers
         self.showTimestampBubble = showTimestampBubble
         self.referenceTimestamp = referenceTimestamp
@@ -809,7 +811,7 @@ struct NativeLogViewer: NSViewRepresentable {
     /// Initializer for the Bottom Pane (Filtered Log View)
     init(
         filteredProvider: LineProvider, textColor: NSColor, rules: [HighlightRule], highlightMatches: [[Int]], activeRuleIDs: [UUID],
-        selectedFraction: CGFloat?, tailScrollNotificationName: Notification.Name,
+        selectedFraction: CGFloat?, scrollCommands: AnyPublisher<PaneScrollCommand, Never>,
         bottomPaneHorizontalScroll: Bool = false,
         showLineNumbers: Bool, showTimestampBubble: Bool, referenceTimestamp: Date? = nil, fontSize: CGFloat = 12,
         markedIndices: Set<Int> = [],
@@ -835,8 +837,7 @@ struct NativeLogViewer: NSViewRepresentable {
         self.highlightMatches = highlightMatches
         self.activeRuleIDs = activeRuleIDs
         self.selectedFraction = selectedFraction
-        directScrollNotificationName = nil
-        self.tailScrollNotificationName = tailScrollNotificationName
+        self.scrollCommands = scrollCommands
         self.showLineNumbers = showLineNumbers
         self.showTimestampBubble = showTimestampBubble
         self.referenceTimestamp = referenceTimestamp
@@ -902,25 +903,17 @@ struct NativeLogViewer: NSViewRepresentable {
         context.coordinator.scrollKeeper.restoreOffset = scrollRestoreOffset
         context.coordinator.scrollKeeper.onOffsetChanged = onScrollOffsetChanged
         context.coordinator.scrollKeeper.attach(to: scrollView)
-        // SELECTIVE ROW JUMP OBSERVER (From clicking the bottom pane)
-        if let notificationName = directScrollNotificationName {
-            NotificationCenter.default.addObserver(
-                forName: notificationName,
-                object: nil,
-                queue: .main
-            ) { notification in
-                let requestedRow: Int?
-                let explicitHorizontalScroll: Bool?
-                if let request = notification.object as? TopPaneDirectScrollRequest {
-                    requestedRow = request.lineIndex
-                    explicitHorizontalScroll = request.allowsHorizontalScroll
-                } else if let row = notification.object as? Int {
-                    requestedRow = row
-                    explicitHorizontalScroll = nil
-                } else {
-                    requestedRow = nil
-                    explicitHorizontalScroll = nil
-                }
+        // SELECTIVE ROW JUMP – top pane direct scroll (from clicking the bottom pane).
+        scrollCommands
+            .compactMap { command -> TopPaneDirectScrollRequest? in
+                if case .direct(let request) = command { return request }
+                return nil
+            }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak tableView, showLineNumbers] request in
+                guard let tableView = tableView else { return }
+                let requestedRow: Int? = request.lineIndex
+                let explicitHorizontalScroll: Bool? = request.allowsHorizontalScroll
                 if let row = requestedRow, row >= 0 && row < tableView.numberOfRows {
                     // ── Fast path: pure scroll pause/resume toggle ──────────────
                     // When an explicit horizontal-scroll request arrives for a row
@@ -1023,38 +1016,41 @@ struct NativeLogViewer: NSViewRepresentable {
                     }
                 }
             }
-        }
+            .store(in: &context.coordinator.scrollCommandCancellables)
         // LIVE TAIL AUTOMATIC SCROLL TO BOTTOM HOOK
-        NotificationCenter.default.addObserver(
-            forName: tailScrollNotificationName,
-            object: nil,
-            queue: .main
-        ) { [weak tableView] notification in
-            guard let tableView = tableView else { return }
-            // A "force" post (Follow toggled on / filter completed) always snaps to the
-            // bottom and clears any scroll-up suspension; a plain live-tail append is
-            // ignored while the user has scrolled up so they can read older lines.
-            let force = (notification.object as? String) == forceScrollToBottomMarker
-            if force {
-                tableView.followSuspendedByScroll = false
-            } else if tableView.followSuspendedByScroll {
-                return
+        scrollCommands
+            .compactMap { command -> Bool? in
+                if case .toBottom(let force) = command { return force }
+                return nil
             }
-            let lastRow = tableView.numberOfRows - 1
-            if lastRow >= 0 {
-                DispatchQueue.main.async {
-                    tableView.scrollRowToVisible(lastRow)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak tableView] force in
+                guard let tableView = tableView else { return }
+                // A "force" command (Follow toggled on / filter completed) always snaps
+                // to the bottom and clears any scroll-up suspension; a plain live-tail
+                // append is ignored while the user has scrolled up so they can read
+                // older lines.
+                if force {
+                    tableView.followSuspendedByScroll = false
+                } else if tableView.followSuspendedByScroll {
+                    return
+                }
+                let lastRow = tableView.numberOfRows - 1
+                if lastRow >= 0 {
+                    DispatchQueue.main.async {
+                        tableView.scrollRowToVisible(lastRow)
+                    }
                 }
             }
-        }
+            .store(in: &context.coordinator.scrollCommandCancellables)
         // SCROLL BACK TO TOP HOOK – shows the first matching lines when a filter is
-        // applied while Follow is disabled. Bottom pane only.
-        if isFiltered {
-            NotificationCenter.default.addObserver(
-                forName: bottomPaneScrollToTopNotification,
-                object: nil,
-                queue: .main
-            ) { _ in
+        // applied while Follow is disabled. Bottom pane only (only the bottom pane's
+        // stream ever emits `.toTop`).
+        scrollCommands
+            .filter { if case .toTop = $0 { return true } else { return false } }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak tableView] _ in
+                guard let tableView = tableView else { return }
                 DispatchQueue.main.async {
                     if let clipView = tableView.enclosingScrollView?.contentView {
                         clipView.setBoundsOrigin(NSPoint(x: clipView.bounds.origin.x, y: 0))
@@ -1064,47 +1060,38 @@ struct NativeLogViewer: NSViewRepresentable {
                     }
                 }
             }
-        }
-        // MARK: BLOCK NAVIGATION – bottom pane only
-        if isFiltered {
-            installScrollRowObserver(name: bottomPaneScrollToRowNotification, centered: false, tableView: tableView)
-        }
-        if isFiltered {
-            installScrollRowObserver(name: bottomPaneScrollToRowCenteredNotification, centered: true, tableView: tableView)
-        }
-        // SCROLL A ROW TO THE TOP AND SELECT IT – top pane only (e.g. after "Hide
-        // Lines Above" so the selected line sits at the very top).
-        if !isFiltered {
-            installScrollRowObserver(name: topPaneScrollToRowNotification, centered: false, tableView: tableView)
-        }
-        return scrollView
-    }
-    /// Installs an observer that, when `name` is posted with an `Int` row payload,
-    /// scrolls that row into view and selects it. When `centered` is true the row is
-    /// vertically centred (clamped to the valid scroll range when the content is too
-    /// short to fully centre it); otherwise it is scrolled to the top of the pane.
-    private func installScrollRowObserver(name: Notification.Name, centered: Bool, tableView: LogTableView) {
-        NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { notification in
-            guard let row = notification.object as? Int else { return }
-            DispatchQueue.main.async {
-                guard tableView.numberOfRows > 0 else { return }
-                let clamped = max(0, min(row, tableView.numberOfRows - 1))
-                let rowRect = tableView.rect(ofRow: clamped)
-                if let clipView = tableView.enclosingScrollView?.contentView {
-                    let viewportHeight = clipView.bounds.height
-                    let maxY = max(0, tableView.bounds.height - viewportHeight)
-                    let desiredY = centered ? rowRect.midY - viewportHeight / 2 : rowRect.minY
-                    let targetY = max(0, min(desiredY, maxY))
-                    clipView.setBoundsOrigin(NSPoint(x: clipView.bounds.origin.x, y: targetY))
-                    tableView.enclosingScrollView?.reflectScrolledClipView(clipView)
-                }
-                if let coord = tableView.delegate as? NativeLogViewer.Coordinator {
-                    coord.isProgrammaticallySelecting = true
-                    tableView.selectRowIndexes(IndexSet(integer: clamped), byExtendingSelection: false)
-                    coord.isProgrammaticallySelecting = false
+            .store(in: &context.coordinator.scrollCommandCancellables)
+        // ROW JUMP – block navigation (bottom pane) and "Hide Lines Above" (top pane).
+        // Only each pane's own stream emits the rows relevant to it.
+        scrollCommands
+            .compactMap { command -> (row: Int, centered: Bool)? in
+                if case .toRow(let row, let centered) = command { return (row, centered) }
+                return nil
+            }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak tableView] payload in
+                guard let tableView = tableView else { return }
+                DispatchQueue.main.async {
+                    guard tableView.numberOfRows > 0 else { return }
+                    let clamped = max(0, min(payload.row, tableView.numberOfRows - 1))
+                    let rowRect = tableView.rect(ofRow: clamped)
+                    if let clipView = tableView.enclosingScrollView?.contentView {
+                        let viewportHeight = clipView.bounds.height
+                        let maxY = max(0, tableView.bounds.height - viewportHeight)
+                        let desiredY = payload.centered ? rowRect.midY - viewportHeight / 2 : rowRect.minY
+                        let targetY = max(0, min(desiredY, maxY))
+                        clipView.setBoundsOrigin(NSPoint(x: clipView.bounds.origin.x, y: targetY))
+                        tableView.enclosingScrollView?.reflectScrolledClipView(clipView)
+                    }
+                    if let coord = tableView.delegate as? NativeLogViewer.Coordinator {
+                        coord.isProgrammaticallySelecting = true
+                        tableView.selectRowIndexes(IndexSet(integer: clamped), byExtendingSelection: false)
+                        coord.isProgrammaticallySelecting = false
+                    }
                 }
             }
-        }
+            .store(in: &context.coordinator.scrollCommandCancellables)
+        return scrollView
     }
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let tableView = nsView.documentView as? LogTableView else { return }
@@ -1229,6 +1216,9 @@ struct NativeLogViewer: NSViewRepresentable {
         let scrollKeeper = ScrollPositionKeeper()
         /// Re-applies this pane's remembered line selection after a tab switch.
         let selectionRestorer = SelectionRestorer()
+        /// Retains the subscriptions to the view model's per-pane scroll command
+        /// stream (installed in `makeNSView`).
+        var scrollCommandCancellables = Set<AnyCancellable>()
         /// Returns the display text for a row — used by LogTableView for copy operations.
         func textForRow(_ row: Int) -> String {
             return provider.line(at: row)

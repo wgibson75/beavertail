@@ -4,6 +4,7 @@
 //
 
 import AppKit
+import Combine
 import Foundation
 import SwiftUI
 
@@ -148,13 +149,10 @@ extension LogViewModel {
         // allowsHorizontalScroll:false so the handler's "repeated click" heuristic
         // (selectedRow == row) can't misfire. Horizontal scrolling is reserved for
         // clicking a highlight entry (log line) twice.
-        NotificationCenter.default.post(
-            name: topPaneDirectScrollNotification,
-            object: TopPaneDirectScrollRequest(
-                lineIndex: topPaneRow(forOriginalIndex: targetLine, in: openTabs[index]),
-                allowsHorizontalScroll: false
-            )
-        )
+        topPaneScrollEvents.send(.direct(TopPaneDirectScrollRequest(
+            lineIndex: topPaneRow(forOriginalIndex: targetLine, in: openTabs[index]),
+            allowsHorizontalScroll: false
+        )))
         triggerMinimapShimmer()
         triggerTimelineJump()
     }
@@ -199,13 +197,10 @@ extension LogViewModel {
             // Record the current position so a subsequent heading click continues
             // forward from here.
             timelineCurrentLineByTab[tabID] = exactLine
-            NotificationCenter.default.post(
-                name: topPaneDirectScrollNotification,
-                object: TopPaneDirectScrollRequest(
-                    lineIndex: topPaneRow(forOriginalIndex: exactLine, in: openTabs[index]),
-                    allowsHorizontalScroll: isRepeatedTimelineClick && bottomPaneHorizontalScroll
-                )
-            )
+            topPaneScrollEvents.send(.direct(TopPaneDirectScrollRequest(
+                lineIndex: topPaneRow(forOriginalIndex: exactLine, in: openTabs[index]),
+                allowsHorizontalScroll: isRepeatedTimelineClick && bottomPaneHorizontalScroll
+            )))
             triggerTimelineJump()
             return
         }
@@ -245,13 +240,10 @@ extension LogViewModel {
         // forward from here.
         timelineCurrentLineByTab[tabID] = closestVal
         // Publish the scroll offset immediately.
-        NotificationCenter.default.post(
-            name: topPaneDirectScrollNotification,
-            object: TopPaneDirectScrollRequest(
-                lineIndex: topPaneRow(forOriginalIndex: closestVal, in: openTabs[index]),
-                allowsHorizontalScroll: isRepeatedTimelineClick && bottomPaneHorizontalScroll
-            )
-        )
+        topPaneScrollEvents.send(.direct(TopPaneDirectScrollRequest(
+            lineIndex: topPaneRow(forOriginalIndex: closestVal, in: openTabs[index]),
+            allowsHorizontalScroll: isRepeatedTimelineClick && bottomPaneHorizontalScroll
+        )))
         triggerTimelineJump()
     }
 
@@ -269,13 +261,10 @@ extension LogViewModel {
         // `selectedRow == row` heuristic that misfired (the row is frequently already
         // selected by a preceding visibility change) and made the top pane scroll
         // horizontally by mistake.
-        NotificationCenter.default.post(
-            name: topPaneDirectScrollNotification,
-            object: TopPaneDirectScrollRequest(
-                lineIndex: topPaneRow(forOriginalIndex: originalIndex, in: openTabs[index]),
-                allowsHorizontalScroll: allowsHorizontalScroll
-            )
-        )
+        topPaneScrollEvents.send(.direct(TopPaneDirectScrollRequest(
+            lineIndex: topPaneRow(forOriginalIndex: originalIndex, in: openTabs[index]),
+            allowsHorizontalScroll: allowsHorizontalScroll
+        )))
         // Flash the current-position indicator so the new position stands out. Covers
         // bottom-pane filtered-line clicks, mark-block navigation and zoom step-back,
         // all of which route through here.
@@ -350,24 +339,18 @@ extension LogViewModel {
         lastMinimapSelectedLineByTab[tabID] = finalExactLine
         isScrubbingMinimap = false
         selectedFractionByTab[tabID] = minimapFraction(forOriginalIndex: finalExactLine, in: openTabs[index])
-        NotificationCenter.default.post(
-            name: topPaneDirectScrollNotification,
-            object: TopPaneDirectScrollRequest(
-                lineIndex: topPaneRow(forOriginalIndex: finalExactLine, in: openTabs[index]),
-                // Only auto-scroll long lines horizontally when a repeated minimap
-                // selection coincides with the bottom-pane scroll option being on.
-                allowsHorizontalScroll: isRepeatedMinimapSelection && bottomPaneHorizontalScroll
-            )
-        )
+        topPaneScrollEvents.send(.direct(TopPaneDirectScrollRequest(
+            lineIndex: topPaneRow(forOriginalIndex: finalExactLine, in: openTabs[index]),
+            // Only auto-scroll long lines horizontally when a repeated minimap
+            // selection coincides with the bottom-pane scroll option being on.
+            allowsHorizontalScroll: isRepeatedMinimapSelection && bottomPaneHorizontalScroll
+        )))
         // If the jumped-to line is also present in the bottom pane's filtered set,
         // scroll the bottom pane to it (vertically centred) and record it as the
         // bottom pane's selected line so the highlight tracks the minimap jump.
         if let bottomRow = bottomPaneRow(forOriginalIndex: finalExactLine) {
             bottomPaneSelectedOriginal[tabID] = finalExactLine
-            NotificationCenter.default.post(
-                name: bottomPaneScrollToRowCenteredNotification,
-                object: bottomRow
-            )
+            bottomPaneScrollEvents.send(.toRow(bottomRow, centered: true))
         }
         // If the snapped line belongs to a rule that also has a Timeline column,
         // select and highlight that column's entry (mirroring a heading click) and

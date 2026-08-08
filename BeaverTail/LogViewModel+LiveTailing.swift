@@ -100,8 +100,8 @@ extension LogViewModel {
         objectWillChange.send()
         if followTail {
             DispatchQueue.main.async {
-                NotificationCenter.default.post(name: topPaneScrollToBottomNotification, object: nil)
-                // Note: we already post the bottom pane notification in appendFilterForLiveTail.
+                self.topPaneScrollEvents.send(.toBottom(force: false))
+                // Note: we already send the bottom pane command in appendFilterForLiveTail.
             }
         }
     }
@@ -183,7 +183,7 @@ extension LogViewModel {
             updateDisplayedIndices(for: tabIndex)
             if followTail {
                 DispatchQueue.main.async {
-                    NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: nil)
+                    self.bottomPaneScrollEvents.send(.toBottom(force: false))
                 }
             }
         }

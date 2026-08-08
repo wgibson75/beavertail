@@ -5,6 +5,7 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import Combine
 
 struct ContentView: View {
     @EnvironmentObject var viewModel: LogViewModel
@@ -453,8 +454,7 @@ private struct TopPaneView: View {
                     highlightMatches: viewModel.currentTab?.highlightMatches ?? [],
                     activeRuleIDs: viewModel.currentTab?.activeRuleIDs ?? [],
                     selectedFraction: viewModel.selectedFraction,
-                    directScrollNotificationName: topPaneDirectScrollNotification,
-                    tailScrollNotificationName: topPaneScrollToBottomNotification,
+                    scrollCommands: viewModel.topPaneScrollEvents.eraseToAnyPublisher(),
                     showLineNumbers: viewModel.showLineNumbers,
                     showTimestampBubble: viewModel.showTimestampBubble,
                     referenceTimestamp: viewModel.referenceTimestamp,
@@ -992,7 +992,7 @@ private struct BottomPaneView: View {    @ObservedObject var viewModel: LogViewM
                             highlightMatches: viewModel.currentTab?.highlightMatches ?? [],
                             activeRuleIDs: viewModel.currentTab?.activeRuleIDs ?? [],
                             selectedFraction: viewModel.selectedFraction,
-                            tailScrollNotificationName: bottomPaneScrollToBottomNotification,
+                            scrollCommands: viewModel.bottomPaneScrollEvents.eraseToAnyPublisher(),
                             bottomPaneHorizontalScroll: viewModel.bottomPaneHorizontalScroll,
                             showLineNumbers: viewModel.showLineNumbers,
                             showTimestampBubble: viewModel.showTimestampBubble,

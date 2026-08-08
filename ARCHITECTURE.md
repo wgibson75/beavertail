@@ -238,13 +238,7 @@ xcodebuild test -project BeaverTail.xcodeproj -scheme BeaverTail \
 The same extract-into-a-service pattern should be applied next to the remaining
 in-view-model core logic, in rough priority order:
 
-1. **Model cleanup** — move transient presentation state (`minimapImage`,
-   `timelineImage`, `selectedFraction`, `isGeneratingTimeline`) off `LogTab`, and
-   split `HighlightRule`'s cached `NSColor`/`NSRegularExpression` from its Codable
-   data.
-2. **Replace UI Notifications** (e.g. `topPaneScrollToBottomNotification`) posted
-   from the view model with observable state the views derive behaviour from.
-3. **Inject `RecentFilesTracker`** instead of using the global singleton.
+1. **Inject `RecentFilesTracker`** instead of using the global singleton.
 
 Already completed on this path:
 
@@ -262,6 +256,24 @@ Already completed on this path:
   pure per-line matching previously living in the `LogContent` model file; the
   model now owns only the memory-mapped byte scanning that consumes the compiled
   matcher, and the view model compiles patterns via `FilteringEngine.compile`.
+- **Model cleanup** — the transient presentation state (`minimapImage`,
+  `timelineImage`, `selectedFraction`, `isGeneratingTimeline`) moved off the
+  `LogTab` model into `@Published` per-tab dictionaries on `LogViewModel`, and
+  `HighlightRule` reduced to pure Codable value data with its derived
+  `NSColor`/`NSRegularExpression` objects served by the memoising
+  `HighlightObjectCache` (so there is no longer an `updateCachedObjects()` to
+  forget after a mutation).
+- **UI notifications replaced with observable view-model state** — the pane-scroll
+  commands that were broadcast through global `NotificationCenter` channels
+  (`topPaneScrollToBottomNotification`, `…DirectScroll`, `…ScrollToRow`, etc.) are
+  now a typed `PaneScrollCommand` published on the view model's own
+  `topPaneScrollEvents` / `bottomPaneScrollEvents` streams. Each `NativeLogViewer`
+  subscribes (via Combine) to the stream for its pane and performs the imperative
+  `NSTableView` scroll, so scroll behaviour is driven by view-model state rather
+  than an untyped global singleton. (App/menu lifecycle notifications —
+  open-file-URL, open-file menu, show-help — deliberately remain on
+  `NotificationCenter`, as they cross the AppKit `AppDelegate` boundary described
+  above.)
 
 Each step is independent and can land incrementally while keeping the app
 building — verify with:

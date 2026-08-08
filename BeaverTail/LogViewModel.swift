@@ -7,31 +7,31 @@ import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Direct notification channel descriptor driving top table viewport adjustments
-let topPaneDirectScrollNotification = Notification.Name("BeaverTailTopPaneDirectScroll")
+/// A one-shot scroll command sent from the view model to a log pane (top or
+/// bottom). This replaces the former global `NotificationCenter` channels: the
+/// view model publishes these on its own `topPaneScrollEvents` /
+/// `bottomPaneScrollEvents` streams and each `NativeLogViewer` subscribes to the
+/// stream for its pane, so scroll behaviour is driven by observable view-model
+/// state rather than untyped notifications broadcast through a global singleton.
+enum PaneScrollCommand {
+    /// Scroll to the last row. `force` snaps even when the user has scrolled up
+    /// (Follow toggled on / a filter completed); a non-forced command is ignored
+    /// while the user has scrolled away from the bottom (a plain live-tail append).
+    case toBottom(force: Bool)
+    /// Scroll back to the very top (first matching lines) without selecting a row.
+    case toTop
+    /// Scroll a specific row into view and select it; `centered` vertically centres
+    /// it (otherwise it is scrolled to the top of the viewport).
+    case toRow(Int, centered: Bool)
+    /// Select/scroll a specific row using the top pane's horizontal-scroll semantics.
+    case direct(TopPaneDirectScrollRequest)
+}
 
+/// Payload for a `.direct` top-pane scroll command.
 struct TopPaneDirectScrollRequest {
     let lineIndex: Int
     let allowsHorizontalScroll: Bool
 }
-
-// Distinct notification streams for targeting view scroll adjustments independently
-let topPaneScrollToBottomNotification    = Notification.Name("BeaverTailTopPaneScrollToBottom")
-let bottomPaneScrollToBottomNotification = Notification.Name("BeaverTailBottomPaneScrollToBottom")
-/// Passed as the `object` of a scroll-to-bottom notification to force the pane to
-/// the bottom and clear any user-driven "scrolled up" follow suspension. Used when
-/// Follow is toggled on and when a filter completes. Live-tail appends post with a
-/// nil object instead, so a user who has scrolled up is not yanked back down.
-let forceScrollToBottomMarker = "BeaverTailForceScrollToBottom"
-/// Posted to scroll the bottom pane back to the top (first matching lines) without
-/// selecting a row. Used when a filter is applied while Follow is disabled.
-let bottomPaneScrollToTopNotification    = Notification.Name("BeaverTailBottomPaneScrollToTop")
-/// Posted to scroll the bottom pane to a specific row index (Int payload via `object:`).
-let bottomPaneScrollToRowNotification    = Notification.Name("BeaverTailBottomPaneScrollToRow")
-let bottomPaneScrollToRowCenteredNotification = Notification.Name("BeaverTailBottomPaneScrollToRowCentered")
-/// Posted to scroll the top pane so a specific row sits at the top of the viewport
-/// and is selected (Int row payload via `object:`). Used after "Hide Lines Above".
-let topPaneScrollToRowNotification       = Notification.Name("BeaverTailTopPaneScrollToRow")
 
 /// Height (in pixels/buckets) of the rendered minimap image. Shared between the
 /// image generation (`generateMinimapData`) and the current-position indicator
@@ -199,8 +199,8 @@ class LogViewModel: ObservableObject {
                 flushSaveLoadedTabsSession()
                 if followTail {
                     DispatchQueue.main.async {
-                        NotificationCenter.default.post(name: topPaneScrollToBottomNotification, object: forceScrollToBottomMarker)
-                        NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: forceScrollToBottomMarker)
+                        self.topPaneScrollEvents.send(.toBottom(force: true))
+                        self.bottomPaneScrollEvents.send(.toBottom(force: true))
                     }
                 }
             }
@@ -325,6 +325,13 @@ class LogViewModel: ObservableObject {
     @Published var timelineImageByTab: [UUID: NSImage] = [:]
     @Published var selectedFractionByTab: [UUID: CGFloat] = [:]
     @Published var isGeneratingTimelineByTab: [UUID: Bool] = [:]
+    /// View-model-owned scroll command streams that drive the two log panes,
+    /// replacing the former global `NotificationCenter` scroll channels. Each
+    /// `NativeLogViewer` subscribes to the stream for its pane and performs the
+    /// imperative `NSTableView` scroll; the view model is the single source of the
+    /// commands (see `PaneScrollCommand`).
+    let topPaneScrollEvents = PassthroughSubject<PaneScrollCommand, Never>()
+    let bottomPaneScrollEvents = PassthroughSubject<PaneScrollCommand, Never>()
     var sessionSaveDebounceTask: Task<Void, Never>?
     private var activeTailSource: DispatchSourceFileSystemObject?
     private var activeTailFileDescriptor: Int32 = -1
@@ -422,7 +429,7 @@ class LogViewModel: ObservableObject {
         syncSelectionFromFilteredIndex(originalIndex)
         // Scroll bottom pane to the corresponding row if it is currently displayed
         if let row = bottomPaneRow(forOriginalIndex: originalIndex) {
-            NotificationCenter.default.post(name: bottomPaneScrollToRowNotification, object: row)
+            bottomPaneScrollEvents.send(.toRow(row, centered: false))
         }
     }
 
@@ -955,9 +962,9 @@ class LogViewModel: ObservableObject {
                 // When Follow is enabled, jump to the newest matches at the bottom.
                 // Otherwise, show the first set of matching lines at the top.
                 if self.followTail {
-                    NotificationCenter.default.post(name: bottomPaneScrollToBottomNotification, object: forceScrollToBottomMarker)
+                    self.bottomPaneScrollEvents.send(.toBottom(force: true))
                 } else {
-                    NotificationCenter.default.post(name: bottomPaneScrollToTopNotification, object: nil)
+                    self.bottomPaneScrollEvents.send(.toTop)
                 }
             }
         }
