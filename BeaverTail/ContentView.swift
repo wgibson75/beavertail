@@ -710,14 +710,8 @@ private struct TimelinePaneView: View {
                                             }
                                         } else if viewModel.currentTab?.isProcessingHighlights == true
                                                     || viewModel.isGeneratingTimeline {
-                                            VStack(spacing: 10) {
-                                                ProgressView()
-                                                    .controlSize(.small)
-                                                Text("Processing highlight filters…")
-                                                    .font(.callout)
-                                                    .foregroundStyle(.secondary)
-                                            }
-                                            .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+                                            ProcessingHighlightsBanner()
+                                                .frame(maxWidth: .infinity, minHeight: geometry.size.height)
                                         } else if viewModel.highlightRules.isEmpty && !hasMarks {
                                             VStack(spacing: 8) {
                                                 Image(systemName: "paintbrush")
@@ -757,19 +751,8 @@ private struct TimelinePaneView: View {
                     if viewModel.timelineImage != nil,
                        viewModel.currentTab?.isProcessingHighlights == true
                            || viewModel.isGeneratingTimeline {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Processing highlight filters…")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(.regularMaterial, in: Capsule())
-                        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
-                        .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
-                        .transition(.opacity)
+                        ProcessingHighlightsBanner()
+                            .transition(.opacity)
                     }
                 }
                 if showFilterDropdown && !viewModel.filterHistory.isEmpty {
@@ -787,6 +770,30 @@ private struct TimelinePaneView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Processing Highlights Banner
+
+/// The "Processing highlight filters…" progress banner shown in the Timeline pane:
+/// a bordered `.regularMaterial` capsule so the message is visually distinct and
+/// easy to notice. Shared by both presentation sites — the floating overlay shown
+/// over stale timeline entries and the centred placeholder shown when no timeline
+/// has been rendered yet — so the two are guaranteed to look identical.
+struct ProcessingHighlightsBanner: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Processing highlight filters…")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
+        .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
     }
 }
 
