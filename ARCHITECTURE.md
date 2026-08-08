@@ -94,8 +94,10 @@ Coverage by layer:
 | `LogViewModel` (+ extensions) | Coordinate mapping & match jumps (Navigation); line-visibility / time-period history; filter-history & recent-files dedup/truncation; tab marking and the end-to-end "Find Unique Lines" pipeline. |
 
 ViewModel tests that touch the `@MainActor LogViewModel` snapshot and restore the
-persistence `UserDefaults` keys (and the `RecentFilesTracker` singleton) so they
-run in isolation and leave the developer's real saved state untouched.
+persistence `UserDefaults` keys so they run in isolation and leave the developer's
+real saved state untouched. (The recent-files list no longer needs snapshotting: it
+is owned per view model via an injected `RecentFilesTracker`, so each fresh
+`LogViewModel()` already starts isolated.)
 
 Run them with:
 
@@ -235,12 +237,12 @@ xcodebuild test -project BeaverTail.xcodeproj -scheme BeaverTail \
 
 ## Roadmap — continuing the migration
 
-The same extract-into-a-service pattern should be applied next to the remaining
-in-view-model core logic, in rough priority order:
+The extract-into-a-service / decouple-from-the-view-model migration is, for now,
+**complete** — every item originally listed here has landed (see below). Future
+work can extend the same pattern to any new view-model logic that grows large
+enough to warrant its own service.
 
-1. **Inject `RecentFilesTracker`** instead of using the global singleton.
-
-Already completed on this path:
+Completed on this path:
 
 - The **`LiveTailService`** extraction — the file-monitoring state machine
   previously inlined in `LogViewModel+LiveTailing`, which used
@@ -263,6 +265,16 @@ Already completed on this path:
   `NSColor`/`NSRegularExpression` objects served by the memoising
   `HighlightObjectCache` (so there is no longer an `updateCachedObjects()` to
   forget after a mutation).
+- **UI notifications replaced with observable view-model state** — the pane-scroll
+  commands that were broadcast through global `NotificationCenter` channels are now
+  a typed `PaneScrollCommand` published on the view model's own
+  `topPaneScrollEvents` / `bottomPaneScrollEvents` streams, which each
+  `NativeLogViewer` subscribes to (via Combine).
+- **`RecentFilesTracker` injected instead of a global singleton** — the "Open
+  Recent" list is now owned by `LogViewModel` (injected via `init`, defaulting to a
+  fresh instance) rather than a shared `RecentFilesTracker.shared`. The App observes
+  the same instance via `AppDelegate.sharedViewModel.recentFilesTracker`, and each
+  `LogViewModel()` starts with its own isolated tracker (simplifying the tests).
 - **UI notifications replaced with observable view-model state** — the pane-scroll
   commands that were broadcast through global `NotificationCenter` channels
   (`topPaneScrollToBottomNotification`, `…DirectScroll`, `…ScrollToRow`, etc.) are

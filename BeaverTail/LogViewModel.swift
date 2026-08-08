@@ -232,6 +232,11 @@ class LogViewModel: ObservableObject {
     /// `LogViewModel` republishes during minimap / highlight generation.
     let highlightRulesStore = HighlightRulesStore()
 
+    /// Owns the "Open Recent" list. Injected (see `init`) rather than accessed as a
+    /// global singleton, so each view model has its own tracker and the App observes
+    /// this same instance for its "Open Recent" menu.
+    let recentFilesTracker: RecentFilesTracker
+
     /// Highlight rules, forwarded to `highlightRulesStore`. All mutations (from here
     /// or directly on the store via the Highlight Filters window) trigger a save +
     /// regeneration synchronously through `highlightRulesStore.onRulesChanged`
@@ -259,8 +264,8 @@ class LogViewModel: ObservableObject {
     @Published var filterHistory: [String] = []
 
     var recentFiles: [RecentFile] {
-        get { RecentFilesTracker.shared.recentFiles }
-        set { RecentFilesTracker.shared.recentFiles = newValue }
+        get { recentFilesTracker.recentFiles }
+        set { recentFilesTracker.recentFiles = newValue }
     }
 
     private var filterGeneration: Int = 0
@@ -450,7 +455,8 @@ class LogViewModel: ObservableObject {
         }
     }
 
-    init() {
+    init(recentFilesTracker: RecentFilesTracker = RecentFilesTracker()) {
+        self.recentFilesTracker = recentFilesTracker
         // React to highlight-rule changes made via the store, synchronously — the
         // same timing as the old `highlightRules` didSet. Running immediately (rather
         // than deferring onto the main queue) ensures a highlight scan starts right

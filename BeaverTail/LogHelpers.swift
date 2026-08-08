@@ -50,9 +50,14 @@ class LogProgressTracker: ObservableObject {
     @Published var compareProgress: Double = 0.0
 }
 
+/// Owns the "Open Recent" list. Instantiated and owned by `LogViewModel` (which
+/// injects it) rather than being a global singleton, so it can be created fresh
+/// per view model — improving testability and removing shared global state.
 class RecentFilesTracker: ObservableObject {
-    static let shared = RecentFilesTracker()
     @Published var recentFiles: [RecentFile] = []
+    /// `nonisolated` so it can be used as the default value of `LogViewModel.init`'s
+    /// injected parameter (a nonisolated default-argument context).
+    nonisolated init() {}
 }
 
 /// Rarely-changing state that drives menu-command availability. Kept separate from

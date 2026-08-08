@@ -5,8 +5,9 @@
 //  Item 14: filter-history and recent-files dedup / truncation / persistence.
 //
 //  These exercise real `LogViewModel` methods, so the test snapshots and restores
-//  the UserDefaults keys and the `RecentFilesTracker` singleton they touch, keeping
-//  the developer's actual saved state intact.
+//  the UserDefaults keys they touch, keeping the developer's actual saved state
+//  intact. The recent-files list is now owned per view model (an injected
+//  `RecentFilesTracker`), so each fresh `LogViewModel()` already starts isolated.
 //
 
 import XCTest
@@ -20,7 +21,6 @@ final class LogViewModelHistoryTests: XCTestCase {
     private let sessionKey = "saved_session_bookmarks_v2"
 
     private var savedDefaults: [String: Any?] = [:]
-    private var savedRecentFiles: [RecentFile] = []
     private var tempURLs: [URL] = []
     private var viewModel: LogViewModel!
 
@@ -31,8 +31,8 @@ final class LogViewModelHistoryTests: XCTestCase {
             savedDefaults[key] = UserDefaults.standard.object(forKey: key)
             UserDefaults.standard.removeObject(forKey: key)
         }
-        savedRecentFiles = RecentFilesTracker.shared.recentFiles
-        RecentFilesTracker.shared.recentFiles = []
+        // The recent-files list is per view model now, so a fresh instance starts
+        // empty; no global singleton to snapshot.
         viewModel = LogViewModel()
     }
 
@@ -45,7 +45,6 @@ final class LogViewModelHistoryTests: XCTestCase {
             }
         }
         savedDefaults = [:]
-        RecentFilesTracker.shared.recentFiles = savedRecentFiles
         for url in tempURLs { removeTempFile(url) }
         tempURLs = []
         viewModel = nil
@@ -160,7 +159,7 @@ final class LogViewModelHistoryTests: XCTestCase {
         let fileB = makeTempFile()
         viewModel.addToRecentFiles(fileA)
         viewModel.addToRecentFiles(fileB)
-        RecentFilesTracker.shared.recentFiles = []
+        viewModel.recentFilesTracker.recentFiles = []
         viewModel.loadRecentFiles()
         XCTAssertEqual(viewModel.recentFiles.count, 2)
         XCTAssertEqual(viewModel.recentFiles.first?.name, fileB.lastPathComponent)
@@ -168,8 +167,29 @@ final class LogViewModelHistoryTests: XCTestCase {
 
     func testRecentFilesMalformedDataLoadsSafely() {
         viewModel.recentFilesData = "not-json"
-        RecentFilesTracker.shared.recentFiles = []
+        viewModel.recentFilesTracker.recentFiles = []
         viewModel.loadRecentFiles() // must not crash
         XCTAssertTrue(viewModel.recentFiles.isEmpty)
+    }
+
+    // MARK: - RecentFilesTracker injection
+
+    func testInjectedRecentFilesTrackerIsUsed() {
+        let tracker = RecentFilesTracker()
+        let vm = LogViewModel(recentFilesTracker: tracker)
+        XCTAssertTrue(vm.recentFilesTracker === tracker)
+
+        let file = makeTempFile()
+        vm.addToRecentFiles(file)
+        // The addition lands on the injected instance (no global singleton), and the
+        // view model's `recentFiles` proxies to it.
+        XCTAssertEqual(tracker.recentFiles.first?.name, file.lastPathComponent)
+        XCTAssertEqual(vm.recentFiles.first?.name, file.lastPathComponent)
+    }
+
+    func testEachViewModelHasIndependentTracker() {
+        let first = LogViewModel()
+        let second = LogViewModel()
+        XCTAssertFalse(first.recentFilesTracker === second.recentFilesTracker)
     }
 }

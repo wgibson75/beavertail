@@ -190,7 +190,10 @@ struct BeaverTailApp: App {
     // fallback window (used under UI testing), and the menu commands all act on the
     // same view model.
     @State private var viewModel = AppDelegate.sharedViewModel
-    @StateObject private var recentTracker = RecentFilesTracker.shared
+    // Observe the same RecentFilesTracker instance the shared view model owns, so
+    // the "Open Recent" menu updates as files are opened (it is injected into the
+    // view model rather than accessed as a global singleton).
+    @StateObject private var recentTracker = AppDelegate.sharedViewModel.recentFilesTracker
     @StateObject private var commandState = AppCommandState.shared
 
     /// Whether BeaverTail checks GitHub for a newer release on launch.
