@@ -118,30 +118,24 @@ extension LogViewModel {
         indexBuildQueue.async { [weak self] in
             guard let self else { return }
             do {
-                // Map + incrementally index so a restored tab's lines also appear
-                // progressively, and gate the scans through the shared scheduler so
-                // this background build can't saturate every core alongside another
-                // file's index build and yields the scan slot to the visible tab.
-                let content = try LogContent.mappedEmpty(from: url)
-                var lastPublish = DispatchTime.now().uptimeNanoseconds
-                var didPublishFirst = false
-                content.buildIndex(
+                // Map + incrementally index via the service so a restored tab's lines
+                // also appear progressively, gating each segment's scan through the
+                // shared scheduler so this background build can't saturate every core
+                // alongside another file's index build and yields to the visible tab.
+                let content = try FileLoadService.loadIncrementally(
+                    from: url,
                     progress: progress,
                     onSegmentWillScan: { scheduler.acquire(tabID: id) },
-                    onSegmentDidScan: { scheduler.release() }
-                ) { partial in
-                    let now = DispatchTime.now().uptimeNanoseconds
-                    let elapsedMs = (now &- lastPublish) / 1_000_000
-                    guard !didPublishFirst || elapsedMs >= 100 else { return }
-                    didPublishFirst = true
-                    lastPublish = now
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self else { return }
-                        guard let idx = self.openTabs.firstIndex(where: { $0.id == id }) else { return }
-                        self.openTabs[idx].content = partial
-                        self.openTabs[idx].statusLines = []
+                    onSegmentDidScan: { scheduler.release() },
+                    onPartial: { partial in
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self else { return }
+                            guard let idx = self.openTabs.firstIndex(where: { $0.id == id }) else { return }
+                            self.openTabs[idx].content = partial
+                            self.openTabs[idx].statusLines = []
+                        }
                     }
-                }
+                )
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.loadProgressByTab.removeValue(forKey: id)

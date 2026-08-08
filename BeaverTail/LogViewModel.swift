@@ -533,37 +533,28 @@ class LogViewModel: ObservableObject {
         indexBuildQueue.async { [weak self] in
             guard let self else { return }
             do {
-                // Map the file (no full read into memory) and index it incrementally,
-                // publishing the growing content after each segment so lines appear in
-                // the top pane as early as possible instead of only once the whole
-                // (potentially multi-GB) file has finished indexing.
-                let content = try LogContent.mappedEmpty(from: url)
-                // Throttle UI publishes so a fast scan of a huge file doesn't flood the
-                // main thread with reloads; the first segment is always published
-                // immediately so lines appear as early as possible.
-                var lastPublish = DispatchTime.now().uptimeNanoseconds
-                var didPublishFirst = false
-                content.buildIndex(
+                // Map + incrementally index off the main actor via the service,
+                // publishing each throttled snapshot so lines appear in the top pane
+                // as early as possible instead of only once the whole (potentially
+                // multi-GB) file has finished indexing.
+                let content = try FileLoadService.loadIncrementally(
+                    from: url,
                     progress: progress,
                     onSegmentWillScan: { scheduler.acquire(tabID: targetTabID) },
-                    onSegmentDidScan: { scheduler.release() }
-                ) { partial in
-                    let now = DispatchTime.now().uptimeNanoseconds
-                    let elapsedMs = (now &- lastPublish) / 1_000_000
-                    guard !didPublishFirst || elapsedMs >= 100 else { return }
-                    didPublishFirst = true
-                    lastPublish = now
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self else { return }
-                        guard let idx = self.openTabs.firstIndex(where: { $0.id == targetTabID }) else { return }
-                        // Reassigning the (same, growing) content object mutates the
-                        // @Published openTabs array, which re-renders the top pane with
-                        // the newly-indexed lines. The provider decodes each visible line
-                        // on demand from the mmap, so nothing is copied into memory.
-                        self.openTabs[idx].content = partial
-                        self.openTabs[idx].statusLines = []
+                    onSegmentDidScan: { scheduler.release() },
+                    onPartial: { partial in
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self else { return }
+                            guard let idx = self.openTabs.firstIndex(where: { $0.id == targetTabID }) else { return }
+                            // Reassigning the (same, growing) content object mutates the
+                            // @Published openTabs array, which re-renders the top pane with
+                            // the newly-indexed lines. The provider decodes each visible line
+                            // on demand from the mmap, so nothing is copied into memory.
+                            self.openTabs[idx].content = partial
+                            self.openTabs[idx].statusLines = []
+                        }
                     }
-                }
+                )
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.loadProgressByTab.removeValue(forKey: targetTabID)

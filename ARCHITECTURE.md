@@ -54,6 +54,7 @@ Introduced to lift "core logic" out of the previously monolithic `LogViewModel`:
 | `MinimapImageRenderer` | Pure Core Graphics rendering of the minimap highlight strip. | `LogViewModel.generateMinimapData` |
 | `LogComparisonService` | Pure log-line signature + good/bad "unique lines" comparison. | `LogViewModel+Compare` |
 | `LiveTailService` | File-monitoring state machine (poll → deleted / rotated / appended events) + line decoding for Follow. | `LogViewModel+LiveTailing` |
+| `FileLoadService` | Memory-maps a log and builds its line index incrementally, publishing throttled partial snapshots. | `LogViewModel.loadNewTab` / `triggerLazyLoadForTab` |
 | `IndexScanScheduler` | Coordinates CPU-heavy index scans across tabs. | (already a service) |
 
 `UpdateChecker` remains as the *presentation coordinator* (it owns the
@@ -78,6 +79,7 @@ Coverage by layer:
 | --- | --- |
 | `LogComparisonService` | Line-signature normalisation; union/intersection "unique lines" set logic; cancellation; parallel-scan correctness. |
 | `LiveTailService` | Line decoding (`.newlines`-set splitting, partial-line remainder carry-over, no-newline buffering); the monitor's poll state machine — unchanged/appended/rotated-or-truncated/deleted transitions against real temp files. |
+| `FileLoadService` | The publish-throttle decision (first snapshot always fires, then coalesced by elapsed time); incremental map + index end-to-end against real temp files (fully-indexed result, at-least-one partial, empty file, missing-file throw). |
 | `LineMatcher` / `LogContent` | Pattern classification, required-literal extraction; memory-mapped indexing (CRLF, trailing newline, empty file); parallel `filterMatches` / `extractAllMatches`. |
 | `TimelineImageRenderer` | Bucketing, highest-priority line claiming, filtered vs. unfiltered columns, marks column, determinism, cancellation. |
 | `MinimapImageRenderer` | The pure `minimapFills` bucketing core: MANY-lines density bands with highest-priority colouring and alpha scaling; FEW-lines full-band draw order (low-priority first); visible-range restriction; empty-range handling; cancellation. |
@@ -234,17 +236,15 @@ xcodebuild test -project BeaverTail.xcodeproj -scheme BeaverTail \
 The same extract-into-a-service pattern should be applied next to the remaining
 in-view-model core logic, in rough priority order:
 
-1. **`FileLoadService`** — memory-map + incremental index build in
-   `LogViewModel.loadNewTab` / `triggerLazyLoadForTab`.
-2. **`FilteringEngine`** — move regex compilation/matching (`LineMatcher`) out of
+1. **`FilteringEngine`** — move regex compilation/matching (`LineMatcher`) out of
    the `LogContent` model into a dedicated matching service.
-3. **Model cleanup** — move transient presentation state (`minimapImage`,
+2. **Model cleanup** — move transient presentation state (`minimapImage`,
    `timelineImage`, `selectedFraction`, `isGeneratingTimeline`) off `LogTab`, and
    split `HighlightRule`'s cached `NSColor`/`NSRegularExpression` from its Codable
    data.
-4. **Replace UI Notifications** (e.g. `topPaneScrollToBottomNotification`) posted
+3. **Replace UI Notifications** (e.g. `topPaneScrollToBottomNotification`) posted
    from the view model with observable state the views derive behaviour from.
-5. **Inject `RecentFilesTracker`** instead of using the global singleton.
+4. **Inject `RecentFilesTracker`** instead of using the global singleton.
 
 Already completed on this path:
 
@@ -254,6 +254,10 @@ Already completed on this path:
 - The **`MinimapImageRenderer`** extraction — the pure Core Graphics minimap
   rendering previously inlined in `LogViewModel.generateMinimapData` (now
   orchestrated from `LogViewModel+Minimap`), mirroring `TimelineImageRenderer`.
+- The **`FileLoadService`** extraction — the memory-map + incremental index build
+  (with publish throttling) previously inlined in `LogViewModel.loadNewTab` and
+  `triggerLazyLoadForTab`; both call sites now share it and only orchestrate tab
+  state.
 
 Each step is independent and can land incrementally while keeping the app
 building — verify with:
