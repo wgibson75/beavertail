@@ -3,3 +3,7 @@
 *.xcuserstate
 xcuserdata
 xcshareddata
+
+# Per-architecture app build output (see Vendor/build-apps.sh) and Xcode build dirs
+/build/
+DerivedData/

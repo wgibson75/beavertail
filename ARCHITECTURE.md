@@ -25,6 +25,8 @@ keep them separated, and how to continue the migration.
 └──────────────────────────────────────────────────────────────┘
 ```
 
+Cutting across the Model/Service layers, a small **native-interop layer** (`VectorscanEngine`, backed by the vendored Vectorscan C library) accelerates the regex-heavy scans — see **Performance & native interop** and **Build & packaging** below.
+
 ## Separation rules
 
 - **Views** never perform business logic, file I/O, or networking. They render
@@ -50,17 +52,73 @@ Introduced to lift "core logic" out of the previously monolithic `LogViewModel`:
 | `SessionStore` | JSON + security-scoped bookmark encode/decode for the open-tabs session. | `LogViewModel+Persistence` |
 | `UpdateService` | GitHub "latest release" networking and version comparison. | `UpdateChecker` |
 | `CLIInstaller` (`BTailInstaller`) | Installs the `btail` shell helper (filesystem + shell). | `BeaverTailApp` |
-| `TimelineImageRenderer` | Pure Core Graphics rendering of the per-rule density timeline. | `LogViewModel+Timeline` |
+| `TimelineImageRenderer` | Pure Core Graphics rendering of the per-rule density timeline. Its per-bucket counting is `O(filteredCount + Σmatches)` (a filtered-line bitset + one linear pass per rule), and it is driven by the view model's single-in-flight render **scheduler** (see below). | `LogViewModel+Timeline` |
 | `MinimapImageRenderer` | Pure Core Graphics rendering of the minimap highlight strip. | `LogViewModel.generateMinimapData` |
 | `LogComparisonService` | Pure log-line signature + good/bad "unique lines" comparison. | `LogViewModel+Compare` |
 | `LiveTailService` | File-monitoring state machine (poll → deleted / rotated / appended events) + line decoding for Follow. | `LogViewModel+LiveTailing` |
 | `FileLoadService` | Memory-maps a log and builds its line index incrementally, publishing throttled partial snapshots. | `LogViewModel.loadNewTab` / `triggerLazyLoadForTab` |
 | `FilteringEngine` | Compiles filter/highlight patterns into `LineMatcher`s (literal / literal-alternation / regex + required-literal pre-filter) and matches lines. | `LogContent` (`LineMatcher`) |
 | `IndexScanScheduler` | Coordinates CPU-heavy index scans across tabs. | (already a service) |
+| `VectorscanEngine` | Thin Swift wrapper over the vendored Vectorscan (Hyperscan-compatible) C library; accelerates per-line regex confirmation and fused multi-pattern highlight scanning over the memory-mapped bytes (see **Performance & native interop**). | new (native interop) |
+
+Not every service-like unit lives under `BeaverTail/Services/`. That folder holds
+`CLIInstaller`, `FileExportService`, `FileLoadService`, `FilteringEngine`,
+`LiveTailService`, `MinimapImageRenderer`, `SessionStore`, `TimelineImageRenderer`,
+and `UpdateService`. Three peers — `IndexScanScheduler`, `LogComparisonService`, and
+the `VectorscanEngine` native-interop layer — sit at the top level of `BeaverTail/`
+but follow the same contract: UI-free, plain value in/out, unit-tested in isolation.
 
 `UpdateChecker` remains as the *presentation coordinator* (it owns the
 `NSAlert`s and decides when to check), delegating all networking/version math to
 `UpdateService` — a clean split between "decide & present" and "do the work".
+
+## Performance & native interop (Vectorscan)
+
+Regex filtering and highlight matching are accelerated with
+[Vectorscan](https://github.com/VectorCamp/vectorscan) — the portable fork of Intel
+Hyperscan (Apple-Silicon `arm64`/NEON and Intel `x86_64`/SSE4.2). It is vendored as a
+**static** archive under `Vendor/vectorscan/` and exposed to Swift through
+`BeaverTail/BeaverTail-Bridging-Header.h` (`#import <hs/hs.h>`); see `Vendor/README.md`
+for how the library is built and linked. `VectorscanEngine.swift` is the only Swift
+code that touches the C API.
+
+How it plugs into the scan pipeline (all in `LogContent`, which owns the
+memory-mapped byte scanning):
+
+- **Single-pattern confirmation.** `buildScanParams(from:)` compiles each ASCII regex
+  into a `VectorscanProgram`. During `filterMatches`, a required-literal pre-filter
+  (when the pattern has one) still runs first; the confirmation step then calls
+  `vectorscanMatches(...)` directly on the mapped bytes instead of decoding a `String`
+  and running `NSRegularExpression`.
+- **Fused multi-pattern highlighting.** `extractAllMatches` compiles *all* fusible
+  rules (literals, literal-alternations, and ASCII regex) into one
+  `VectorscanMultiProgram` via `hs_compile_multi`, so each line is scanned **once** for
+  every rule (`vectorscanScanMulti` fills a per-line hit bitset) rather than tested
+  rule-by-rule.
+- **Concurrency contract.** A compiled database is immutable and shared across the
+  `DispatchQueue.concurrentPerform` chunk workers; each worker owns its own *scratch*.
+  Because `hs_alloc_scratch`/`hs_free_scratch` are **not** concurrency-safe, all
+  scratch allocation/free is funnelled through a single lock
+  (`vectorscanAllocScratch` / `vectorscanFreeScratch`).
+- **Parity & fallback.** Acceleration is gated to **ASCII** patterns, where
+  Vectorscan's byte-level semantics match ICU's for the boolean "does this line
+  match?" question. Any non-ASCII pattern, or any construct Vectorscan cannot compile
+  (e.g. a back-reference), yields `nil`/is dropped and the caller transparently falls
+  back to the `NSRegularExpression` / byte-scanner path, so observable results are
+  unchanged. A feature flag (`LogContent.vectorscanEnabled`) allows A/B benchmarking.
+
+### The Timeline render scheduler
+
+Because the Timeline is regenerated repeatedly while a huge log is filtered and
+highlighted, `generateTimelineData(for:)` is a **coalescing scheduler**, not a direct
+renderer. At most one render runs per tab at a time (`isGeneratingTimelineByTab`); if
+another is requested while one is in flight, a single re-render is recorded
+(`pendingTimelineRender`) and run — with the latest state — when the current finishes
+(`finishTimelineRender`). The heavy work runs off the main actor in `renderTimeline`
+at `.userInitiated` priority, so it is not starved by the filter/highlight scans that
+saturate the performance cores. This lets the progressive filter and highlight scans
+both request updates freely, so coloured entries and their headings appear *during*
+processing instead of only at the end, without any render being cancelled mid-flight.
 
 ## Testing
 
@@ -83,6 +141,7 @@ Coverage by layer:
 | `FileLoadService` | The publish-throttle decision (first snapshot always fires, then coalesced by elapsed time); incremental map + index end-to-end against real temp files (fully-indexed result, at-least-one partial, empty file, missing-file throw). |
 | `FilteringEngine` / `LineMatcher` | Pattern classification (literal, literal-alternation, regex + derived pre-filter), required-literal extraction; pure per-line `matches` across every matcher kind (sensitive/insensitive literals, alternation, regex). |
 | `LogContent` | Memory-mapped indexing (CRLF, trailing newline, empty file); parallel `filterMatches` / `extractAllMatches`. |
+| `VectorscanEngine` | Parity of the Vectorscan path against `NSRegularExpression` across representative patterns/lines (`VectorscanParityTests`): ASCII single-pattern and fused multi-pattern results are identical, empty-match (`.*`) behaviour, non-ASCII decline, and unsupported-pattern fallback. `VectorscanBenchmarkTests` also asserts the accelerated (on) and fallback (off) paths produce identical filtered/highlight results while timing them. |
 | `TimelineImageRenderer` | Bucketing, highest-priority line claiming, filtered vs. unfiltered columns, marks column, determinism, cancellation. |
 | `MinimapImageRenderer` | The pure `minimapFills` bucketing core: MANY-lines density bands with highest-priority colouring and alpha scaling; FEW-lines full-band draw order (low-priority first); visible-range restriction; empty-range handling; cancellation. |
 | `SessionStore` | Session JSON round-trip; bookmark encode/resolve incl. malformed and deleted-file failure modes. |
@@ -98,6 +157,13 @@ persistence `UserDefaults` keys so they run in isolation and leave the developer
 real saved state untouched. (The recent-files list no longer needs snapshotting: it
 is owned per view model via an injected `RecentFilesTracker`, so each fresh
 `LogViewModel()` already starts isolated.)
+
+One test — `TimelineProgressiveReproTests` — is a **gated repro** for the Timeline
+scheduler's progressive rendering on a *very large* (multi-GB) log. It is skipped
+unless a specific local log file is present, so it never runs in CI; when run, it
+asserts that coloured Timeline entries/headings appear well before the highlight scan
+completes (proving the coalescing scheduler + `O(filteredCount + Σmatches)` renderer
+render mid-scan rather than only at the end).
 
 Run them with:
 
@@ -234,6 +300,30 @@ Run them with:
 xcodebuild test -project BeaverTail.xcodeproj -scheme BeaverTail \
   -destination 'platform=macOS' -only-testing:BeaverTailUITests
 ```
+
+## Build & packaging
+
+BeaverTail ships as **separate single-architecture apps** — one `arm64` (Apple
+Silicon) and one `x86_64` (Intel) — rather than a single universal binary.
+
+- **Static native dependency.** Vectorscan is linked as a static archive
+  (`OTHER_LDFLAGS = -lhs -lc++`), so each app is self-contained and notarizable with
+  **no runtime dependency** on a Homebrew dylib. The C headers are found via
+  `HEADER_SEARCH_PATHS` and the API is bridged through
+  `BeaverTail-Bridging-Header.h`.
+- **Per-architecture library selection.** The vendored library is committed as two
+  thin archives, `Vendor/vectorscan/lib/arm64/libhs.a` and `.../x86_64/libhs.a`, and
+  the app target selects the matching one via arch-conditional build settings:
+  `LIBRARY_SEARCH_PATHS[arch=arm64]` and `LIBRARY_SEARCH_PATHS[arch=x86_64]`.
+- **Never universal.** Every build configuration pins `ARCHS = arm64`, so a plain
+  build or an Xcode Archive is arm64-only and never fat. The Intel app is produced
+  only by explicitly overriding the architecture on the command line
+  (`ARCHS=x86_64`).
+- **Producing the two apps.** `Vendor/build-apps.sh` builds each architecture into
+  its own output tree (`build/<arch>/Build/Products/Release/BeaverTail.app`); the
+  Intel slice is cross-compiled from Apple Silicon and should be smoke-tested on real
+  Intel hardware before release. `Vendor/build-vectorscan.sh` regenerates the two thin
+  libraries and public headers when updating Vectorscan.
 
 ## Roadmap — continuing the migration
 

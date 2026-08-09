@@ -500,14 +500,23 @@ final class LogContent: LineProvider, @unchecked Sendable {
     private struct ScanParams {
         let mode: ScanMode
         let regex: NSRegularExpression?
+        /// Vectorscan-accelerated regex database for the (ASCII) regex modes, or
+        /// `nil` when the pattern isn't Vectorscan-eligible and the scan must fall
+        /// back to `regex` (`NSRegularExpression`). Only ever set for the
+        /// `.regexOnly` / `.regexPre*` modes.
+        let vectorscan: VectorscanProgram?
         let blob: [UInt8]
         let offsets: [Int]
         let lengths: [Int]
         let firstByteTable: [Bool]   // 256-entry acceptance table
     }
 
-    nonisolated private static func buildScanParams(from matcher: LineMatcher) -> ScanParams {
-        var blob: [UInt8] = []
+    /// Master switch for the Vectorscan-accelerated regex path. Defaults to `true`;
+    /// the benchmark/parity tests flip it to compare against the `NSRegularExpression`
+    /// fallback. Not exposed in the UI.
+    nonisolated(unsafe) static var vectorscanEnabled = true
+
+    nonisolated private static func buildScanParams(from matcher: LineMatcher) -> ScanParams {        var blob: [UInt8] = []
         var offs: [Int] = []
         var lens: [Int] = []
         func addNeedle(_ needle: [UInt8]) {
@@ -515,6 +524,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
         }
         let mode: ScanMode
         let theRegex: NSRegularExpression?
+        var program: VectorscanProgram?
         switch matcher {
         case .literalSensitive(let needle):
             mode = .litSensitive; addNeedle(needle); theRegex = nil
@@ -529,6 +539,12 @@ final class LogContent: LineProvider, @unchecked Sendable {
             for preFilter in preFilters { addNeedle(preFilter) }
             mode = preFilters.isEmpty ? .regexOnly
                 : (caseInsensitive ? .regexPreInsensitive : .regexPreSensitive)
+            // Accelerate the regex confirmation with Vectorscan when the pattern is
+            // ASCII (preserving NSRegularExpression parity); otherwise leave it nil
+            // so the hot loop falls back to `theRegex`.
+            if Self.vectorscanEnabled, vectorscanCanAccelerate(pattern: regex.pattern) {
+                program = VectorscanProgram(pattern: regex.pattern, caseInsensitive: caseInsensitive)
+            }
         }
         let needleCount = offs.count
         let isCaseInsensitive: Bool
@@ -547,6 +563,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
         }
         return ScanParams(
             mode: mode, regex: theRegex,
+            vectorscan: program,
             blob: blob, offsets: offs, lengths: lens,
             firstByteTable: firstByteTable
         )
@@ -611,7 +628,9 @@ final class LogContent: LineProvider, @unchecked Sendable {
         fbBase: UnsafePointer<Bool>,
         blobBase: UnsafePointer<UInt8>?,
         cachedLineStr: inout String?,
-        localRegex: NSRegularExpression?
+        localRegex: NSRegularExpression?,
+        vectorscanDB: OpaquePointer?,
+        vectorscanScratch: OpaquePointer?
     ) -> Bool {
         switch mode {
         case .litSensitive:
@@ -630,6 +649,11 @@ final class LogContent: LineProvider, @unchecked Sendable {
                 offsetsPtr: offsetsPtr, lengthsPtr: lengthsPtr, fbBase: fbBase, blobBase: blobBase
             )
         case .regexOnly:
+            // Vectorscan scans the raw bytes directly — no String decode. Falls back
+            // to NSRegularExpression when no accelerated program is available.
+            if let db = vectorscanDB, let scratch = vectorscanScratch {
+                return vectorscanMatches(database: db, scratch: scratch, base: base + start, len: len)
+            }
             if cachedLineStr == nil {
                 cachedLineStr = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
             }
@@ -637,12 +661,15 @@ final class LogContent: LineProvider, @unchecked Sendable {
             let range = NSRange(location: 0, length: lineStr.utf16.count)
             return localRegex!.firstMatch(in: lineStr, options: [], range: range) != nil
         case .regexPreSensitive:
-            // Single-pass pre-filter over all literals; only decode + run the (expensive)
+            // Single-pass pre-filter over all literals; only run the (expensive)
             // regex engine on the few lines that actually contain a required literal.
             guard containsAnyNeedleFast(
                 base: base, start: start, len: len, caseInsensitive: false, needleCount: needleCount,
                 offsetsPtr: offsetsPtr, lengthsPtr: lengthsPtr, fbBase: fbBase, blobBase: blobBase
             ) else { return false }
+            if let db = vectorscanDB, let scratch = vectorscanScratch {
+                return vectorscanMatches(database: db, scratch: scratch, base: base + start, len: len)
+            }
             if cachedLineStr == nil {
                 cachedLineStr = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
             }
@@ -654,6 +681,9 @@ final class LogContent: LineProvider, @unchecked Sendable {
                 base: base, start: start, len: len, caseInsensitive: true, needleCount: needleCount,
                 offsetsPtr: offsetsPtr, lengthsPtr: lengthsPtr, fbBase: fbBase, blobBase: blobBase
             ) else { return false }
+            if let db = vectorscanDB, let scratch = vectorscanScratch {
+                return vectorscanMatches(database: db, scratch: scratch, base: base + start, len: len)
+            }
             if cachedLineStr == nil {
                 cachedLineStr = String(decoding: UnsafeBufferPointer(start: base + start, count: len), as: UTF8.self)
             }
@@ -718,6 +748,7 @@ final class LogContent: LineProvider, @unchecked Sendable {
             let scanMode = params.mode
             let needleCount = params.offsets.count
             let regexTemplate = params.regex
+            let vsProgram = params.vectorscan
             params.firstByteTable.withUnsafeBufferPointer { fbPtr in
                 let fbBase = fbPtr.baseAddress!
                 params.blob.withUnsafeBufferPointer { blobPtr in
@@ -741,6 +772,13 @@ final class LogContent: LineProvider, @unchecked Sendable {
                                             let localRx: NSRegularExpression? = regexTemplate.flatMap {
                                                 try? NSRegularExpression(pattern: $0.pattern, options: $0.options)
                                             }
+                                            // Each worker owns its own Vectorscan scratch (scratch is
+                                            // not thread-safe; the database is). Allocation is serialized
+                                            // (hs_alloc_scratch must not be called concurrently). Freed
+                                            // when the chunk ends.
+                                            let localScratch = vectorscanAllocScratch(vsProgram)
+                                            defer { vectorscanFreeScratch(localScratch) }
+                                            let vsDB = vsProgram?.database
                                             let (cs, ce) = ranges[chunkIdx]
                                             var matches: [Int] = []
                                             var startIdx = cs
@@ -767,7 +805,9 @@ final class LogContent: LineProvider, @unchecked Sendable {
                                                             offsetsPtr: offBase, lengthsPtr: lenBase,
                                                             fbBase: fbBase, blobBase: nBlob,
                                                             cachedLineStr: &cachedLineStr,
-                                                            localRegex: localRx
+                                                            localRegex: localRx,
+                                                            vectorscanDB: vsDB,
+                                                            vectorscanScratch: localScratch
                                                         ) { matches.append(lineIdx) }
                                                         sinceReport += 1
                                                     }
@@ -844,6 +884,32 @@ final class LogContent: LineProvider, @unchecked Sendable {
             allLengths.append(contentsOf: p.lengths)
         }
 
+        // Fuse EVERY ASCII rule (literals, multi-literals and true regex) into ONE
+        // Vectorscan database, so each line is scanned a single time for all of them
+        // instead of tested rule-by-rule. `matcherToDbId[i]` is the fused pattern id
+        // for matcher `i`, or -1 if it wasn't fused (non-ASCII / unsupported), in
+        // which case it falls back to the byte scanner / NSRegularExpression path.
+        var matcherToDbId = [Int](repeating: -1, count: matchers.count)
+        var candidateExpressions: [(pattern: String, caseInsensitive: Bool)] = []
+        var candidateMatcherIndex: [Int] = []
+        if Self.vectorscanEnabled {
+            for mIdx in matchers.indices {
+                if let expression = matchers[mIdx].vectorscanFusibleExpression {
+                    candidateMatcherIndex.append(mIdx)
+                    candidateExpressions.append(expression)
+                }
+            }
+        }
+        let multiProgram = candidateExpressions.isEmpty ? nil : VectorscanMultiProgram(expressions: candidateExpressions)
+        if let program = multiProgram {
+            // Some candidates may have been dropped if Vectorscan couldn't compile
+            // them; map only the survivors back to their matcher index.
+            for dbId in 0..<program.patternCount {
+                matcherToDbId[candidateMatcherIndex[program.sourceIndices[dbId]]] = dbId
+            }
+        }
+        let fusedCount = multiProgram?.patternCount ?? 0
+
         let coreCount = max(1, ProcessInfo.processInfo.activeProcessorCount)
         let targetChunks = min(coreCount * 8, 128)
         let chunkSize = max(1, (scanCount + targetChunks - 1) / targetChunks)
@@ -902,6 +968,21 @@ final class LogContent: LineProvider, @unchecked Sendable {
                                         let localRegexes: [NSRegularExpression?] = paramsList.map { p in
                                             p.regex.flatMap { try? NSRegularExpression(pattern: $0.pattern, options: $0.options) }
                                         }
+                                        // One Vectorscan scratch per matcher per worker (scratch is not
+                                        // thread-safe; the databases are). Fused matchers are handled by
+                                        // the shared multi-DB below, so skip their redundant scratch.
+                                        // Allocation is serialized (hs_alloc_scratch is not concurrent-safe).
+                                        let localScratches: [OpaquePointer?] = paramsList.indices.map {
+                                            matcherToDbId[$0] >= 0 ? nil : vectorscanAllocScratch(paramsList[$0].vectorscan)
+                                        }
+                                        defer { for scratch in localScratches { vectorscanFreeScratch(scratch) } }
+                                        let vsDBs: [OpaquePointer?] = paramsList.map { $0.vectorscan?.database }
+                                        // Shared fused multi-pattern scratch + a per-line hit buffer.
+                                        let multiScratch = vectorscanAllocScratch(multiProgram)
+                                        defer { vectorscanFreeScratch(multiScratch) }
+                                        let multiDB = multiProgram?.database
+                                        let hits = UnsafeMutablePointer<Bool>.allocate(capacity: max(fusedCount, 1))
+                                        defer { hits.deallocate() }
                                         let (cs, ce) = ranges[chunkIdx]
                                         var chunkMatches = [[Int]](repeating: [], count: meta.count)
                                         var startIdx = cs
@@ -927,7 +1008,21 @@ final class LogContent: LineProvider, @unchecked Sendable {
                                                     if lineEnd > lineStart, base[lineEnd - 1] == 0x0D { lineEnd -= 1 }
                                                     let lineLen = lineEnd - lineStart
                                                     cachedLineStr = nil
+                                                    // Scan the fused regex DB once for this line; `hits[dbId]`
+                                                    // then answers "did rule dbId match?" for every fused rule.
+                                                    if let db = multiDB, let sc = multiScratch, fusedCount > 0 {
+                                                        hits.update(repeating: false, count: fusedCount)
+                                                        vectorscanScanMulti(
+                                                            database: db, scratch: sc,
+                                                            base: base + lineStart, len: lineLen, hits: hits
+                                                        )
+                                                    }
                                                     for mIdx in 0..<meta.count {
+                                                        let dbId = matcherToDbId[mIdx]
+                                                        if dbId >= 0 {
+                                                            if hits[dbId] { chunkMatches[mIdx].append(lineIdx) }
+                                                            continue
+                                                        }
                                                         // `m` is a value tuple, so indexing/copying it
                                                         // costs no ARC — unlike copying the ScanParams
                                                         // struct (5 arrays) per line as before.
@@ -940,7 +1035,9 @@ final class LogContent: LineProvider, @unchecked Sendable {
                                                             fbBase: nFbs + m.fbOff,
                                                             blobBase: nBlob != nil ? nBlob! + m.blobOff : nil,
                                                             cachedLineStr: &cachedLineStr,
-                                                            localRegex: localRegexes[mIdx]
+                                                            localRegex: localRegexes[mIdx],
+                                                            vectorscanDB: vsDBs[mIdx],
+                                                            vectorscanScratch: localScratches[mIdx]
                                                         ) {
                                                             chunkMatches[mIdx].append(lineIdx)
                                                         }

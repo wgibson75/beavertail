@@ -11,13 +11,41 @@ import Combine
 import Foundation
 
 extension LogViewModel {
+    /// Coalescing front door for Timeline rendering. At most one render runs per tab
+    /// at a time; if a render is requested while one is in flight, exactly one more
+    /// render is scheduled (using the latest state) for when the current finishes.
+    ///
+    /// Routing every caller through here — the progressive filter scan, the
+    /// progressive highlight scan, visibility/theme changes, etc. — means they no
+    /// longer cancel each other's in-flight render. Previously overlapping callers
+    /// could repeatedly cancel a render before it completed, so nothing appeared until
+    /// the whole scan finished; now the latest state is always drawn promptly.
     func generateTimelineData(for tabID: UUID) {
-        timelineTasks[tabID]?.cancel()
-        guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else { return }
+        if isGeneratingTimelineByTab[tabID] == true {
+            pendingTimelineRender[tabID] = true
+            return
+        }
+        isGeneratingTimelineByTab[tabID] = true
+        renderTimeline(for: tabID)
+    }
 
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.openTabs.contains(where: { $0.id == tabID }) else { return }
-            self.isGeneratingTimelineByTab[tabID] = true
+    /// Clears the in-flight flag and, if another render was requested while this one
+    /// ran, kicks exactly one more so the freshest state is drawn. Always called on
+    /// the main actor at the end of a (non-cancelled) render.
+    private func finishTimelineRender(for tabID: UUID) {
+        isGeneratingTimelineByTab[tabID] = false
+        if pendingTimelineRender[tabID] == true {
+            pendingTimelineRender[tabID] = false
+            generateTimelineData(for: tabID)
+        }
+    }
+
+    /// The actual render worker. Only ever entered with the in-flight flag already set
+    /// (by `generateTimelineData`), so it never has to cancel a previous render.
+    private func renderTimeline(for tabID: UUID) {
+        guard let index = openTabs.firstIndex(where: { $0.id == tabID }) else {
+            finishTimelineRender(for: tabID)
+            return
         }
 
         let activeRules = activeHighlightRules
@@ -42,13 +70,10 @@ extension LogViewModel {
               !activeRules.isEmpty || hasMarks,
               filterValid || hasMarks,
               cache.count == activeRuleIDsCache.count else {
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let i = self.openTabs.firstIndex(where: { $0.id == tabID }) else { return }
-                self.timelineImageByTab[tabID] = nil
-                self.openTabs[i].timelineMatches = []
-                self.openTabs[i].timelineActiveRuleIDs = []
-                self.isGeneratingTimelineByTab[tabID] = false
-            }
+            self.timelineImageByTab[tabID] = nil
+            self.openTabs[index].timelineMatches = []
+            self.openTabs[index].timelineActiveRuleIDs = []
+            finishTimelineRender(for: tabID)
             return
         }
 
@@ -79,14 +104,25 @@ extension LogViewModel {
             isDark: isDark
         )
 
-        timelineTasks[tabID] = Task.detached(priority: .utility) { [weak self] in
+        // Run the render at `.userInitiated` so it isn't starved by the filter and
+        // highlight scans, which saturate the performance cores (also `.userInitiated`)
+        // via `concurrentPerform`. A `.utility` render is parked on the efficiency
+        // cores and effectively makes no progress until those scans finish — which is
+        // why progressive entries never appeared mid-scan. The coalescing scheduler
+        // guarantees only one render runs at a time, and each is cheap (O(filteredCount
+        // + matches)), so the CPU it borrows from the scans is small.
+        timelineTasks[tabID] = Task.detached(priority: .userInitiated) { [weak self] in
             let result = TimelineImageRenderer.render(input)
-            // A nil result means either the task was cancelled (a newer render is
-            // running — leave state untouched) or nothing matched. Distinguish the
-            // two via the cancellation flag.
-            if Task.isCancelled { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
+                if Task.isCancelled {
+                    // The render was superseded/cancelled (e.g. the tab was closed or
+                    // switched away from). Clear the in-flight flag and drop any pending
+                    // re-render; the tab re-renders from scratch when next shown.
+                    self.isGeneratingTimelineByTab[tabID] = false
+                    self.pendingTimelineRender[tabID] = false
+                    return
+                }
                 if let freshIndex = self.openTabs.firstIndex(where: { $0.id == tabID }) {
                     if let result {
                         self.timelineImageByTab[tabID] = result.image
@@ -99,9 +135,9 @@ extension LogViewModel {
                         self.openTabs[freshIndex].timelineMatches = []
                         self.openTabs[freshIndex].timelineActiveRuleIDs = []
                     }
-                    self.isGeneratingTimelineByTab[tabID] = false
                     self.objectWillChange.send()
                 }
+                self.finishTimelineRender(for: tabID)
             }
         }
     }

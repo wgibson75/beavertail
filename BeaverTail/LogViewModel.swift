@@ -55,6 +55,14 @@ class LogViewModel: ObservableObject {
     /// so UI tests neither depend on nor pollute the developer's real saved state.
     nonisolated static let isUITesting = ProcessInfo.processInfo.arguments.contains("-uitesting")
 
+    /// True when the app is hosting an XCTest bundle (unit tests), detected via the
+    /// `XCTestConfigurationFilePath` environment variable the test runner injects.
+    /// Like UI testing, we skip restoring the previous session so the unit-test host
+    /// launches into a clean, responsive state instead of re-opening (and scanning)
+    /// the developer's last — potentially very large — log file, which can stall the
+    /// test harness before it connects.
+    nonisolated static let isUnitTesting = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+
     /// Shown in the bottom pane when a filter is entered while the file is still
     /// being indexed; the scan is deferred until loading finishes.
     static let deferredFilterMessage = "Filtering will begin once the file has finished loading…"
@@ -304,6 +312,14 @@ class LogViewModel: ObservableObject {
     /// Per-tab minimap draw task. Internal so `LogViewModel+Minimap.swift` can drive it.
     var minimapTasks: [UUID: Task<Void, Never>] = [:]
     private var lastMinimapUpdate: [UUID: DispatchTime] = [:]
+    /// Coalescing state for the single-in-flight Timeline render scheduler (see
+    /// `generateTimelineData`). `isGeneratingTimelineByTab` marks a render in flight;
+    /// when a render is requested while one is running, `pendingTimelineRender` records
+    /// that exactly one more render should run — with the latest state — as soon as the
+    /// current one finishes. This lets the progressive filter and highlight scans (and
+    /// visibility/theme changes) all request updates freely without cancelling each
+    /// other's in-flight render.
+    var pendingTimelineRender: [UUID: Bool] = [:]
     /// Per-tab timeline draw task. Internal so `LogViewModel+Timeline.swift` can drive it.
     var timelineTasks: [UUID: Task<Void, Never>] = [:]
     var liveTailTasks: [UUID: Task<Void, Never>] = [:]
@@ -490,7 +506,7 @@ class LogViewModel: ObservableObject {
         loadRecentFiles()
         // Skip restoring the previous session under UI testing so those runs start
         // from a clean, deterministic empty state.
-        if !Self.isUITesting {
+        if !Self.isUITesting && !Self.isUnitTesting {
             DispatchQueue.main.async { self.loadSavedTabsSession() }
         }
 
@@ -928,12 +944,15 @@ class LogViewModel: ObservableObject {
                         self.openTabs[freshIndex].filteredIndices = matches
                         self.updateDisplayedIndices(for: freshIndex)
                         self.syncTabOptions()
-                        // NOTE: the timeline is intentionally NOT regenerated on every
-                        // intermediate update. For a filter matching millions of lines
-                        // its filtered-intersection pass is O(matches × rules) and would
-                        // run ~every 150ms, each cancelling the last — burning CPU that
-                        // should go to the filter scan. It is regenerated once when the
-                        // filter completes (see the completion block below).
+                        // Progressively redraw the Timeline as filtered lines arrive, so
+                        // coloured entries and their headings appear within a second or two
+                        // of filtering starting rather than only when the whole filter
+                        // completes (tens of seconds on a multi-GB log). Safe now that the
+                        // renderer is O(filteredCount + matches) and generateTimelineData is
+                        // a coalescing scheduler: overlapping requests from this filter scan
+                        // and any concurrent highlight scan run at most one render at a time
+                        // and re-fire with the latest state, never cancelling each other.
+                        self.generateTimelineData(for: tabID)
                     }
                 }
             }
@@ -1169,47 +1188,10 @@ class LogViewModel: ObservableObject {
                     var currentCache = self.openTabs[i].highlightMatches
                     guard currentCache.count == newRuleIDs.count else { return }
 
-                    let isFiltered = !self.openTabs[i].filterPattern.isEmpty
-                    let filteredIndices = self.openTabs[i].filteredIndices
-                    let bSearch: ([Int], Int) -> Int = { arr, el in
-                        var low = 0, high = arr.count
-                        while low < high {
-                            let mid = low + (high - low) / 2
-                            if arr[mid] < el { low = mid + 1 } else { high = mid }
-                        }
-                        return low
-                    }
-
-                    var discoveredNewRules = false
-                    var validTimelineRules: [UUID] = []
-
+                    // Apply the (cheap, copy-on-write) per-rule match updates first.
                     for (runIdx, partial) in partialMatches.enumerated() {
-                        let globalIdx = matchersToRun[runIdx].globalIndex
-                        currentCache[globalIdx] = partial
-
-                        if !partial.isEmpty {
-                            let ruleID = newRuleIDs[globalIdx]
-                            var hasValidMatch = false
-                            if isFiltered {
-                                for m in partial {
-                                    let loc = bSearch(filteredIndices, m)
-                                    if loc < filteredIndices.count, filteredIndices[loc] == m {
-                                        hasValidMatch = true
-                                        break
-                                    }
-                                }
-                            } else {
-                                hasValidMatch = true
-                            }
-                            if hasValidMatch {
-                                validTimelineRules.append(ruleID)
-                                if !self.openTabs[i].timelineActiveRuleIDs.contains(ruleID) {
-                                    discoveredNewRules = true
-                                }
-                            }
-                        }
+                        currentCache[matchersToRun[runIdx].globalIndex] = partial
                     }
-
                     self.openTabs[i].highlightMatches = currentCache
 
                     if isFinal {
@@ -1223,39 +1205,26 @@ class LogViewModel: ObservableObject {
                         self.openTabs[i].isProcessingHighlights = false
                     }
 
-                    // Display headings instantly
-                    var updatedTimelineIDs = self.openTabs[i].timelineActiveRuleIDs
-                    for rID in validTimelineRules {
-                        if !updatedTimelineIDs.contains(rID) {
-                            updatedTimelineIDs.append(rID)
-                        }
-                    }
-                    if discoveredNewRules {
-                        self.openTabs[i].timelineActiveRuleIDs = updatedTimelineIDs
-                    }
-
+                    // Progressive rendering: redraw the minimap AND the Timeline as
+                    // highlight matches accumulate, so coloured entries fill in during the
+                    // scan instead of only appearing once it finishes. The minimap keeps
+                    // its own ~1s throttle; the Timeline goes through its coalescing
+                    // scheduler (generateTimelineData), which runs at most one render at a
+                    // time and re-fires with the latest state when each finishes — so the
+                    // heavy off-main render is never cancelled mid-flight.
                     let now = DispatchTime.now()
                     let lastMinimap = self.lastMinimapUpdate[tabID] ?? DispatchTime(uptimeNanoseconds: 0)
-                    let diff = now.uptimeNanoseconds - lastMinimap.uptimeNanoseconds
-                    if isFinal || diff > 1_000_000_000 { // 1 second throttle
+                    if isFinal || now.uptimeNanoseconds - lastMinimap.uptimeNanoseconds > 1_000_000_000 {
                         self.lastMinimapUpdate[tabID] = now
                         self.generateMinimapData(for: tabID)
                     }
-
-                    if isFinal || discoveredNewRules {
-                        self.generateTimelineData(for: tabID)
-                    }
+                    self.generateTimelineData(for: tabID)
                 }
             }
         }
     }
 
-    private func generateMinimapDataForAllTabs() {
-        for tab in openTabs { generateMinimapData(for: tab.id) }
-    }
-
     private func generateHighlightDataForAllTabs() {
         for tab in openTabs { generateHighlightData(for: tab.id) }
     }
-
 }

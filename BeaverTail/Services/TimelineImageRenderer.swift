@@ -101,15 +101,27 @@ enum TimelineImageRenderer {
         // in the active-rule order) colours it — matching the row renderer,
         // which stops at the first matching rule. Each rule therefore only
         // "owns" lines not already claimed by a higher-priority rule.
-        var claimedLines = Set<Int>()
+        //
+        // Claiming uses a Bool array keyed by (line - rangeStart) rather than a
+        // Set<Int>. On a multi-GB log the cache can hold ~100M line indices, and a
+        // Set with that many insertions cost several seconds and gigabytes on every
+        // render — which, combined with running on each progressive update, is what
+        // made coloured entries/headings take minutes to appear. Only lines inside
+        // the visible range can ever be drawn, so out-of-range matches are skipped.
+        var claimed = [Bool](repeating: false, count: max(1, rangeSpan))
         var effectiveMatches: [[Int]] = Array(repeating: [], count: ruleCount)
         for (i, cacheIdx) in input.mappedCacheIndices.enumerated() {
             let matches = input.cache[cacheIdx]
             var owned: [Int] = []
             owned.reserveCapacity(matches.count)
             // `matches` is sorted, so `owned` stays sorted for the binary search.
-            for line in matches where claimedLines.insert(line).inserted {
-                owned.append(line)
+            for line in matches {
+                guard line >= input.rangeStart, line < input.rangeEnd else { continue }
+                let offset = line - input.rangeStart
+                if !claimed[offset] {
+                    claimed[offset] = true
+                    owned.append(line)
+                }
             }
             effectiveMatches[i] = owned
         }
@@ -118,58 +130,15 @@ enum TimelineImageRenderer {
         var bucketMatchCounts = Array(repeating: Array(repeating: 0, count: ruleCount), count: imgHeight)
         var bucketSampledCounts = [Int](repeating: 0, count: imgHeight)
 
-        for bucket in 0..<imgHeight {
-            if Task.isCancelled { return nil }
-            let (bucketStart, bucketEnd) = bucketBounds(bucket)
-            if bucketStart >= input.rangeEnd { break }
-
-            if input.isFiltered {
-                let fLower = bSearch(input.filteredIndices, bucketStart)
-                let fUpper = bSearch(input.filteredIndices, bucketEnd)
-                let countInBucket = fUpper - fLower
-                if countInBucket == 0 { continue }
-
-                var matchCounts = [Int](repeating: 0, count: ruleCount)
-                for i in input.mappedCacheIndices.indices {
-                    let matches = effectiveMatches[i]
-                    var count = 0
-                    var firstHitLine: Int?
-                    // Fast intersection for this bucket
-                    for fIdx in fLower..<fUpper {
-                        let lineIdx = input.filteredIndices[fIdx]
-                        let rLower = bSearch(matches, lineIdx)
-                        if rLower < matches.count && matches[rLower] == lineIdx {
-                            count += 1
-                            if firstHitLine == nil { firstHitLine = lineIdx }
-                        }
-                    }
-                    matchCounts[i] = count
-                    if let hit = firstHitLine {
-                        newTimelineMatches[i].append(hit)
-                    }
-                }
-                bucketMatchCounts[bucket] = matchCounts
-                bucketSampledCounts[bucket] = countInBucket
-
-            } else {
-                let countInBucket = bucketEnd - bucketStart
-                if countInBucket == 0 { continue }
-
-                var matchCounts = [Int](repeating: 0, count: ruleCount)
-                for i in input.mappedCacheIndices.indices {
-                    let matches = effectiveMatches[i]
-                    let lower = bSearch(matches, bucketStart)
-                    let upper = bSearch(matches, bucketEnd)
-                    let count = upper - lower
-                    matchCounts[i] = count
-                    if count > 0 {
-                        newTimelineMatches[i].append(matches[lower])
-                    }
-                }
-                bucketMatchCounts[bucket] = matchCounts
-                bucketSampledCounts[bucket] = countInBucket
-            }
-        }
+        // The (potentially heavy) per-bucket counting is factored into a helper to
+        // keep this function's control-flow manageable; it returns nil if cancelled.
+        guard let buckets = computeBuckets(
+            input: input, effectiveMatches: effectiveMatches,
+            ruleCount: ruleCount, rangeSpan: rangeSpan, imgHeight: imgHeight
+        ) else { return nil }
+        newTimelineMatches = buckets.reps
+        bucketMatchCounts = buckets.matchCounts
+        bucketSampledCounts = buckets.sampledCounts
 
         if Task.isCancelled { return nil }
 
@@ -288,5 +257,106 @@ enum TimelineImageRenderer {
             matches: finalMatchesToSave,
             activeRuleIDs: activeRuleIDsThatMatched
         )
+    }
+
+    /// Per-bucket counts produced by `computeBuckets`.
+    private struct BucketData {
+        /// One representative (smallest) matched line per bucket, per rule.
+        let reps: [[Int]]
+        /// Match count per bucket, per rule (`[bucket][rule]`).
+        let matchCounts: [[Int]]
+        /// Sampled-line count per bucket (all lines when unfiltered; filtered lines
+        /// only when a filter is active).
+        let sampledCounts: [Int]
+    }
+
+    /// Buckets each rule's owned matches into the `imgHeight` timeline rows,
+    /// returning per-bucket match counts, sampled-line counts, and one
+    /// representative line per bucket. Returns nil if the task is cancelled.
+    ///
+    /// The filtered path builds a membership bitset of the filtered lines once and
+    /// makes a single linear pass over each rule's owned matches — O(filteredCount +
+    /// Σ matches) — instead of the previous per-bucket binary-search intersection,
+    /// which was O(filteredCount × ruleCount × log matches) and took minutes per
+    /// render on a multi-GB log (so entries/headings never appeared until the whole
+    /// scan finished).
+    private nonisolated static func computeBuckets(
+        input: TimelineRenderInput,
+        effectiveMatches: [[Int]],
+        ruleCount: Int,
+        rangeSpan: Int,
+        imgHeight: Int
+    ) -> BucketData? {
+        var reps: [[Int]] = Array(repeating: [], count: ruleCount)
+        var matchCounts = Array(repeating: Array(repeating: 0, count: ruleCount), count: imgHeight)
+        var sampledCounts = [Int](repeating: 0, count: imgHeight)
+
+        // Maps a visible original-line index to its bucket row (inverse of the
+        // unfiltered path's bucket bounds), so sampled and match counts bucket
+        // identically and the density ratio stays exact.
+        let bucketFor: (Int) -> Int = { line in
+            guard rangeSpan > 1 else { return 0 }
+            let b = (line - input.rangeStart) * imgHeight / rangeSpan
+            return b < 0 ? 0 : (b >= imgHeight ? imgHeight - 1 : b)
+        }
+
+        if input.isFiltered {
+            guard rangeSpan > 0 else { return nil }
+            var isFilteredLine = [Bool](repeating: false, count: rangeSpan)
+            for line in input.filteredIndices where line >= input.rangeStart && line < input.rangeEnd {
+                isFilteredLine[line - input.rangeStart] = true
+                sampledCounts[bucketFor(line)] += 1
+            }
+            for i in input.mappedCacheIndices.indices {
+                if Task.isCancelled { return nil }
+                var lastRecordedBucket = -1
+                // `matches` is sorted ascending, so buckets are visited in
+                // non-decreasing order and the first filtered hit in a bucket is the
+                // smallest line in it — matching the previous representative.
+                for line in effectiveMatches[i] where line >= input.rangeStart && line < input.rangeEnd {
+                    guard isFilteredLine[line - input.rangeStart] else { continue }
+                    let bucket = bucketFor(line)
+                    matchCounts[bucket][i] += 1
+                    if bucket != lastRecordedBucket {
+                        reps[i].append(line)
+                        lastRecordedBucket = bucket
+                    }
+                }
+            }
+            return BucketData(reps: reps, matchCounts: matchCounts, sampledCounts: sampledCounts)
+        }
+
+        let bSearch: ([Int], Int) -> Int = { arr, el in
+            var low = 0
+            var high = arr.count
+            while low < high {
+                let mid = low + (high - low) / 2
+                if arr[mid] < el { low = mid + 1 } else { high = mid }
+            }
+            return low
+        }
+        for bucket in 0..<imgHeight {
+            if Task.isCancelled { return nil }
+            let bucketStart = input.rangeStart + Int(Double(bucket) * Double(rangeSpan) / Double(imgHeight))
+            let bucketEnd = bucket == imgHeight - 1
+                ? input.rangeEnd
+                : input.rangeStart + Int(Double(bucket + 1) * Double(rangeSpan) / Double(imgHeight))
+            if bucketStart >= input.rangeEnd { break }
+            let countInBucket = bucketEnd - bucketStart
+            if countInBucket == 0 { continue }
+
+            for i in input.mappedCacheIndices.indices {
+                let matches = effectiveMatches[i]
+                let lower = bSearch(matches, bucketStart)
+                let upper = bSearch(matches, bucketEnd)
+                let count = upper - lower
+                matchCounts[bucket][i] = count
+                if count > 0 {
+                    reps[i].append(matches[lower])
+                }
+            }
+            sampledCounts[bucket] = countInBucket
+        }
+        return BucketData(reps: reps, matchCounts: matchCounts, sampledCounts: sampledCounts)
     }
 }
