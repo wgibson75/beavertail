@@ -676,25 +676,36 @@ private struct TimelinePaneView: View {
                                                         // Current-position indicator, mirroring the
                                                         // minimap but spanning only the selected
                                                         // column's width (marks column or one rule).
+                                                        // The column width is measured from the image's
+                                                        // own rendered width (this GeometryReader matches
+                                                        // the Image frame), NOT the outer geometry: the
+                                                        // pane is always taller than the viewport, so a
+                                                        // vertical scrollbar can make the displayed image
+                                                        // narrower than `geometry.size.width`. Using the
+                                                        // outer width would size each column slightly too
+                                                        // wide and drift the highlight progressively to
+                                                        // the right of the entry it marks.
                                                         if let fraction = viewModel.selectedFraction,
                                                            let column = selectedColumnIndex(
                                                                 activeRules: activeRules, hasMarks: hasMarks) {
-                                                            let totalColumns = (hasMarks ? 1 : 0) + activeRules.count
-                                                            let columnWidth = geometry.size.width
-                                                                / CGFloat(max(totalColumns, 1))
-                                                            // Slightly wider than the entry's coloured dot
-                                                            // (0.8 of the column) but narrower than the column.
-                                                            let indicatorWidth = columnWidth * 0.9
-                                                            TimelinePositionIndicator(
-                                                                shimmerTrigger: viewModel.minimapShimmerTrigger
-                                                            )
-                                                            .frame(width: indicatorWidth)
-                                                            .offset(
-                                                                x: CGFloat(column) * columnWidth
-                                                                    + (columnWidth - indicatorWidth) / 2,
-                                                                y: fraction * displayedHeight - 1
-                                                            )
-                                                            .allowsHitTesting(false)
+                                                            GeometryReader { imageProxy in
+                                                                let totalColumns = (hasMarks ? 1 : 0) + activeRules.count
+                                                                let columnWidth = imageProxy.size.width
+                                                                    / CGFloat(max(totalColumns, 1))
+                                                                // Slightly wider than the entry's coloured dot
+                                                                // (0.8 of the column) but narrower than the column.
+                                                                let indicatorWidth = columnWidth * 0.9
+                                                                TimelinePositionIndicator(
+                                                                    shimmerTrigger: viewModel.minimapShimmerTrigger
+                                                                )
+                                                                .frame(width: indicatorWidth)
+                                                                .offset(
+                                                                    x: CGFloat(column) * columnWidth
+                                                                        + (columnWidth - indicatorWidth) / 2,
+                                                                    y: fraction * displayedHeight - 1
+                                                                )
+                                                                .allowsHitTesting(false)
+                                                            }
                                                         }
                                                     }
 

@@ -426,7 +426,7 @@
 				);
 				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(SRCROOT)/Vendor/vectorscan/lib/arm64";
 				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(SRCROOT)/Vendor/vectorscan/lib/x86_64";
-				MARKETING_VERSION = 2.3.0;
+				MARKETING_VERSION = 2.3.1;
 				OTHER_LDFLAGS = (
 					"-lhs",
 					"-lc++",
@@ -477,7 +477,7 @@
 				);
 				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(SRCROOT)/Vendor/vectorscan/lib/arm64";
 				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(SRCROOT)/Vendor/vectorscan/lib/x86_64";
-				MARKETING_VERSION = 2.3.0;
+				MARKETING_VERSION = 2.3.1;
 				OTHER_LDFLAGS = (
 					"-lhs",
 					"-lc++",
