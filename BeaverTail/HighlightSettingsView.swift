@@ -494,12 +494,14 @@ struct HighlightSettingsView: View {
                 .hidden()
             )
             .background(
-                // Hidden ⌘Z handler: undo the last highlight-filter change
-                // (add / update / delete / group / move / group-toggle), up to 50 steps.
-                Button("") {
-                    rulesStore.undo()
+                // Hidden ⌘Z / ⇧⌘Z handlers: undo/redo the last highlight-filter
+                // change (add / update / delete / group / move), up to 50 steps.
+                Group {
+                    Button("") { rulesStore.undo() }
+                        .keyboardShortcut("z", modifiers: .command)
+                    Button("") { rulesStore.redo() }
+                        .keyboardShortcut("z", modifiers: [.command, .shift])
                 }
-                .keyboardShortcut("z", modifiers: .command)
                 .hidden()
             )
             .padding(.horizontal, 16)

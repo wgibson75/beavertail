@@ -56,11 +56,14 @@ final class HighlightRulesStore: ObservableObject {
 
     /// Up to the last 50 changes, newest last.
     private var undoStack: [Snapshot] = []
+    /// States that have been undone, ready to be re-applied via redo (⇧⌘Z),
+    /// newest last. Cleared whenever a fresh change diverges the history.
+    private var redoStack: [Snapshot] = []
     private let maxUndoDepth = 50
     /// Coalesces the `rules`/`groups` writes of a single logical operation (e.g.
     /// deleting a group mutates both) into one undo step per run-loop tick.
     private var snapshotTakenThisTick = false
-    /// Suppresses snapshotting while an undo is being applied.
+    /// Suppresses snapshotting while an undo or redo is being applied.
     private var isApplyingUndo = false
     /// Set immediately before a text-edit mutation (e.g. typing a group name).
     private var pendingTextEditKey: String?
@@ -69,6 +72,7 @@ final class HighlightRulesStore: ObservableObject {
     private var activeTextEditKey: String?
 
     var canUndo: Bool { !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
 
     /// Pins any group that a rules change just left empty to the display position it
     /// occupied, so it doesn't jump to the top of the list. The anchor is the nearest
@@ -113,14 +117,24 @@ final class HighlightRulesStore: ObservableObject {
     }
 
     private func pushSnapshot(_ snapshot: Snapshot) {
-        undoStack.append(snapshot)
-        if undoStack.count > maxUndoDepth {
-            undoStack.removeFirst(undoStack.count - maxUndoDepth)
+        push(snapshot, onto: &undoStack)
+    }
+
+    /// Appends `snapshot` to `stack`, trimming the oldest entries so the stack
+    /// never grows beyond `maxUndoDepth`.
+    private func push(_ snapshot: Snapshot, onto stack: inout [Snapshot]) {
+        stack.append(snapshot)
+        if stack.count > maxUndoDepth {
+            stack.removeFirst(stack.count - maxUndoDepth)
         }
     }
 
     private func recordUndoSnapshot(previousRules: [HighlightRule], previousGroups: [HighlightGroup]) {
         guard !isApplyingUndo else { return }
+
+        // A fresh user change diverges from any undone history, so redo is no
+        // longer meaningful.
+        redoStack.removeAll()
 
         if let key = pendingTextEditKey {
             pendingTextEditKey = nil
@@ -142,11 +156,25 @@ final class HighlightRulesStore: ObservableObject {
     }
 
     /// Restores the most recent snapshot. Restoring both arrays counts as a single
-    /// undo (it is not itself pushed onto the stack).
+    /// undo (it is not itself pushed onto the stack). The pre-undo state is saved so
+    /// it can be re-applied via `redo()`.
     func undo() {
         guard let snapshot = undoStack.popLast() else { return }
         activeTextEditKey = nil
         isApplyingUndo = true
+        push(Snapshot(rules: rules, groups: groups), onto: &redoStack)
+        rules = snapshot.rules
+        groups = snapshot.groups
+        DispatchQueue.main.async { [weak self] in self?.isApplyingUndo = false }
+    }
+
+    /// Re-applies the most recently undone snapshot. The pre-redo state is pushed
+    /// back onto the undo stack so it can be undone again.
+    func redo() {
+        guard let snapshot = redoStack.popLast() else { return }
+        activeTextEditKey = nil
+        isApplyingUndo = true
+        push(Snapshot(rules: rules, groups: groups), onto: &undoStack)
         rules = snapshot.rules
         groups = snapshot.groups
         DispatchQueue.main.async { [weak self] in self?.isApplyingUndo = false }
@@ -156,6 +184,7 @@ final class HighlightRulesStore: ObservableObject {
     /// state can't be "undone" away).
     func resetUndoHistory() {
         undoStack.removeAll()
+        redoStack.removeAll()
         snapshotTakenThisTick = false
         isApplyingUndo = false
         pendingTextEditKey = nil

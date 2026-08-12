@@ -138,6 +138,9 @@ enum HelpContent {
                 "Undo the last change made in the Highlight Filters window — adding, updating, deleting, reordering, "
                 + "grouping or ungrouping, moving a filter between groups, or toggling enablement. Up to the last "
                 + "50 changes can be undone."),
+            HelpItem(shortcut: "⇧⌘ + Z", description:
+                "Redo a change you have just undone in the Highlight Filters window. Redo is available until you make "
+                + "a new change, which starts a fresh undo history."),
             HelpItem(shortcut: nil, description:
                 "Use the Import/Export buttons to save and load highlight filters. Exports are JSON and include your "
                 + "groups and each filter's enabled state. Importing a file saved by an earlier version (with no "
@@ -269,6 +272,16 @@ enum HelpContent {
             HelpItem(shortcut: nil, description:
                 "BeaverTail remembers which logs were open and which tab was active when you quit. "
                 + "They are restored on next launch. If a file has been moved or deleted its tab is silently removed.")
+        ]),
+        HelpSection(title: "Help Window", items: [
+            HelpItem(shortcut: "⌘ + ?", description:
+                "Open this Help window from the Help menu, or search BeaverTail's help topics directly from the "
+                + "Help menu's Search field to jump straight to the matching section."),
+            HelpItem(shortcut: nil, description:
+                "Type in the Search field at the top of this window to filter the topics below. "
+                + "Clear the field to show every topic again."),
+            HelpItem(shortcut: nil, description:
+                "The Help window can be freely moved and resized. Its size and position are remembered between launches.")
         ]),
         HelpSection(title: "Software Updates", items: [
             HelpItem(shortcut: nil, description:

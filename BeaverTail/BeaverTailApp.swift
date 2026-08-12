@@ -16,6 +16,8 @@ let openFileURLNotification = Notification.Name("BeaverTailOpenFileURL")
 
 /// Identifier for the standalone, resizable/movable Highlight Filters window.
 let highlightFiltersWindowID = "highlight-filters"
+/// Identifier for the standalone, resizable/movable Help window.
+let helpWindowID = "beavertail-help"
 
 // MARK: - AppDelegate (handles file-open events from the OS / btail CLI)
 
@@ -279,6 +281,15 @@ struct BeaverTailApp: App {
                 .onDisappear { viewModel.isHighlightWindowOpen = false }
         }
         .defaultSize(width: 540, height: 460)
+        .windowResizability(.contentMinSize)
+
+        // Standalone Help window. As a SwiftUI `Window` scene it is freely movable
+        // and resizable (unlike the previous fixed-size sheet), and SwiftUI persists
+        // its size and position across launches (keyed by the scene id).
+        Window("BeaverTail Help", id: helpWindowID) {
+            HelpView(viewModel: viewModel)
+        }
+        .defaultSize(width: 540, height: 520)
         .windowResizability(.contentMinSize)
     }
 }

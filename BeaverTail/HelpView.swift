@@ -7,15 +7,13 @@ import SwiftUI
 
 struct HelpView: View {
     @Environment(\.dismiss) var dismiss
+    @ObservedObject var viewModel: LogViewModel
 
-    /// Optional section to scroll to when the window is opened from the Help menu
-    /// "Search" field, and the initial search term to seed the in-window search.
-    let initialSectionTitle: String?
-    @State private var searchText: String
+    /// The in-window search term used to filter Help sections.
+    @State private var searchText: String = ""
 
-    init(initialSectionTitle: String? = nil, initialSearchText: String = "") {
-        self.initialSectionTitle = initialSectionTitle
-        _searchText = State(initialValue: initialSearchText)
+    init(viewModel: LogViewModel) {
+        self.viewModel = viewModel
     }
 
     /// Sections filtered by the in-window search field. When the search text is
@@ -99,10 +97,10 @@ struct HelpView: View {
                     .padding(20)
                 }
                 .onAppear {
-                    guard let title = initialSectionTitle else { return }
-                    DispatchQueue.main.async {
-                        withAnimation { proxy.scrollTo(title, anchor: .top) }
-                    }
+                    scrollToRequestedSection(using: proxy)
+                }
+                .onChange(of: viewModel.helpNavigationToken) { _, _ in
+                    scrollToRequestedSection(using: proxy)
                 }
             }
 
@@ -118,7 +116,18 @@ struct HelpView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
         }
-        .frame(width: 540, height: 500)
+        .frame(minWidth: 420, idealWidth: 540, maxWidth: .infinity,
+               minHeight: 360, idealHeight: 520, maxHeight: .infinity)
+    }
+
+    /// Scrolls to the section the Help window was asked to open at (if any). Clearing
+    /// the in-window search first ensures the target section is present in the list.
+    private func scrollToRequestedSection(using proxy: ScrollViewProxy) {
+        guard let title = viewModel.helpRequestedSection else { return }
+        if !searchText.isEmpty { searchText = "" }
+        DispatchQueue.main.async {
+            withAnimation { proxy.scrollTo(title, anchor: .top) }
+        }
     }
 
     @ViewBuilder

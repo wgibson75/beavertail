@@ -60,10 +60,82 @@ final class HighlightRulesStoreTests: XCTestCase {
         XCTAssertEqual(store.rules, [])
     }
 
+    // MARK: - Redo
+
+    func testRedoReappliesUndoneChange() {
+        let store = HighlightRulesStore()
+        let rule = makeRule("alpha")
+        XCTAssertFalse(store.canRedo)
+
+        store.rules = [rule]
+        XCTAssertFalse(store.canRedo)
+
+        store.undo()
+        XCTAssertEqual(store.rules, [])
+        XCTAssertTrue(store.canRedo)
+
+        store.redo()
+        XCTAssertEqual(store.rules, [rule])
+        XCTAssertFalse(store.canRedo)
+        XCTAssertTrue(store.canUndo)
+    }
+
+    func testMultipleRedoStepsAppliedInForwardOrder() async {
+        let store = HighlightRulesStore()
+        let ruleA = makeRule("A")
+        let ruleB = makeRule("B")
+
+        store.rules = [ruleA]
+        await drainMainQueue()
+        store.rules = [ruleA, ruleB]
+        await drainMainQueue()
+
+        store.undo()
+        store.undo()
+        XCTAssertEqual(store.rules, [])
+
+        store.redo()
+        XCTAssertEqual(store.rules, [ruleA])
+        store.redo()
+        XCTAssertEqual(store.rules, [ruleA, ruleB])
+        XCTAssertFalse(store.canRedo)
+    }
+
+    func testNewChangeAfterUndoClearsRedoStack() async {
+        let store = HighlightRulesStore()
+        store.rules = [makeRule("A")]
+        await drainMainQueue()
+        store.undo()
+        // Let the `isApplyingUndo` guard clear so the next write is treated as a
+        // genuine user change (mirrors a real run-loop tick between actions).
+        await drainMainQueue()
+        XCTAssertTrue(store.canRedo)
+
+        // A fresh change diverges the history and discards the redo stack.
+        store.rules = [makeRule("B")]
+        XCTAssertFalse(store.canRedo)
+    }
+
+    func testRedoOnEmptyStackIsNoOp() {
+        let store = HighlightRulesStore()
+        XCTAssertFalse(store.canRedo)
+        store.redo() // must not crash
+        XCTAssertEqual(store.rules, [])
+        XCTAssertEqual(store.groups, [])
+    }
+
+    func testResetUndoHistoryClearsRedoStack() {
+        let store = HighlightRulesStore()
+        store.rules = [makeRule("A")]
+        store.undo()
+        XCTAssertTrue(store.canRedo)
+        store.resetUndoHistory()
+        XCTAssertFalse(store.canRedo)
+    }
+
     // MARK: - Edge cases & Boundaries
 
-    func testUndoStackIsCappedAtFifty() async {
-        let store = HighlightRulesStore()
+    func testUndoStackIsCappedAtFifty() async {        let store = HighlightRulesStore()
         // 55 distinct, separately-ticked mutations → only the last 50 are retained.
         for i in 0..<55 {
             store.rules = [makeRule("p\(i)")]

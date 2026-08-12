@@ -218,6 +218,14 @@ class LogViewModel: ObservableObject {
     /// toolbar toggle can reflect (and drive) its state.
     @Published var isHighlightWindowOpen: Bool = false
 
+    /// Section the Help window should scroll to when opened from the Help menu's
+    /// "Search" field. `nil` opens the Help window at the top.
+    @Published var helpRequestedSection: String?
+    /// Bumped every time Help is asked to open/navigate, so the (possibly already
+    /// open) Help window re-scrolls to `helpRequestedSection` even when it is the
+    /// same section as last time.
+    @Published var helpNavigationToken: Int = 0
+
     @AppStorage("saved_highlight_rules") var rulesData: String = ""
     @AppStorage("saved_highlight_groups") var groupsData: String = ""
     @AppStorage("saved_show_minimap") var showMinimap: Bool = true
