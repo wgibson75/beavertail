@@ -138,7 +138,7 @@ enum HelpContent {
                 "Undo the last change made in the Highlight Filters window — adding, updating, deleting, reordering, "
                 + "grouping or ungrouping, moving a filter between groups, or toggling enablement. Up to the last "
                 + "50 changes can be undone."),
-            HelpItem(shortcut: "⇧⌘ + Z", description:
+            HelpItem(shortcut: "⇧ + ⌘ + Z", description:
                 "Redo a change you have just undone in the Highlight Filters window. Redo is available until you make "
                 + "a new change, which starts a fresh undo history."),
             HelpItem(shortcut: nil, description:
