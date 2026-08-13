@@ -40,6 +40,9 @@ struct RegexTextField: NSViewRepresentable {
     let onTextChange: () -> Void
     let onBlur: () -> Void
     let onSubmit: () -> Void
+    /// Called when the user presses Escape while the field is focused. Used to
+    /// dismiss the filter-history dropdown without altering the current filter.
+    let onCancel: () -> Void
 
     func makeNSView(context: Context) -> FocusableTextField {
         let field = FocusableTextField()
@@ -107,6 +110,13 @@ struct RegexTextField: NSViewRepresentable {
                      doCommandBy commandSelector: Selector) -> Bool {
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
                 parent.onSubmit()
+                return true
+            }
+            // Escape (cancelOperation:) dismisses the history dropdown without
+            // changing the current filter. Returning true swallows the key so
+            // AppKit does not also clear the field's contents.
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                parent.onCancel()
                 return true
             }
             return false

@@ -871,7 +871,7 @@ private struct TimelineHeadingView: View {
                 NSCursor.pop()
             }
         }
-        .help("Left-click for the next match, right-click for the previous match of \(rule.pattern)")
+        .help("Left-click for next match,\nright-click for previous match")
         .accessibilityIdentifier("timelineHeading")
     }
 }
