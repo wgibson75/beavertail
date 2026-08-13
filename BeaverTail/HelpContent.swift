@@ -75,6 +75,9 @@ enum HelpContent {
                 + "Results appear in the lower pane."),
             HelpItem(shortcut: nil, description:
                 "Click the Filter field to see a history of previously used patterns and select one to reuse it."),
+            HelpItem(shortcut: "⎋", description:
+                "Press Escape while the Filter field is focused to dismiss the history list without changing "
+                + "the current filter."),
             HelpItem(shortcut: nil, description:
                 "Use the Marks & matches dropdown next to the filter field to choose whether the lower pane "
                 + "shows marks and matches, marks only, or matches only."),

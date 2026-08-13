@@ -1152,6 +1152,14 @@ private struct FilterBarView: View {
                     showFilterDropdown = false
                     viewModel.applyFilter(with: viewModel.currentFilterPattern)
                     NSApp.keyWindow?.makeFirstResponder(nil)
+                },
+                onCancel: {
+                    // Escape dismisses the history dropdown and gives up focus
+                    // without modifying the current filter.
+                    hideDropdownWork?.cancel()
+                    hideDropdownWork = nil
+                    showFilterDropdown = false
+                    NSApp.keyWindow?.makeFirstResponder(nil)
                 }
             )
             // Animate the field's position so it slides left to fill the space
