@@ -186,13 +186,13 @@ struct HighlightSettingsView: View {
     /// black text on light gray (light mode), white text on dark gray (dark mode).
     private static func defaultFgColor(_ scheme: ColorScheme) -> Color {
         scheme == .dark
-            ? Color(red: 190.0 / 255.0, green: 190.0 / 255.0, blue: 125.0 / 255.0) // Dusty gold
-            : Color(red: 5.0 / 255.0, green: 125.0 / 255.0, blue: 15.0 / 255.0)    // Grass green
+            ? Color(red: 0.0 / 255.0, green: 0.0 / 255.0, blue: 125.0 / 255.0)  // Dark blue
+            : Color(red: 5.0 / 255.0, green: 125.0 / 255.0, blue: 15.0 / 255.0) // Grass green
     }
 
     private static func defaultBgColor(_ scheme: ColorScheme) -> Color {
         scheme == .dark
-            ? Color(red: 65.0 / 255.0, green: 100.0 / 255.0, blue: 65.0 / 255.0)   // Army green
+            ? Color(red: 130.0 / 255.0, green: 130.0 / 255.0, blue: 100.0 / 255.0) // Olive green
             : Color(red: 225.0 / 255.0, green: 225.0 / 255.0, blue: 175.0 / 255.0) // Pale yellow
     }
 
