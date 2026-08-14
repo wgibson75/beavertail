@@ -170,7 +170,7 @@ final class SelectionStyledTextField: NSTextField {
         if luminance(fieldBackground) > 0.5 {
             return NSColor(red: 0.35, green: 0.35, blue: 0.35, alpha: 1)   // dark grey on light bg
         } else {
-            return NSColor(red: 0.68, green: 0.68, blue: 0.68, alpha: 1)   // light grey on dark bg
+            return NSColor(red: 0.85, green: 0.85, blue: 0.85, alpha: 1)   // light grey on dark bg
         }
     }
 

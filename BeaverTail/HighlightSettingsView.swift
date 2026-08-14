@@ -583,16 +583,6 @@ struct HighlightSettingsView: View {
             GroupNameField(text: group.label) { setGroupLabel(group.id, $0) }
                 .opacity(group.isEnabled ? 1.0 : 0.45)
 
-            Button {
-                startAddToGroup(group.id)
-            } label: {
-                Image(systemName: addingToGroupID == group.id ? "plus.circle.fill" : "plus.circle")
-                    .font(.system(size: 15))
-                    .foregroundColor(.accentColor)
-            }
-            .buttonStyle(.plain)
-            .help("Add a new filter to this group using the fields above")
-
             Spacer()
 
             Button {
@@ -603,6 +593,16 @@ struct HighlightSettingsView: View {
             }
             .buttonStyle(.plain)
             .help("Remove this group (its filters remain, ungrouped)")
+
+            Button {
+                deleteGroupAndFilters(group.id)
+            } label: {
+                Image(systemName: "trash")
+                    .foregroundColor(Color(NSColor.secondaryLabelColor))
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, 10)
+            .help("Delete this group and all of its filters")
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
@@ -987,6 +987,29 @@ struct HighlightSettingsView: View {
         rulesStore.groups.removeAll { $0.id == id }
     }
 
+    /// Deletes a group together with every filter it contains. The `rules` and
+    /// `groups` writes happen in the same run-loop tick so `HighlightRulesStore`
+    /// coalesces them into a single undo step — one ⌘Z restores both the group and
+    /// its filters, and ⇧⌘Z re-deletes them.
+    private func deleteGroupAndFilters(_ id: UUID) {
+        // If the form is editing (or adding to) this group, reset it first so we
+        // don't leave the form referencing a rule/group that no longer exists.
+        if let editing = editingRuleID,
+           rulesStore.rules.first(where: { $0.id == editing })?.groupID == id {
+            clearForm()
+        }
+        if addingToGroupID == id {
+            addingToGroupID = nil
+            groupHighlightActive = false
+        }
+        selectedRuleIDs.subtract(rulesStore.rules.filter { $0.groupID == id }.map { $0.id })
+
+        withAnimation {
+            rulesStore.rules.removeAll { $0.groupID == id }
+            rulesStore.groups.removeAll { $0.id == id }
+        }
+    }
+
     private func newGroup() {
         // Never prompt — the group's label is typed inline. A deliberate grouping
         // selection (multi-select, or a ⌘-selected filter that isn't merely the one
@@ -1129,20 +1152,6 @@ struct HighlightSettingsView: View {
             rulesStore.rules.insert(rule, at: 0)
         }
         clearForm()
-    }
-
-    /// Enter "add to this group" mode: reset the form to defaults, deselect any
-    /// editing rule (so Update stays disabled), and focus the pattern field. The
-    /// mode persists across Adds so several filters can be added in a row.
-    private func startAddToGroup(_ groupID: UUID) {
-        clearForm()
-        selectedRuleIDs = []
-        addingToGroupID = groupID
-        DispatchQueue.main.async {
-            self.patternFocusToken += 1
-            // Activate the highlight after focus lands so form-clear churn can't dismiss it.
-            self.groupHighlightActive = true
-        }
     }
 
     /// Adds a new filter to the given group, appending it after the group's last
@@ -1325,124 +1334,5 @@ struct HighlightSettingsView: View {
         selectedRuleIDs = []
         selectionAnchorID = nil
         return group.id
-    }
-
-    // MARK: - Import / export
-
-    private func exportRules() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "HighlightFilters.json"
-
-        if panel.runModal() == .OK, let url = panel.url {
-            do {
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                let data = try encoder.encode(makeExportDocument())
-                try data.write(to: url)
-            } catch {
-                let alert = NSAlert()
-                alert.messageText = "Export Failed"
-                alert.informativeText = error.localizedDescription
-                alert.alertStyle = .critical
-                alert.runModal()
-            }
-        }
-    }
-
-    /// Builds the nested export document from the current flat rules + groups, emitting
-    /// each group (with its members nested) at the position of its first member, and
-    /// any empty groups up front — mirroring how the list is displayed.
-    private func makeExportDocument() -> HighlightFiltersDocument {
-        let rules = rulesStore.rules
-        let groups = rulesStore.groups
-        let groupedIDs = Set(rules.compactMap { $0.groupID })
-
-        func dto(_ rule: HighlightRule) -> HighlightFilterRuleDTO {
-            .init(pattern: rule.pattern,
-                  foregroundColorHex: rule.foregroundColorHex,
-                  backgroundColorHex: rule.backgroundColorHex,
-                  isCaseSensitive: rule.isCaseSensitive,
-                  isEnabled: rule.isEnabled)
-        }
-
-        var items: [HighlightFilterItem] = []
-        // Empty groups (no members) are preserved at the top.
-        for group in groups where !groupedIDs.contains(group.id) {
-            items.append(.group(.init(groupName: group.label, isEnabled: group.isEnabled, rules: [])))
-        }
-        var emitted = Set<UUID>()
-        for rule in rules {
-            guard let gid = rule.groupID else {
-                items.append(.rule(dto(rule)))
-                continue
-            }
-            if emitted.contains(gid) { continue }
-            emitted.insert(gid)
-            let group = groups.first(where: { $0.id == gid })
-            let members = rules.filter { $0.groupID == gid }.map(dto)
-            items.append(.group(.init(groupName: group?.label ?? "",
-                                      isEnabled: group?.isEnabled ?? true,
-                                      rules: members)))
-        }
-        return HighlightFiltersDocument(rules: items)
-    }
-
-    private func importRules() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.json]
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-
-        if panel.runModal() == .OK, let url = panel.url {
-            do {
-                let data = try Data(contentsOf: url)
-                let decoder = JSONDecoder()
-                // Prefer the nested grouped format; fall back to a bare rules array so
-                // files saved by earlier (pre-grouping) versions still import correctly.
-                if let doc = try? decoder.decode(HighlightFiltersDocument.self, from: data) {
-                    applyImportedDocument(doc)
-                } else {
-                    let rules = try decoder.decode([HighlightRule].self, from: data)
-                    rulesStore.groups = []
-                    rulesStore.rules = rules
-                }
-            } catch {
-                let alert = NSAlert()
-                alert.messageText = "Import Failed"
-                alert.informativeText = "Could not read highlight rules. \(error.localizedDescription)"
-                alert.alertStyle = .critical
-                alert.runModal()
-            }
-        }
-    }
-
-    /// Flattens the nested import document into the store's `rules` (each tagged with its
-    /// group's freshly-minted `id`) and `groups`, preserving order.
-    private func applyImportedDocument(_ doc: HighlightFiltersDocument) {
-        func rule(_ dto: HighlightFilterRuleDTO, groupID: UUID?) -> HighlightRule {
-            HighlightRule(pattern: dto.pattern,
-                          foregroundColorHex: dto.foregroundColorHex,
-                          backgroundColorHex: dto.backgroundColorHex,
-                          isCaseSensitive: dto.isCaseSensitive,
-                          isEnabled: dto.isEnabled,
-                          groupID: groupID)
-        }
-
-        var newRules: [HighlightRule] = []
-        var newGroups: [HighlightGroup] = []
-        for item in doc.rules {
-            switch item {
-            case .rule(let dto):
-                newRules.append(rule(dto, groupID: nil))
-            case .group(let groupDTO):
-                let group = HighlightGroup(label: groupDTO.groupName, isEnabled: groupDTO.isEnabled)
-                newGroups.append(group)
-                newRules.append(contentsOf: groupDTO.rules.map { rule($0, groupID: group.id) })
-            }
-        }
-        rulesStore.groups = newGroups
-        rulesStore.rules = newRules
     }
 }
