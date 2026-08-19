@@ -74,7 +74,12 @@ struct LogMinimapView: View {
                 // Fall back to the top of the log (fraction 0) before the user has
                 // navigated anywhere, so the current-position line still exists and
                 // can shimmer on hover immediately after a log first loads.
-                if viewModel.minimapImage != nil {
+                // Driven by whether the log has any content rather than by the
+                // presence of the highlight-strip bitmap: the bitmap is only
+                // generated when highlight filters are defined, but the
+                // current-position indicator must still appear (and shimmer on
+                // hover / click) when no filters exist.
+                if viewModel.lineCount > 0 {
                     let fraction = viewModel.selectedFraction ?? 0
                     ZStack {
                         // GLOW HALO: a thicker, blurred, tinted line that swells and

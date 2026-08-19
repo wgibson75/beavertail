@@ -151,4 +151,41 @@ final class NavigationCoordinateTests: XCTestCase {
         viewModel.jumpToNextMatch(forRuleID: UUID()) // rule not in the timeline
         XCTAssertNil(viewModel.timelineCurrentLineByTab[tabID])
     }
+
+    // MARK: - Minimap jump records a selected fraction (drives the current-line
+    // indicator). The minimap's highlight-strip bitmap is only generated when
+    // highlight filters are defined, but the current-position indicator must
+    // still appear after a click even when no filters exist. That indicator is
+    // driven purely by `selectedFractionByTab`, so verify a minimap jump records
+    // one regardless of whether any highlight rules are present.
+
+    func testJumpFromMinimapRecordsSelectedFractionWithoutHighlightRules() {
+        let tab = makeTab(lineCount: 100)
+        let tabID = tab.id
+        selectTab(tab)
+
+        // No highlight rules / matches are configured on the tab.
+        XCTAssertTrue(tab.highlightMatches.isEmpty)
+        XCTAssertNil(viewModel.selectedFractionByTab[tabID])
+
+        viewModel.jumpFromMinimap(fraction: 0.5)
+
+        // A fraction is recorded so the LogMinimapView position indicator renders
+        // and can shimmer on hover, even though no minimap bitmap was generated.
+        let fraction = viewModel.selectedFractionByTab[tabID]
+        XCTAssertNotNil(fraction)
+        XCTAssertEqual(fraction ?? -1, 0.5, accuracy: 0.02)
+    }
+
+    func testJumpFromMinimapEndpointsWithoutHighlightRules() {
+        let tab = makeTab(lineCount: 100)
+        let tabID = tab.id
+        selectTab(tab)
+
+        viewModel.jumpFromMinimap(fraction: 0.0)
+        XCTAssertEqual(viewModel.selectedFractionByTab[tabID] ?? -1, 0, accuracy: 0.0001)
+
+        viewModel.jumpFromMinimap(fraction: 1.0)
+        XCTAssertEqual(viewModel.selectedFractionByTab[tabID] ?? -1, 1, accuracy: 0.0001)
+    }
 }
