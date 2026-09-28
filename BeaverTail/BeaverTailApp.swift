@@ -279,6 +279,10 @@ struct BeaverTailApp: App {
             HighlightSettingsView(rulesStore: viewModel.highlightRulesStore)
                 .onAppear { viewModel.isHighlightWindowOpen = true }
                 .onDisappear { viewModel.isHighlightWindowOpen = false }
+                // Allow this window to float over the main window when it is in
+                // native macOS full-screen mode, instead of forcing a Space
+                // switch that hides the main window.
+                .fullScreenAuxiliaryWindow()
         }
         .defaultSize(width: 540, height: 460)
         .windowResizability(.contentMinSize)
@@ -288,6 +292,8 @@ struct BeaverTailApp: App {
         // its size and position across launches (keyed by the scene id).
         Window("BeaverTail Help", id: helpWindowID) {
             HelpView(viewModel: viewModel)
+                // Same full-screen handling as the Highlight Filters window.
+                .fullScreenAuxiliaryWindow()
         }
         .defaultSize(width: 540, height: 520)
         .windowResizability(.contentMinSize)
