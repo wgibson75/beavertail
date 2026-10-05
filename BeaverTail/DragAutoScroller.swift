@@ -44,6 +44,40 @@ final class DragAutoScroller {
         timer = nil
     }
 
+    /// Posts a harmless synthetic left-click into the dialog so the just-completed drag is
+    /// fully "flushed" and the next drag can begin immediately.
+    ///
+    /// Why this is needed: on macOS, SwiftUI's `.onDrag` row-drag gesture stays stuck after
+    /// a drop until the app processes a *real* mouse event — the user hits this as "the
+    /// re-order isn't finished; I can't drag the group again until I click somewhere
+    /// (the scroll bar, the regex box, the heading…)". Purely programmatic state resets do
+    /// NOT fix it because they never flow through the window's event dispatch, which is what
+    /// actually resets the gesture. We therefore synthesise the click the user would
+    /// otherwise have to make — placed in the form's top padding (above the first control)
+    /// so it triggers nothing — and post it to the window's event queue to be dispatched
+    /// normally.
+    func postDragResetClick() {
+        guard let window = scrollView?.window, let content = window.contentView else { return }
+        let loc = Self.dragResetClickLocation(inContentFrame: content.frame)
+        let now = ProcessInfo.processInfo.systemUptime
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            guard let event = NSEvent.mouseEvent(
+                with: type, location: loc, modifierFlags: [], timestamp: now,
+                windowNumber: window.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1,
+                pressure: type == .leftMouseDown ? 1 : 0
+            ) else { continue }
+            window.postEvent(event, atStart: false)
+        }
+    }
+
+    /// A harmless point to click inside the dialog: horizontally centred, just inside the
+    /// top edge of the content (the form's top padding, above the first control). Pure so
+    /// it can be unit-tested.
+    static func dragResetClickLocation(inContentFrame frame: NSRect) -> NSPoint {
+        NSPoint(x: frame.midX, y: frame.maxY - 6)
+    }
+
     private func tick() {
         // Self-terminate the moment the drag ends (left mouse button released).
         guard NSEvent.pressedMouseButtons & 0x1 != 0 else {
@@ -118,6 +152,40 @@ struct ListScrollViewFinder: NSViewRepresentable {
 final class RulesDropController {
     weak var scrollView: NSScrollView?
     private var indicator: NSView?
+
+    // MARK: - Transient drag bookkeeping
+    //
+    // These describe the drag currently in flight. They live here (on a plain reference
+    // object), NOT in SwiftUI `@State`, on purpose: the `.onDrag` closure must record
+    // what's being dragged, but mutating `@State` from inside `.onDrag` invalidates the
+    // view at the very moment the drag begins, which on macOS leaves the List's drag
+    // source in a broken state — the row can be dragged once and then not again until
+    // the whole view is recreated (e.g. by reopening the dialog). Because nothing in the
+    // row-rendering path reads these values (only the drop-indicator math does), keeping
+    // them off `@State` avoids that mid-drag invalidation entirely.
+
+    /// Whether the in-flight drag is a group header (as opposed to filter rows).
+    private(set) var isDraggingGroup = false
+    /// The filter rows being dragged (empty for a group drag).
+    private(set) var draggingRuleIDs: Set<UUID> = []
+
+    /// Records that a group header drag has started.
+    func beginGroupDrag() {
+        isDraggingGroup = true
+        draggingRuleIDs = []
+    }
+
+    /// Records that a filter-row drag (one or many rows) has started.
+    func beginRuleDrag(_ ids: Set<UUID>) {
+        isDraggingGroup = false
+        draggingRuleIDs = ids
+    }
+
+    /// Clears the in-flight drag bookkeeping (on drop / drag end).
+    func endDrag() {
+        isDraggingGroup = false
+        draggingRuleIDs = []
+    }
 
     private var tableView: NSTableView? { scrollView?.documentView as? NSTableView }
 

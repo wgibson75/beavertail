@@ -102,6 +102,7 @@ private enum RuleListItem: Identifiable {
     }
 }
 
+
 /// Drives the rules list's custom drag-and-drop. On each drag update it lets the view
 /// refresh the drop indicator (hit-tested against the backing table), and on drop it
 /// hands the dragged provider back for committing. Using a delegate (rather than
@@ -170,8 +171,6 @@ struct HighlightSettingsView: View {
     // locations on macOS. This lets the horizontal drop position distinguish
     // "into / at the end of a group" from "between groups (ungrouped)".
     @State private var dropController = RulesDropController()
-    @State private var draggingRuleIDs: Set<UUID> = []
-    @State private var isDraggingGroup = false
 
     /// Pointer X (in table space) at/above which a boundary drop joins the group above
     /// (i.e. is dropped at the END of that group) rather than staying ungrouped.
@@ -183,7 +182,7 @@ struct HighlightSettingsView: View {
     @State private var originalBgColor: Color = HighlightSettingsView.defaultBgColor(.light)
 
     /// Default rule colours adapt to the current appearance:
-    /// black text on light gray (light mode), white text on dark gray (dark mode).
+    /// black text on light gray (lgit config --global merge.tool bcompight mode), white text on dark gray (dark mode).
     private static func defaultFgColor(_ scheme: ColorScheme) -> Color {
         scheme == .dark
             ? Color(red: 76.0 / 255.0, green: 78.0 / 255.0, blue: 125.0 / 255.0) // Soft indigo
@@ -563,6 +562,9 @@ struct HighlightSettingsView: View {
     private func groupHeaderRow(_ group: HighlightGroup) -> some View {
         HStack(spacing: 8) {
             DragHandle(help: "Drag to reorder this group")
+                // Stable, per-group handle id so UI tests can locate a group, read its
+                // on-screen position, and drag it to reorder.
+                .accessibilityIdentifier("groupDragHandle.\(group.label)")
             Image(systemName: "folder.fill")
                 .font(.system(size: 12))
                 .foregroundColor(.secondary)
@@ -614,9 +616,11 @@ struct HighlightSettingsView: View {
         )
         .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
         .onDrag {
+            // Record the in-flight drag on `dropController` (a reference object), NOT on
+            // `@State`. Mutating `@State` here would invalidate the view mid-drag and
+            // leave the row undraggable after the first move until the dialog is reopened.
             autoScroller.start()
-            isDraggingGroup = true
-            draggingRuleIDs = []
+            dropController.beginGroupDrag()
             return NSItemProvider(object: "group:\(group.id.uuidString)" as NSString)
         } preview: {
             Color.clear
@@ -720,15 +724,17 @@ struct HighlightSettingsView: View {
         .onDrag {
             // If the dragged row is part of a multi-selection, carry ALL selected
             // filters (in display order) as one payload; otherwise just this row.
+            // Record the drag on `dropController` (a reference object) rather than
+            // `@State` — see `groupHeaderRow`'s `.onDrag` for why mutating `@State` here
+            // breaks subsequent drags on macOS.
             autoScroller.start()
-            isDraggingGroup = false
             if selectedRuleIDs.contains(rule.id) && selectedRuleIDs.count > 1 {
                 let ids = orderedRuleIDs.filter { selectedRuleIDs.contains($0) }
-                draggingRuleIDs = Set(ids)
+                dropController.beginRuleDrag(Set(ids))
                 let payload = "rules:" + ids.map { $0.uuidString }.joined(separator: ",")
                 return NSItemProvider(object: payload as NSString)
             }
-            draggingRuleIDs = [rule.id]
+            dropController.beginRuleDrag([rule.id])
             return NSItemProvider(object: "rule:\(rule.id.uuidString)" as NSString)
         } preview: {
             if selectedRuleIDs.contains(rule.id) && selectedRuleIDs.count > 1 {
@@ -752,6 +758,35 @@ struct HighlightSettingsView: View {
 
     // MARK: - Drag & drop
 
+    /// Pure, side-effect-free core of a group reorder: returns `rules` with the whole
+    /// block belonging to `groupID` moved so it sits immediately before `anchorID`
+    /// (or at the very end when `anchorID` is `nil`). `anchorID` is the first row at or
+    /// after the drop point that is *not* part of the moving group; snapping to the
+    /// START of that row's block guarantees we never split another group.
+    ///
+    /// Extracted so the reorder can be unit-tested for repeatability — the original bug
+    /// was that a group could only be moved once, so proving that successive moves keep
+    /// producing the expected order (regardless of the view-level drag plumbing) guards
+    /// against logic regressions here.
+    static func rulesByMovingGroup(_ groupID: UUID, before anchorID: UUID?,
+                                   in rules: [HighlightRule]) -> [HighlightRule] {
+        let block = rules.filter { $0.groupID == groupID }
+        guard !block.isEmpty else { return rules } // Empty group: nothing to reorder.
+
+        var rest = rules.filter { $0.groupID != groupID }
+        var insertAt = rest.count
+        if let anchorID, let anchorRule = rules.first(where: { $0.id == anchorID }) {
+            if let anchorGroup = anchorRule.groupID,
+               let firstIdx = rest.firstIndex(where: { $0.groupID == anchorGroup }) {
+                insertAt = firstIdx
+            } else if let ai = rest.firstIndex(where: { $0.id == anchorID }) {
+                insertAt = ai
+            }
+        }
+        rest.insert(contentsOf: block, at: max(0, min(insertAt, rest.count)))
+        return rest
+    }
+
     /// One row's content (group header or filter row), keyed off the item.
     @ViewBuilder
     private func rowContent(for item: RuleListItem) -> some View {
@@ -764,8 +799,7 @@ struct HighlightSettingsView: View {
     /// Clears all transient drag state (called on drop completion / drag exit).
     private func clearDropState() {
         dropController.hideIndicator()
-        draggingRuleIDs = []
-        isDraggingGroup = false
+        dropController.endDrag()
         autoScroller.stop()
     }
 
@@ -830,9 +864,10 @@ struct HighlightSettingsView: View {
             return
         }
         let k = min(hit.index, items.count)
-        let group: UUID? = isDraggingGroup
+        let group: UUID? = dropController.isDraggingGroup
             ? nil
-            : adoptedGroupForDrop(items: items, k: k, pointerX: hit.pointerX, moving: draggingRuleIDs)
+            : adoptedGroupForDrop(items: items, k: k, pointerX: hit.pointerX,
+                                  moving: dropController.draggingRuleIDs)
         let indent: CGFloat = group != nil ? 44 : 12
         dropController.showIndicator(atIndex: k, indent: indent)
     }
@@ -862,6 +897,11 @@ struct HighlightSettingsView: View {
                         performRuleDrop(ruleID: rid, listIndex: k, adoptedGroup: group)
                     }
                 }
+                // After a reorder, re-enable dragging the just-moved row again without the
+                // user first clicking elsewhere in the dialog. On macOS, SwiftUI's `.onDrag`
+                // gesture stays stuck after a drop until a *real* mouse event is dispatched,
+                // so we synthesise the click the user would otherwise have to make.
+                DispatchQueue.main.async { autoScroller.postDragResetClick() }
             }
         }
         return true
@@ -924,14 +964,11 @@ struct HighlightSettingsView: View {
 
     private func performGroupDrop(groupID: UUID, listIndex k: Int) {
         let items = listItems
-        var rules = rulesStore.rules
-        let block = rules.filter { $0.groupID == groupID }
-        guard !block.isEmpty else { return } // Empty group: nothing to reorder.
-        rules.removeAll { $0.groupID == groupID }
+        guard rulesStore.rules.contains(where: { $0.groupID == groupID }) else { return }
 
         // The first filter at/after the drop point that is NOT part of the moving
-        // group becomes the anchor; snap to the START of its block so we never split
-        // another group.
+        // group becomes the anchor; `rulesByMovingGroup` snaps to the START of its
+        // block so we never split another group.
         var anchorID: UUID?
         var idx = k
         while idx < items.count {
@@ -942,17 +979,8 @@ struct HighlightSettingsView: View {
             idx += 1
         }
 
-        var insertAt = rules.count
-        if let anchorID, let anchorRule = rulesStore.rules.first(where: { $0.id == anchorID }) {
-            if let anchorGroup = anchorRule.groupID,
-               let firstIdx = rules.firstIndex(where: { $0.groupID == anchorGroup }) {
-                insertAt = firstIdx
-            } else if let ai = rules.firstIndex(where: { $0.id == anchorID }) {
-                insertAt = ai
-            }
-        }
-        rules.insert(contentsOf: block, at: max(0, min(insertAt, rules.count)))
-        withAnimation(.default) { rulesStore.rules = rules }
+        let reordered = Self.rulesByMovingGroup(groupID, before: anchorID, in: rulesStore.rules)
+        withAnimation(.default) { rulesStore.rules = reordered }
     }
 
     // MARK: - Group management
