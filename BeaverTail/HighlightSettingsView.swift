@@ -186,14 +186,14 @@ struct HighlightSettingsView: View {
     /// black text on light gray (light mode), white text on dark gray (dark mode).
     private static func defaultFgColor(_ scheme: ColorScheme) -> Color {
         scheme == .dark
-            ? Color(red: 0.0 / 255.0, green: 0.0 / 255.0, blue: 125.0 / 255.0)  // Dark blue
-            : Color(red: 5.0 / 255.0, green: 125.0 / 255.0, blue: 15.0 / 255.0) // Grass green
+            ? Color(red: 76.0 / 255.0, green: 78.0 / 255.0, blue: 125.0 / 255.0) // Soft indigo
+            : Color(red: 255.0 / 255.0, green: 251.0 / 255.0, blue: 209.0 / 255.0) // Warm cream
     }
 
     private static func defaultBgColor(_ scheme: ColorScheme) -> Color {
         scheme == .dark
-            ? Color(red: 130.0 / 255.0, green: 130.0 / 255.0, blue: 100.0 / 255.0) // Olive green
-            : Color(red: 225.0 / 255.0, green: 225.0 / 255.0, blue: 175.0 / 255.0) // Pale yellow
+            ? Color(red: 255.0 / 255.0, green: 251.0 / 255.0, blue: 209.0 / 255.0) // Warm cream
+            : Color(red: 76.0 / 255.0, green: 78.0 / 255.0, blue: 125.0 / 255.0) // Soft indigo
     }
 
     /// "On" tint for the enable/disable switches. Must be FULLY OPAQUE: a translucent
