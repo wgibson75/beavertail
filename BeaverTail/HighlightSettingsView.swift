@@ -102,7 +102,6 @@ private enum RuleListItem: Identifiable {
     }
 }
 
-
 /// Drives the rules list's custom drag-and-drop. On each drag update it lets the view
 /// refresh the drop indicator (hit-tested against the backing table), and on drop it
 /// hands the dragged provider back for committing. Using a delegate (rather than

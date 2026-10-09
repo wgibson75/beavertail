@@ -41,11 +41,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// view model. Kept for the app's lifetime (the delegate lives that long).
     private var fileOpenObserver: NSObjectProtocol?
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        // Register a search handler so the standard Help ▸ Search field searches
-        // BeaverTail's Help text and opens the Help window at the chosen topic.
-        NSApp.registerUserInterfaceItemSearchHandler(helpSearchHandler)
-
+    /// Register everything needed to receive file-open requests BEFORE the app
+    /// finishes launching. This is critical: when the app is cold-launched with a
+    /// document (e.g. `open -a BeaverTail file.log`, which is what the `btail` CLI
+    /// runs), macOS delivers the `kAEOpenDocuments` Apple Event around the end of
+    /// launch. If the handler is only installed in `applicationDidFinishLaunching`
+    /// it is too late — the launch open event has already been dispatched (and
+    /// dropped), so the file silently never loads. Installing the handler and the
+    /// file-open observer here, in `applicationWillFinishLaunching`, guarantees they
+    /// are in place before that event arrives.
+    func applicationWillFinishLaunching(_ notification: Notification) {
         // Centralise file-open handling in the delegate so it does NOT depend on a
         // SwiftUI `ContentView` being instantiated (and its `.onReceive` registered).
         // On macOS 26.x under XCUITest the `WindowGroup` can come up with zero windows
@@ -65,7 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Register for kAEOpenDocuments Apple Events — this fires reliably
         // when `open -a BeaverTail file.log` is used, both on fresh launch
-        // and when the app is already running.
+        // and when the app is already running. Must be installed before launch
+        // completes (see method doc) so the cold-launch open event is caught.
         NSAppleEventManager.shared().setEventHandler(
             self,
             andSelector: #selector(handleOpenDocumentsEvent(_:replyEvent:)),
@@ -75,13 +81,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Handle files passed as raw command-line arguments (e.g. when Xcode
         // or a wrapper launches the binary directly with a path argument).
-        let args = CommandLine.arguments.dropFirst()
-            .filter { !$0.hasPrefix("-") }
-            .map { URL(fileURLWithPath: $0).standardizedFileURL }
-            .filter { FileManager.default.fileExists(atPath: $0.path) }
-        for url in args {
+        for url in Self.fileURLsFromArguments(CommandLine.arguments) {
             NotificationCenter.default.post(name: openFileURLNotification, object: url)
         }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Register a search handler so the standard Help ▸ Search field searches
+        // BeaverTail's Help text and opens the Help window at the chosen topic.
+        NSApp.registerUserInterfaceItemSearchHandler(helpSearchHandler)
 
         // Check GitHub for a newer release (unless the user has disabled it, or the
         // app was launched for UI testing — where a networked alert would interfere
@@ -128,6 +136,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         uiTestWindow = window
+    }
+
+    /// Parses raw process arguments into the list of existing log-file URLs that
+    /// should be opened at launch. Pure and side-effect free (the filesystem check
+    /// is injectable) so the command-line launch behaviour can be unit tested.
+    /// - Drops the first argument (the executable path).
+    /// - Ignores flag arguments (anything starting with "-", e.g. "-uitesting" or
+    ///   the "-psn_…"/"-NSDocumentRevisionsDebugMode" flags macOS may append).
+    /// - Standardises each path to a file URL and keeps only ones that exist.
+    static func fileURLsFromArguments(
+        _ arguments: [String],
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> [URL] {
+        arguments.dropFirst()
+            .filter { !$0.hasPrefix("-") }
+            .map { URL(fileURLWithPath: $0).standardizedFileURL }
+            .filter { fileExists($0.path) }
     }
 
     @objc func handleOpenDocumentsEvent(
