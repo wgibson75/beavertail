@@ -46,6 +46,17 @@ extension LogViewModel {
         let metadataArray = SessionStore.decode(from: sessionBookmarksData)
         guard !metadataArray.isEmpty else { return }
 
+        // If a tab was already opened and selected before session restore ran — e.g.
+        // a log file passed on the command line (via the `btail` CLI) at cold launch,
+        // which loads synchronously during `applicationWillFinishLaunching` while this
+        // restore is dispatched asynchronously and therefore runs afterwards — that
+        // tab is the user's intended selection. Preserve it instead of overriding it
+        // with the previously-active restored tab.
+        let launchSelectedID: UUID? =
+            (selectedTabID != nil && openTabs.contains { $0.id == selectedTabID })
+            ? selectedTabID
+            : nil
+
         var restoredSelectedID: UUID?
 
         for metadata in metadataArray {
@@ -54,7 +65,13 @@ extension LogViewModel {
                 continue
             }
 
-            guard !openTabs.contains(where: { $0.fileURL == restoredURL }) else { continue }
+            // Compare standardized paths: a tab opened at launch (e.g. a CLI file)
+            // stores its URL as passed, while bookmark resolution returns a
+            // standardized URL (e.g. /var vs /private/var). A raw `==` would miss
+            // that match and restore a duplicate tab for the same file.
+            guard !openTabs.contains(where: {
+                $0.fileURL.standardizedFileURL == restoredURL.standardizedFileURL
+            }) else { continue }
 
             let newID = UUID()
             let lazyTab = LogTab(
@@ -79,8 +96,10 @@ extension LogViewModel {
             }
         }
 
-        // Select the tab that was active at last close, falling back to the first tab
-        let targetID = restoredSelectedID ?? openTabs.first?.id
+        // Select the tab that was active at last close, falling back to the first tab —
+        // unless the launch already opened/selected a tab (e.g. a CLI file), in which
+        // case that tab wins and is revealed instead.
+        let targetID = launchSelectedID ?? restoredSelectedID ?? openTabs.first?.id
         if let targetID {
             selectedTabID = targetID
             // Ask the tab strip to scroll this tab into view: after a restore it can
